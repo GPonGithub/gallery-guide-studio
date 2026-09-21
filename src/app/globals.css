@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+/*
+ * Minimalist Monochrome design tokens. Pure black/white only — no other
+ * colors, ever. See src/lib/styles.ts for the shared component-level
+ * building blocks (buttons, fields) built on top of these.
+ */
+:root {
+  --color-paper: #ffffff;
+  --color-ink: #000000;
+  --color-muted: #f5f5f5;
+  --color-muted-ink: #525252;
+  --color-hair: #e5e5e5;
+}
+
+@theme inline {
+  --color-paper: var(--color-paper);
+  --color-ink: var(--color-ink);
+  --color-muted: var(--color-muted);
+  --color-muted-ink: var(--color-muted-ink);
+  --color-hair: var(--color-hair);
+
+  --color-background: var(--color-paper);
+  --color-foreground: var(--color-ink);
+
+  --font-display: var(--font-playfair-display), Georgia, serif;
+  --font-body: var(--font-source-serif), Georgia, serif;
+  --font-label: var(--font-jetbrains-mono), monospace;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  position: relative;
+}
+
+/* Subtle global paper texture — hairline horizontal rules at ~1.5% opacity. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(0deg, transparent, transparent 1px, #000 1px, #000 2px);
+  background-size: 100% 4px;
+  opacity: 0.015;
+}
+
+body > div {
+  position: relative;
+  z-index: 1;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+}
