@@ -126,7 +126,12 @@ export function ChatPanel({
         api: '/api/chat',
         body: () => ({
           activeBoxId: activeBoxIdRef.current,
-          boxes: boxesRef.current.map((b) => ({ id: b.id, label: b.label, instructions: b.instructions })),
+          boxes: boxesRef.current.map((b) => ({
+            id: b.id,
+            label: b.label,
+            instructions: b.instructions,
+            leadsTo: b.leadsTo,
+          })),
           masterPlaybook: masterPlaybookRef.current,
           anthropicApiKey: anthropicApiKeyRef.current,
         }),
@@ -134,7 +139,9 @@ export function ChatPanel({
     [],
   );
 
-  const { messages, setMessages, sendMessage, status, stop, error } = useChat<ChatUIMessage>({ transport });
+  const { messages, setMessages, sendMessage, regenerate, status, stop, error } = useChat<ChatUIMessage>({
+    transport,
+  });
 
   const [inputValue, setInputValue] = useState('');
   const [voiceEnabled, setVoiceEnabled] = useState(true);
@@ -144,6 +151,7 @@ export function ChatPanel({
   const [voiceTestError, setVoiceTestError] = useState<string | null>(null);
   const spokenIds = useRef(new Set<string>());
   const handledTransitions = useRef(new Set<string>());
+  const autoContinueAttemptsRef = useRef(0);
   const warmedRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
@@ -230,9 +238,41 @@ export function ChatPanel({
     }
   }, [messages, onActiveBoxChange]);
 
+  // The model is told to always write spoken reply text, but doesn't always
+  // comply — most often right on a stage transition, since that turn's reply
+  // is generated under the *old* stage's system prompt (the new one isn't
+  // loaded until the next turn), so it has nothing box-specific to say yet.
+  // Rather than leave the student staring at a silent turn, automatically
+  // give the model one more attempt once the transition has actually been
+  // applied — regenerating naturally picks up the new active box's real
+  // instructions via the transport's `body()` callback. Capped at 2 attempts
+  // so a persistently-silent box doesn't retry forever; the existing "Note"
+  // banner is still the fallback once that cap is hit.
+  useEffect(() => {
+    if (status !== 'ready') return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== 'assistant') return;
+    if (getMessageText(last.parts)) {
+      autoContinueAttemptsRef.current = 0;
+      return;
+    }
+    const transitionCall = findChangeStageCall(last.parts);
+    if (transitionCall && activeBoxId !== transitionCall.input?.stageId) {
+      // Transition hasn't been applied to this panel yet (onActiveBoxChange
+      // is queued as a microtask) — wait for the re-render where it has,
+      // so the regenerated attempt uses the new box's instructions, not a
+      // stale copy of the one that just produced this empty turn.
+      return;
+    }
+    if (autoContinueAttemptsRef.current >= 2) return;
+    autoContinueAttemptsRef.current += 1;
+    void regenerate();
+  }, [messages, status, activeBoxId, regenerate]);
+
   const handleSend = () => {
     const text = inputValue.trim();
     if (!text || !activeBoxId) return;
+    autoContinueAttemptsRef.current = 0;
     recognitionRef.current?.stop();
     setIsListening(false);
     sendMessage({ text });
@@ -402,8 +442,8 @@ export function ChatPanel({
                 <span className="font-label text-[10px] uppercase tracking-widest text-ink">Note — </span>
                 <span className="font-body text-sm text-ink">
                   {transitioned
-                    ? 'The agent moved playbooks but didn’t say anything to the patient this turn. Send another message to continue.'
-                    : 'The agent finished without sending any text or action for this turn. Try rephrasing, or check your API key under “API keys” in the header.'}
+                    ? 'The agent moved playbooks but didn’t say anything to the patient, even after retrying automatically. Send another message to continue.'
+                    : 'The agent finished without sending any text or action for this turn, even after retrying automatically. Try rephrasing, or check your API key under “API keys” in the header.'}
                 </span>
               </div>
             </div>

@@ -24,6 +24,8 @@ export const defaultState: StudioState = {
   masterPlaybook: '',
   anthropicApiKey: '',
   elevenLabsApiKey: '',
+  figmaApiKey: '',
+  figmaFileUrl: '',
 };
 
 export function loadState(): StudioState {

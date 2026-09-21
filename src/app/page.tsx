@@ -152,6 +152,8 @@ export default function Home() {
           boxes={state.boxes}
           activeBoxId={state.activeBoxId}
           anthropicApiKey={state.anthropicApiKey}
+          figmaApiKey={state.figmaApiKey}
+          figmaFileUrl={state.figmaFileUrl}
           onImageChange={(dataUrl, name) => setState((s) => ({ ...s, imageDataUrl: dataUrl, imageName: name }))}
           onBoxesChange={(boxes) => setState((s) => ({ ...s, boxes }))}
           onSelectBox={(id) => setState((s) => ({ ...s, activeBoxId: id }))}
@@ -162,6 +164,7 @@ export default function Home() {
           onClearAll={() =>
             setState((s) => ({ ...s, imageDataUrl: null, imageName: null, boxes: [], activeBoxId: null }))
           }
+          onFigmaFileUrlChange={(figmaFileUrl) => setState((s) => ({ ...s, figmaFileUrl }))}
         />
 
         <div className="min-h-[420px] min-w-0 border-2 border-ink bg-paper p-4">
@@ -213,11 +216,13 @@ export default function Home() {
         <ApiKeysModal
           anthropicApiKey={state.anthropicApiKey}
           elevenLabsApiKey={state.elevenLabsApiKey}
+          figmaApiKey={state.figmaApiKey}
           voiceId={state.voiceId}
           onChangeAnthropicApiKey={(anthropicApiKey) => setState((s) => ({ ...s, anthropicApiKey }))}
           onChangeElevenLabsApiKey={(elevenLabsApiKey) => setState((s) => ({ ...s, elevenLabsApiKey }))}
+          onChangeFigmaApiKey={(figmaApiKey) => setState((s) => ({ ...s, figmaApiKey }))}
           onChangeVoiceId={(voiceId) => setState((s) => ({ ...s, voiceId }))}
-          onClearKeys={() => setState((s) => ({ ...s, anthropicApiKey: '', elevenLabsApiKey: '' }))}
+          onClearKeys={() => setState((s) => ({ ...s, anthropicApiKey: '', elevenLabsApiKey: '', figmaApiKey: '' }))}
           onClose={() => setKeysOpen(false)}
         />
       )}

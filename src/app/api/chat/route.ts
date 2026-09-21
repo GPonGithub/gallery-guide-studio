@@ -10,7 +10,7 @@ export const maxDuration = 30;
 const FALLBACK_SYSTEM_PROMPT =
   'You are a helpful voice agent being prototyped by a student. No playbook has been selected for this stage yet, so introduce yourself briefly and ask what the visitor needs.';
 
-type StageBox = { id: string; label: string; instructions: string };
+type StageBox = { id: string; label: string; instructions: string; leadsTo?: string[] };
 
 function summarize(text: string, max = 150) {
   const flat = text.trim().replace(/\s+/g, ' ');
@@ -28,7 +28,15 @@ export async function POST(req: Request) {
 
   const allBoxes = boxes ?? [];
   const currentBox = allBoxes.find((b) => b.id === activeBoxId);
-  const otherBoxes = allBoxes.filter((b) => b.id !== activeBoxId);
+  // Real connection data (from a Figma sync) restricts the model to this
+  // stage's actual neighbors instead of every other box in the diagram —
+  // the fix for it picking a wrong-but-similarly-named box out of a long,
+  // mostly-irrelevant list. Boxes with no leadsTo (hand-made or detected
+  // from an image, with no real graph data) fall back to the old behavior.
+  const otherBoxes =
+    currentBox?.leadsTo && currentBox.leadsTo.length > 0
+      ? allBoxes.filter((b) => b.id !== activeBoxId && currentBox.leadsTo?.includes(b.id))
+      : allBoxes.filter((b) => b.id !== activeBoxId);
 
   const systemParts: string[] = [];
   if (masterPlaybook?.trim()) {
@@ -42,12 +50,30 @@ export async function POST(req: Request) {
 
   const canTransition = otherBoxes.length > 0;
   if (canTransition) {
-    const menu = otherBoxes.map((b) => `- ${b.id}: "${b.label}" — ${summarize(b.instructions)}`).join('\n');
+    // When leadsTo has already narrowed this down to the stage's real
+    // neighbors (a handful, from real Figma connection data), there's no
+    // need for a content preview to help pick the right one — and leaving
+    // it out closes a real failure mode: the model reading another stage's
+    // content here and reciting it early instead of actually transitioning
+    // there. Without leadsTo, the full box list is still in play and a
+    // preview is genuinely needed to tell lookalike-labeled boxes apart —
+    // keep it there; that's the disambiguation problem this replaced.
+    const usingRealConnections = Boolean(currentBox?.leadsTo && currentBox.leadsTo.length > 0);
+    const menu = otherBoxes
+      .map((b) =>
+        usingRealConnections ? `- ${b.id}: "${b.label}"` : `- ${b.id}: "${b.label}" — ${summarize(b.instructions)}`,
+      )
+      .join('\n');
     systemParts.push(
       "If the conversation should move out of the current stage — a topic shift, a signal like an emergency, or " +
       "this stage's goal being complete — call the changeStage tool. You only get this one response for the " +
       "turn (no separate follow-up turn to reply in), so always write your reply text in this exact same " +
-      `response alongside the tool call. Available stages you can move to:\n${menu}`,
+      "response alongside the tool call. This works in both directions: if your current stage's instructions " +
+      'say to move to another stage (e.g. "then move onto Playbook X"), actually call the changeStage tool in ' +
+      "this same response — saying the words, narrating that you're moving on, or starting to speak as the next " +
+      "stage would, is not a substitute for actually calling it. You do not know what any other stage will " +
+      'actually say until you transition there — do not preview, guess at, or recite another stage\'s content ' +
+      `before calling changeStage. Available stages you can move to:\n${menu}`,
     );
   }
   systemParts.push('Voice conversation — keep replies to a sentence or two.');

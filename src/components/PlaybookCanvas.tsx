@@ -11,11 +11,14 @@ type Props = {
   boxes: PlaybookBox[];
   activeBoxId: string | null;
   anthropicApiKey: string;
+  figmaApiKey: string;
+  figmaFileUrl: string;
   onImageChange: (dataUrl: string, name: string) => void;
   onBoxesChange: (boxes: PlaybookBox[]) => void;
   onSelectBox: (id: string) => void;
   onOpenEditor: (id: string) => void;
   onClearAll: () => void;
+  onFigmaFileUrlChange: (url: string) => void;
 };
 
 type View = { scale: number; x: number; y: number };
@@ -40,11 +43,14 @@ export function PlaybookCanvas({
   boxes,
   activeBoxId,
   anthropicApiKey,
+  figmaApiKey,
+  figmaFileUrl,
   onImageChange,
   onBoxesChange,
   onSelectBox,
   onOpenEditor,
   onClearAll,
+  onFigmaFileUrlChange,
 }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -52,6 +58,7 @@ export function PlaybookCanvas({
   const naturalSizeRef = useRef<{ width: number; height: number } | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isDetecting, setIsDetecting] = useState(false);
+  const [isSyncingFigma, setIsSyncingFigma] = useState(false);
   const [view, setView] = useState<View>({ scale: 1, x: 0, y: 0 });
   const [connections, setConnections] = useState<{ from: string; to: string }[] | null>(null);
   const [showConnections, setShowConnections] = useState(false);
@@ -378,6 +385,56 @@ export function PlaybookCanvas({
     }
   };
 
+  // Pulls box content and *real* connections (not vision-guessed ones)
+  // straight from a FigJam board's own data via the Figma REST API. The
+  // image is still required separately for the visual canvas — this only
+  // replaces the boxes, using the board's own coordinate space normalized
+  // to 0-100%, so positions line up as long as the uploaded PNG was
+  // exported from roughly the same layout.
+  const runFigmaSync = async () => {
+    const url = window.prompt('Paste the FigJam board URL to sync from:', figmaFileUrl || '');
+    if (!url) return;
+    if (!figmaApiKey.trim()) {
+      window.alert('Add a Figma personal access token under "API keys" first.');
+      return;
+    }
+    if (boxes.length > 0) {
+      const proceed = window.confirm(
+        'This will replace all existing playbook boxes and their written content. Continue?',
+      );
+      if (!proceed) return;
+    }
+    setIsSyncingFigma(true);
+    try {
+      const res = await fetch('/api/sync-figma', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileUrl: url, figmaApiKey }),
+      });
+      const data = (await res.json()) as {
+        boxes: PlaybookBox[];
+        error?: string;
+        debugBounds?: { minX: number; minY: number; spanX: number; spanY: number };
+      };
+      if (!res.ok || data.error) {
+        window.alert(data.error ?? 'Sync failed.');
+        return;
+      }
+      if (data.debugBounds) {
+        // Temporary calibration aid — compare against Figma's own Export
+        // panel dimensions for this same selection to nail the exact
+        // scale/offset correction instead of guessing at another heuristic.
+        console.log('Figma sync computed bounds:', data.debugBounds);
+      }
+      onFigmaFileUrlChange(url);
+      onBoxesChange(data.boxes);
+    } catch {
+      window.alert('Sync failed. Check your connection and try again.');
+    } finally {
+      setIsSyncingFigma(false);
+    }
+  };
+
   // A previously-detected set of connections stops matching reality the
   // moment a box moves, gets added/removed, or the image changes — drop the
   // cache so the toggle re-detects instead of showing stale arrows. Comparing
@@ -454,6 +511,14 @@ export function PlaybookCanvas({
         />
         <button onClick={runAutoDetect} disabled={!imageDataUrl || isDetecting} className={buttonOutline}>
           {isDetecting ? 'Detecting…' : 'Auto-detect blue buttons'}
+        </button>
+        <button
+          onClick={runFigmaSync}
+          disabled={!imageDataUrl || isSyncingFigma}
+          className={buttonOutline}
+          title="Pull box content and real connections straight from a FigJam board (requires a Figma personal access token under API keys)"
+        >
+          {isSyncingFigma ? 'Syncing…' : 'Sync from Figma'}
         </button>
         <button onClick={addBox} disabled={!imageDataUrl} className={buttonOutline}>
           + Add playbook box

@@ -5,9 +5,11 @@ import { buttonGhost, buttonPrimary, fieldInput, fieldLabel } from '@/lib/styles
 type Props = {
   anthropicApiKey: string;
   elevenLabsApiKey: string;
+  figmaApiKey: string;
   voiceId: string;
   onChangeAnthropicApiKey: (value: string) => void;
   onChangeElevenLabsApiKey: (value: string) => void;
+  onChangeFigmaApiKey: (value: string) => void;
   onChangeVoiceId: (value: string) => void;
   onClearKeys: () => void;
   onClose: () => void;
@@ -16,9 +18,11 @@ type Props = {
 export function ApiKeysModal({
   anthropicApiKey,
   elevenLabsApiKey,
+  figmaApiKey,
   voiceId,
   onChangeAnthropicApiKey,
   onChangeElevenLabsApiKey,
+  onChangeFigmaApiKey,
   onChangeVoiceId,
   onClearKeys,
   onClose,
@@ -37,8 +41,8 @@ export function ApiKeysModal({
           </button>
         </div>
         <p className="font-body text-sm italic text-muted-ink">
-          Stored only in this browser&rsquo;s local storage. Never sent anywhere except directly to Anthropic and
-          ElevenLabs when you test the agent.
+          Stored only in this browser&rsquo;s local storage. Never sent anywhere except directly to Anthropic,
+          ElevenLabs, or Figma when you use the matching feature.
         </p>
 
         <label className={`flex flex-col gap-1.5 ${fieldLabel}`}>
@@ -61,6 +65,18 @@ export function ApiKeysModal({
             value={elevenLabsApiKey}
             onChange={(e) => onChangeElevenLabsApiKey(e.target.value)}
             placeholder="xi-…"
+            className={fieldInput}
+          />
+        </label>
+
+        <label className={`flex flex-col gap-1.5 ${fieldLabel}`}>
+          Figma personal access token
+          <input
+            type="password"
+            autoComplete="off"
+            value={figmaApiKey}
+            onChange={(e) => onChangeFigmaApiKey(e.target.value)}
+            placeholder="figd_…"
             className={fieldInput}
           />
         </label>
