@@ -18,7 +18,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Gallery Guide Studio",
+  title: "CONVERSATION GENERATOR",
   description: "Prototype voice agents for flow-diagram playbooks.",
 };
 

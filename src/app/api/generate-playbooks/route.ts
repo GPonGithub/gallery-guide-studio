@@ -29,14 +29,24 @@ export async function POST(req: Request) {
     promptParts.push(`OVERALL CONTEXT (applies across every stage):\n${masterPlaybook.trim()}`);
   }
 
-  promptParts.push(
-    'Here are example playbooks already written by the student for other stages of this flow. Match their ' +
-    'format, structure, length, and tone exactly for the new playbooks you write below — but do not reuse their ' +
-    'literal content, since each stage is about something different.',
-  );
-  references.forEach((ref, i) => {
-    promptParts.push(`Reference ${i + 1} — "${ref.label}":\n${ref.instructions}`);
-  });
+  if (references.length > 0) {
+    promptParts.push(
+      'Here are example playbooks already written by the student for other stages of this flow. Match their ' +
+      'format, structure, length, and tone exactly for the new playbooks you write below — but do not reuse ' +
+      'their literal content, since each stage is about something different.',
+    );
+    references.forEach((ref, i) => {
+      promptParts.push(`Reference ${i + 1} — "${ref.label}":\n${ref.instructions}`);
+    });
+  } else {
+    promptParts.push(
+      'No example playbooks exist yet for this flow, so establish the format yourself from the overall context ' +
+      'above (and follow any formatting instructions given there). If nothing more specific is implied, default ' +
+      'to this structure for every target: a "## Personality" section, a "## Flow" section, a "## Rules" ' +
+      'section, and an "## Edge cases" section, each a numbered list. Use the exact same structure for every ' +
+      'target below, so every stage of this flow reads consistently.',
+    );
+  }
 
   promptParts.push(
     'Now write one playbook for each of the following target stages. Use the attached image to see what each ' +

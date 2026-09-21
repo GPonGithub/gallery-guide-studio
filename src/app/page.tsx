@@ -42,8 +42,10 @@ export default function Home() {
   const generatePlaybooks = async () => {
     const references = state.boxes.filter((b) => b.instructions.trim());
     const targets = state.boxes.filter((b) => !b.instructions.trim());
-    if (references.length === 0) {
-      window.alert('Write at least one playbook by hand first — there\'s no style to copy yet.');
+    if (references.length === 0 && !state.masterPlaybook.trim()) {
+      window.alert(
+        "Add a master playbook first (or write at least one playbook by hand) — there's no context to generate from yet.",
+      );
       return;
     }
     if (targets.length === 0) {
@@ -83,10 +85,53 @@ export default function Home() {
     }
   };
 
+  const generateSinglePlaybook = async (boxId: string) => {
+    const target = state.boxes.find((b) => b.id === boxId);
+    if (!target) return;
+    const references = state.boxes.filter((b) => b.id !== boxId && b.instructions.trim());
+    if (references.length === 0 && !state.masterPlaybook.trim()) {
+      window.alert(
+        "Add a master playbook first (or write at least one other playbook by hand) — there's no context to generate from yet.",
+      );
+      return;
+    }
+    if (
+      target.instructions.trim() &&
+      !window.confirm('This will replace the current instructions for this playbook. Continue?')
+    ) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/generate-playbooks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          masterPlaybook: state.masterPlaybook,
+          references: references.map((b) => ({ label: b.label, instructions: b.instructions })),
+          targets: [{ label: target.label, x: target.x, y: target.y }],
+          imageDataUrl: state.imageDataUrl,
+          anthropicApiKey: state.anthropicApiKey,
+        }),
+      });
+      const data = (await res.json()) as { playbooks: string[]; error?: string };
+      if (!res.ok || data.error || !data.playbooks?.[0]) {
+        window.alert(data.error ?? 'Generation failed.');
+        return;
+      }
+      const generated = data.playbooks[0];
+      setState((s) => ({
+        ...s,
+        boxes: s.boxes.map((b) => (b.id === boxId ? { ...b, instructions: generated } : b)),
+      }));
+    } catch {
+      window.alert('Generation failed. Check your connection and API key.');
+    }
+  };
+
   return (
     <div className="flex min-h-screen flex-col bg-paper">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b-4 border-ink px-6 py-4">
-        <h1 className="font-display text-2xl tracking-tight text-ink">Gallery Guide Studio</h1>
+        <h1 className="font-display text-2xl tracking-tight text-ink">CONVERSATION GENERATOR</h1>
         <div className="flex items-center gap-2">
           <button onClick={() => setKeysOpen(true)} className={buttonOutline}>
             API keys
@@ -100,7 +145,7 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="grid flex-1 grid-cols-1 gap-6 p-6 lg:grid-cols-[17fr_7fr]">
+      <main className="grid flex-1 grid-cols-1 gap-6 p-6 lg:grid-cols-[minmax(0,191fr)_minmax(0,49fr)]">
         <PlaybookCanvas
           imageDataUrl={state.imageDataUrl}
           imageName={state.imageName}
@@ -114,9 +159,12 @@ export default function Home() {
             setState((s) => ({ ...s, activeBoxId: id }));
             setEditingBoxId(id);
           }}
+          onClearAll={() =>
+            setState((s) => ({ ...s, imageDataUrl: null, imageName: null, boxes: [], activeBoxId: null }))
+          }
         />
 
-        <div className="min-h-[420px] border-2 border-ink bg-paper p-4">
+        <div className="min-h-[420px] min-w-0 border-2 border-ink bg-paper p-4">
           <ChatPanel
             boxes={state.boxes}
             activeBoxId={state.activeBoxId}
@@ -148,6 +196,7 @@ export default function Home() {
               boxes: s.boxes.map((b) => (b.id === editingBox.id ? { ...b, instructions } : b)),
             }))
           }
+          onGeneratePrompt={() => generateSinglePlaybook(editingBox.id)}
           onClose={() => setEditingBoxId(null)}
         />
       )}

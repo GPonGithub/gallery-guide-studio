@@ -13,6 +13,16 @@ type Props = {
 const LONG_PRESS_MS = 550;
 const SAVED_FLASH_MS = 900;
 
+function settingsEqual(a: VoiceSettings, b: VoiceSettings): boolean {
+  return (
+    a.stability === b.stability &&
+    a.similarityBoost === b.similarityBoost &&
+    a.style === b.style &&
+    a.speed === b.speed &&
+    a.useSpeakerBoost === b.useSpeakerBoost
+  );
+}
+
 /**
  * Four save slots. A slot's own state decides what a click does:
  * empty → save the current sliders into it; already holding a preset →
@@ -61,25 +71,30 @@ export function VoicePresetButtons({ presets, currentSettings, onApply, onSave }
 
   return (
     <div className="grid grid-cols-2 content-center gap-1 self-center">
-      {presets.map((preset, i) => (
-        <button
-          key={i}
-          onPointerDown={() => startPress(i)}
-          onPointerUp={() => endPress(i)}
-          onPointerLeave={() => endPress(i)}
-          onClick={() => handleClick(i)}
-          title={preset ? 'Click to load this preset · hold to overwrite with the current settings' : 'Click to save the current settings here'}
-          className={`flex h-[26px] w-[26px] items-center justify-center border-2 font-label text-[10px] font-medium transition-colors duration-100 focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-2 ${
-            justSaved === i
-              ? 'border-ink bg-paper text-ink'
-              : preset
-                ? 'border-ink bg-ink text-paper hover:bg-paper hover:text-ink'
-                : 'border-dashed border-hair text-muted-ink hover:border-ink hover:text-ink'
-          }`}
-        >
-          {justSaved === i ? '✓' : i + 1}
-        </button>
-      ))}
+      {presets.map((preset, i) => {
+        const isActive = preset !== null && settingsEqual(preset, currentSettings);
+        return (
+          <button
+            key={i}
+            onPointerDown={() => startPress(i)}
+            onPointerUp={() => endPress(i)}
+            onPointerLeave={() => endPress(i)}
+            onClick={() => handleClick(i)}
+            title={preset ? 'Click to load this preset · hold to overwrite with the current settings' : 'Click to save the current settings here'}
+            className={`flex h-[26px] w-[26px] items-center justify-center border-2 font-label text-[10px] font-medium transition-colors duration-100 focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-2 ${
+              justSaved === i
+                ? 'border-ink bg-paper text-ink'
+                : isActive
+                  ? 'border-blue-600 bg-blue-600 text-paper hover:bg-blue-700'
+                  : preset
+                    ? 'border-ink bg-ink text-paper hover:bg-paper hover:text-ink'
+                    : 'border-dashed border-hair text-muted-ink hover:border-ink hover:text-ink'
+            }`}
+          >
+            {justSaved === i ? '✓' : i + 1}
+          </button>
+        );
+      })}
     </div>
   );
 }

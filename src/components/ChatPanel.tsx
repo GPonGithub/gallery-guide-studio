@@ -51,16 +51,21 @@ function findChangeStageCall(parts: ChatUIMessage['parts']): ChangeStagePart | u
   );
 }
 
+// The model is told to always write spoken reply text alongside a
+// changeStage call, but it doesn't always comply — when it skips the text,
+// there is no real spoken content for this turn. Do NOT fall back to the
+// tool call's `reason` field here: that's an internal, third-person note
+// ("patient confirmed they want an appointment; proceeding to booking
+// playbook") never meant to be read aloud to the patient, and showing it as
+// if it were dialogue is exactly the "off-script line" bug this guards
+// against. Callers should treat an empty return as "nothing was said" and
+// show their own fallback, not synthesize text from tool internals.
 function getMessageText(parts: ChatUIMessage['parts']): string {
-  const spoken = parts
+  return parts
     .filter((p): p is Extract<ChatUIMessage['parts'][number], { type: 'text' }> => p.type === 'text')
     .map((p) => p.text ?? '')
     .join(' ')
     .trim();
-  if (spoken) return spoken;
-
-  const transition = findChangeStageCall(parts);
-  return (transition?.input?.reason ?? '').trim();
 }
 
 type Props = {
@@ -129,7 +134,7 @@ export function ChatPanel({
     [],
   );
 
-  const { messages, sendMessage, status, error } = useChat<ChatUIMessage>({ transport });
+  const { messages, setMessages, sendMessage, status, stop, error } = useChat<ChatUIMessage>({ transport });
 
   const [inputValue, setInputValue] = useState('');
   const [voiceEnabled, setVoiceEnabled] = useState(true);
@@ -298,7 +303,7 @@ export function ChatPanel({
         </label>
       </div>
 
-      <div className="flex items-stretch gap-2">
+      <div className="flex flex-wrap items-stretch gap-2">
         <VoiceSettingsPanel value={voiceSettings} onChange={onVoiceSettingsChange} />
         <button
           onClick={testVoice}
@@ -315,6 +320,17 @@ export function ChatPanel({
           onApply={onVoiceSettingsChange}
           onSave={onSaveVoicePreset}
         />
+        <button
+          onClick={() => {
+            stop();
+            setMessages([]);
+          }}
+          disabled={messages.length === 0}
+          title="Clear every message in this conversation"
+          className={buttonOutline}
+        >
+          Reset conversation
+        </button>
       </div>
       {voiceTestError && (
         <p className="border-l-4 border-ink pl-2 font-label text-[10px] uppercase tracking-wide text-ink">
@@ -373,21 +389,21 @@ export function ChatPanel({
         {!error && status === 'ready' && (() => {
           const last = messages[messages.length - 1];
           if (!last) return null;
-          // Either the model produced an assistant message with no usable
-          // content, or it produced no assistant message at all (the last
-          // message is still the student's own, unanswered) — both mean the
-          // turn finished with nothing to show.
-          const gotNothing =
-            last.role === 'user' ||
-            (last.role === 'assistant' && !getMessageText(last.parts) && !findChangeStageCall(last.parts));
-          if (!gotNothing) return null;
+          const noReplyText =
+            last.role === 'user' || (last.role === 'assistant' && !getMessageText(last.parts));
+          if (!noReplyText) return null;
+          // The stage-change tag above (if any) is real and already applied —
+          // only the spoken line is missing. Say so honestly rather than
+          // inventing dialogue from the tool call's internal `reason` field.
+          const transitioned = last.role === 'assistant' && Boolean(findChangeStageCall(last.parts));
           return (
             <div className="flex justify-start">
               <div className="max-w-[85%] border-4 border-ink px-3 py-2">
                 <span className="font-label text-[10px] uppercase tracking-widest text-ink">Note — </span>
                 <span className="font-body text-sm text-ink">
-                  The agent finished without sending any text or action for this turn. Try rephrasing, or check your
-                  API key under &ldquo;API keys&rdquo; in the header.
+                  {transitioned
+                    ? 'The agent moved playbooks but didn’t say anything to the patient this turn. Send another message to continue.'
+                    : 'The agent finished without sending any text or action for this turn. Try rephrasing, or check your API key under “API keys” in the header.'}
                 </span>
               </div>
             </div>

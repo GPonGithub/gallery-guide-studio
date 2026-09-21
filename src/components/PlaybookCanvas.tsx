@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PlaybookBox } from '@/lib/types';
-import { detectBlueHotspots, annotateWithMarkers } from '@/lib/detectHotspots';
+import { detectBlueHotspots, annotateWithMarkers, annotateWithCenterMarkers } from '@/lib/detectHotspots';
 import { buttonIcon, buttonOutline, buttonPrimary } from '@/lib/styles';
 
 type Props = {
@@ -15,6 +15,7 @@ type Props = {
   onBoxesChange: (boxes: PlaybookBox[]) => void;
   onSelectBox: (id: string) => void;
   onOpenEditor: (id: string) => void;
+  onClearAll: () => void;
 };
 
 type View = { scale: number; x: number; y: number };
@@ -43,6 +44,7 @@ export function PlaybookCanvas({
   onBoxesChange,
   onSelectBox,
   onOpenEditor,
+  onClearAll,
 }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -51,6 +53,9 @@ export function PlaybookCanvas({
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [isDetecting, setIsDetecting] = useState(false);
   const [view, setView] = useState<View>({ scale: 1, x: 0, y: 0 });
+  const [connections, setConnections] = useState<{ from: string; to: string }[] | null>(null);
+  const [showConnections, setShowConnections] = useState(false);
+  const [isDetectingConnections, setIsDetectingConnections] = useState(false);
   const dragState = useRef<{
     boxId: string;
     mode: 'move' | 'resize';
@@ -87,24 +92,70 @@ export function PlaybookCanvas({
   };
 
   // Scales and centers the image so the whole thing is visible in the
-  // viewport — the "frame the PNG within the frame" reset.
+  // viewport — the "frame the PNG within the frame" reset. Refuses to act on
+  // a not-yet-laid-out viewport (width/height ~0) rather than locking in a
+  // bogus near-zero scale that nothing would ever recalculate afterward.
   const fitToFrame = useCallback(() => {
     const viewport = viewportRef.current;
     const natural = naturalSizeRef.current;
     if (!viewport || !natural || natural.width === 0 || natural.height === 0) return;
-    const rect = viewport.getBoundingClientRect();
-    const scale = clamp(Math.min(rect.width / natural.width, rect.height / natural.height), MIN_SCALE, MAX_SCALE);
+    // clientWidth/clientHeight (content + padding, no border) is the actual
+    // containing block the absolutely-positioned image is placed within —
+    // using the border-box getBoundingClientRect() here would leave the
+    // image consistently off-center by the border width.
+    const width = viewport.clientWidth;
+    const height = viewport.clientHeight;
+    if (width < 2 || height < 2) return;
+    const scale = clamp(Math.min(width / natural.width, height / natural.height), MIN_SCALE, MAX_SCALE);
     setView({
       scale,
-      x: (rect.width - natural.width * scale) / 2,
-      y: (rect.height - natural.height * scale) / 2,
+      x: (width - natural.width * scale) / 2,
+      y: (height - natural.height * scale) / 2,
     });
   }, []);
+
+  // The viewport's CSS Grid track can still be mid-layout the instant the
+  // image finishes decoding — fitting against that would lock in a bogus
+  // scale that nothing ever recalculates afterward. A transient collapsed
+  // width (e.g. exactly the horizontal padding, content width 0) is easy to
+  // mistake for "laid out" since it's non-zero — that false positive is what
+  // let a bad fit slip through and stick. So instead of disarming after one
+  // "good enough" sample, keep re-fitting on every viewport resize until the
+  // user manually pans/zooms (`hasInteractedRef`) — cheap, idempotent while
+  // untouched, and self-correcting no matter how many resize passes it takes
+  // to reach the real final layout.
+  const hasInteractedRef = useRef(false);
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const observer = new ResizeObserver(() => {
+      if (hasInteractedRef.current) return;
+      fitToFrame();
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [fitToFrame]);
 
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;
     naturalSizeRef.current = { width: img.naturalWidth, height: img.naturalHeight };
+    hasInteractedRef.current = false;
     fitToFrame();
+    // The ResizeObserver above only refires when the viewport's own size
+    // *changes* — it can't help if the very first read was wrong for a
+    // reason that isn't a subsequent resize (e.g. a web font swapping in a
+    // frame or two after this fires, briefly-wrong layout during a large
+    // image's decode). Re-running fitToFrame for a few more frames right
+    // after load catches that case too, and is a no-op once layout has
+    // actually settled — self-terminates the moment the user pans/zooms.
+    let frames = 0;
+    const retry = () => {
+      if (hasInteractedRef.current || frames >= 15) return;
+      frames += 1;
+      fitToFrame();
+      requestAnimationFrame(retry);
+    };
+    requestAnimationFrame(retry);
   };
 
   // Zoom by `factor`, keeping the given viewport-relative point fixed on
@@ -113,6 +164,7 @@ export function PlaybookCanvas({
   const zoomBy = useCallback((factor: number, center?: { x: number; y: number }) => {
     const viewport = viewportRef.current;
     if (!viewport) return;
+    hasInteractedRef.current = true;
     const rect = viewport.getBoundingClientRect();
     const pivot = center ?? { x: rect.width / 2, y: rect.height / 2 };
     setView((v) => {
@@ -139,6 +191,7 @@ export function PlaybookCanvas({
         // ctrlKey set — same gesture Figma treats as zoom.
         zoomBy(Math.exp(-e.deltaY * WHEEL_ZOOM_SENSITIVITY), cursor);
       } else {
+        hasInteractedRef.current = true;
         setView((v) => ({ ...v, x: v.x - e.deltaX, y: v.y - e.deltaY }));
       }
     };
@@ -153,6 +206,7 @@ export function PlaybookCanvas({
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest('[data-hotspot]')) return;
     e.preventDefault();
+    hasInteractedRef.current = true;
     panState.current = { startX: e.clientX, startY: e.clientY, origin: view };
 
     const handleMove = (moveEvent: PointerEvent) => {
@@ -185,6 +239,17 @@ export function PlaybookCanvas({
     };
     onBoxesChange([...boxes, newBox]);
     onSelectBox(newBox.id);
+  };
+
+  const clearAll = () => {
+    if (!imageDataUrl && boxes.length === 0) return;
+    const proceed = window.confirm(
+      'This removes the uploaded image and every playbook box, including their written instructions. Continue?',
+    );
+    if (!proceed) return;
+    naturalSizeRef.current = null;
+    setView({ scale: 1, x: 0, y: 0 });
+    onClearAll();
   };
 
   const removeBox = (id: string) => {
@@ -313,6 +378,67 @@ export function PlaybookCanvas({
     }
   };
 
+  // A previously-detected set of connections stops matching reality the
+  // moment a box moves, gets added/removed, or the image changes — drop the
+  // cache so the toggle re-detects instead of showing stale arrows. Comparing
+  // against a remembered signature and adjusting state inline during render
+  // (React's documented pattern for "reset state when an input changes") —
+  // not in an effect — avoids an extra render pass just to clear it.
+  const boxesSignature = `${imageDataUrl ?? ''}::${boxes
+    .map((b) => `${b.id}:${b.x.toFixed(1)},${b.y.toFixed(1)},${b.width.toFixed(1)},${b.height.toFixed(1)}`)
+    .join('|')}`;
+  const [detectedForSignature, setDetectedForSignature] = useState(boxesSignature);
+  if (boxesSignature !== detectedForSignature) {
+    setDetectedForSignature(boxesSignature);
+    setConnections(null);
+    setShowConnections(false);
+  }
+
+  const toggleConnections = async () => {
+    if (showConnections) {
+      setShowConnections(false);
+      return;
+    }
+    if (connections) {
+      setShowConnections(true);
+      return;
+    }
+    if (!imageDataUrl || boxes.length < 2) return;
+    setIsDetectingConnections(true);
+    try {
+      const img = new Image();
+      img.src = imageDataUrl;
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Could not load image'));
+      });
+      const annotatedImageDataUrl = annotateWithCenterMarkers(img, boxes);
+      const res = await fetch('/api/detect-connections', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ annotatedImageDataUrl, count: boxes.length, anthropicApiKey }),
+      });
+      const data = (await res.json()) as { connections: { from: number; to: number }[]; error?: string };
+      if (!res.ok) {
+        window.alert('Could not read connections (check your Anthropic API key under "API keys" and try again).');
+        return;
+      }
+      const resolved = data.connections
+        .map(({ from, to }) => ({ from: boxes[from - 1]?.id, to: boxes[to - 1]?.id }))
+        .filter((c): c is { from: string; to: string } => Boolean(c.from && c.to && c.from !== c.to));
+      if (resolved.length === 0) {
+        window.alert("Couldn't confidently trace any arrows in this image.");
+        return;
+      }
+      setConnections(resolved);
+      setShowConnections(true);
+    } catch {
+      window.alert('Connection detection failed. Try again.');
+    } finally {
+      setIsDetectingConnections(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -331,6 +457,23 @@ export function PlaybookCanvas({
         </button>
         <button onClick={addBox} disabled={!imageDataUrl} className={buttonOutline}>
           + Add playbook box
+        </button>
+        <button
+          onClick={toggleConnections}
+          disabled={!imageDataUrl || boxes.length < 2 || isDetectingConnections}
+          aria-pressed={showConnections}
+          title="Detect the arrows drawn between boxes and show them as an overlay"
+          className={showConnections ? buttonPrimary : buttonOutline}
+        >
+          {isDetectingConnections ? 'Reading connections…' : showConnections ? 'Hide connections' : 'Show connections'}
+        </button>
+        <button
+          onClick={clearAll}
+          disabled={!imageDataUrl && boxes.length === 0}
+          className={buttonOutline}
+          title="Remove the uploaded image and every playbook box"
+        >
+          Clear image &amp; boxes
         </button>
         {imageName && <span className="font-label text-[11px] text-muted-ink">{imageName}</span>}
 
@@ -353,7 +496,14 @@ export function PlaybookCanvas({
             >
               +
             </button>
-            <button onClick={fitToFrame} className={buttonOutline} title="Fit the image back within the frame">
+            <button
+              onClick={() => {
+                hasInteractedRef.current = false;
+                fitToFrame();
+              }}
+              className={buttonOutline}
+              title="Fit the image back within the frame"
+            >
               Reset view
             </button>
           </div>
@@ -369,7 +519,7 @@ export function PlaybookCanvas({
         onDragLeave={() => setIsDraggingFile(false)}
         onDrop={handleDrop}
         onPointerDown={imageDataUrl ? handleBackgroundPointerDown : undefined}
-        className={`relative h-[560px] touch-none overflow-hidden border-2 border-dashed p-3 transition-colors duration-100 ${
+        className={`relative h-[840px] touch-none overflow-hidden border-2 border-dashed p-3 transition-colors duration-100 ${
           isDraggingFile ? 'border-ink bg-ink text-paper' : 'border-hair bg-muted'
         } ${imageDataUrl ? 'cursor-grab active:cursor-grabbing' : ''}`}
       >
@@ -394,9 +544,56 @@ export function PlaybookCanvas({
               src={imageDataUrl}
               alt={imageName ?? 'Flow diagram'}
               onLoad={handleImageLoad}
-              className="block select-none"
+              // Tailwind's preflight resets every <img> to max-width:100%,
+              // which caps this element's own layout width to its container
+              // before our `scale()` transform (in the wrapper above) ever
+              // runs — for a diagram wider than the viewport, that shrinks it
+              // once via the CSS cap and a second time via our own zoom math,
+              // compounding into a far-too-small, top-left-pinned result.
+              // max-w-none removes the cap so our transform is the only thing
+              // controlling size, matching what fitToFrame() actually computes.
+              className="block max-w-none select-none"
               draggable={false}
             />
+
+            {showConnections && connections && (
+              <svg className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true">
+                <defs>
+                  <marker
+                    id="connection-arrowhead"
+                    markerWidth="8"
+                    markerHeight="8"
+                    refX="6"
+                    refY="4"
+                    orient="auto"
+                    markerUnits="userSpaceOnUse"
+                  >
+                    <path d="M0,0 L8,4 L0,8 Z" fill="#7c3aed" />
+                  </marker>
+                </defs>
+                {connections.map(({ from, to }, i) => {
+                  const fromBox = boxes.find((b) => b.id === from);
+                  const toBox = boxes.find((b) => b.id === to);
+                  if (!fromBox || !toBox) return null;
+                  const x1 = fromBox.x + fromBox.width / 2;
+                  const y1 = fromBox.y + fromBox.height / 2;
+                  const x2 = toBox.x + toBox.width / 2;
+                  const y2 = toBox.y + toBox.height / 2;
+                  return (
+                    <line
+                      key={`${from}-${to}-${i}`}
+                      x1={`${x1}%`}
+                      y1={`${y1}%`}
+                      x2={`${x2}%`}
+                      y2={`${y2}%`}
+                      stroke="#7c3aed"
+                      strokeWidth={3}
+                      markerEnd="url(#connection-arrowhead)"
+                    />
+                  );
+                })}
+              </svg>
+            )}
 
             {boxes.map((box) => {
               const isActive = box.id === activeBoxId;
@@ -412,7 +609,7 @@ export function PlaybookCanvas({
                       opacity: isActive ? 1 : 0,
                       transition: 'opacity 100ms ease',
                     }}
-                    className="pointer-events-none absolute border-4 border-ink"
+                    className="pointer-events-none absolute border-[12px] border-ink"
                   />
 
                   <div
@@ -426,7 +623,7 @@ export function PlaybookCanvas({
                       width: `${box.width}%`,
                       height: `${box.height}%`,
                     }}
-                    className="absolute cursor-pointer border-2 border-dashed border-ink/70 bg-ink/0 transition-colors duration-100 hover:bg-ink/10"
+                    className="absolute cursor-pointer border-[6px] border-dashed border-ink/70 bg-ink/0 transition-colors duration-100 hover:bg-ink/10"
                   >
                     <div
                       onPointerDown={(e) => startDrag(e, box, 'resize')}
@@ -438,13 +635,13 @@ export function PlaybookCanvas({
                     data-hotspot
                     style={{
                       left: `${box.x}%`,
-                      top: `calc(${box.y}% - 30px)`,
+                      top: `calc(${box.y}% - 120px)`,
                     }}
-                    className="absolute flex items-center gap-1 border-2 border-ink bg-paper px-1 py-0.5"
+                    className="absolute flex items-center gap-4 border-2 border-ink bg-paper px-4 py-2"
                   >
                     <span
                       onPointerDown={(e) => startDrag(e, box, 'move')}
-                      className="cursor-grab select-none px-0.5 font-label text-[11px] text-muted-ink active:cursor-grabbing"
+                      className="cursor-grab select-none px-2 font-label text-[44px] text-muted-ink active:cursor-grabbing"
                       title="Drag to move"
                     >
                       ⋮⋮
@@ -454,14 +651,14 @@ export function PlaybookCanvas({
                       onChange={(e) => renameBox(box.id, e.target.value)}
                       onPointerDown={(e) => e.stopPropagation()}
                       onClick={(e) => e.stopPropagation()}
-                      className="w-28 border-none bg-transparent font-label text-[11px] text-ink outline-none"
+                      className="w-[448px] border-none bg-transparent font-label text-[44px] text-ink outline-none"
                     />
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         removeBox(box.id);
                       }}
-                      className="px-0.5 font-label text-xs text-muted-ink transition-colors duration-100 hover:text-ink"
+                      className="px-2 font-label text-[48px] text-muted-ink transition-colors duration-100 hover:text-ink"
                       title="Delete"
                     >
                       ×

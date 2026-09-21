@@ -1,16 +1,33 @@
 # Gallery Guide Studio — Session Handoff
 
 This picks up after the app was built from `REBUILD_SPEC.md` and then extended
-in a long follow-up session. Read `REBUILD_SPEC.md` first for the original
-architecture and the latency-tuning rationale — it's still accurate for the
-chat/voice pipeline. This file covers everything added or changed **after**
-that initial build, so a fresh session can continue without re-deriving it.
+across two long follow-up sessions. Read `REBUILD_SPEC.md` first for the
+original architecture and the latency-tuning rationale — it's still accurate
+for the chat/voice pipeline. This file covers everything added or changed
+**after** that initial build, in chronological order, so a fresh session can
+continue without re-deriving any of it.
 
 ## Stack (unchanged from spec)
 
 Next.js App Router + TypeScript, Tailwind CSS v4, AI SDK (`ai` package) calling
 Anthropic directly, ElevenLabs via a raw `fetch` proxy. All state in browser
-`localStorage`. No backend database, no Vercel account.
+`localStorage`. No backend database.
+
+## Repo / GitHub
+
+Pushed to **https://github.com/GPonGithub/gallery-guide-studio** (public,
+`origin/main`). `.env*` is gitignored.
+
+**⚠️ As of this handoff, the working tree has uncommitted changes** covering
+everything in sections 9–12 below (git status shows modifications to
+`src/app/api/generate-playbooks/route.ts`, `src/app/page.tsx`,
+`src/components/ChatPanel.tsx`, `src/components/PlaybookCanvas.tsx`,
+`src/components/PlaybookEditorModal.tsx`) — nothing has been committed or
+pushed since the initial commit. There are also two **untracked** files at the
+repo root, `APPOINTMENT FLOW CHART_02.png` and `APPOINTMENT FLOW CHART_03.png`
+— these look like the user's own reference images dropped into the project
+directory (not created by any session work); leave them alone unless the user
+says otherwise, and don't `git add -A` blindly.
 
 ## How to run it
 
@@ -18,182 +35,230 @@ Anthropic directly, ElevenLabs via a raw `fetch` proxy. All state in browser
 npm run dev
 ```
 
-Or use this session's `run` skill / the Browser pane's `preview_start` with
-name `gallery-guide-studio` (config already exists at `.claude/launch.json`).
-The dev server's port changes each time it restarts (autoPort) — check the
-tool's response for the current URL rather than assuming one.
+Or use the Browser pane's `preview_start` with name `gallery-guide-studio`
+(config already exists at `.claude/launch.json`). The dev server's port
+changes every restart (autoPort) — check the tool's response for the current
+URL rather than assuming one.
 
 `.env.local` has empty `ANTHROPIC_API_KEY` / `ELEVENLABS_API_KEY` placeholders
-and is **not** the primary way keys get supplied anymore (see below) — it's
-just a fallback.
+and is **not** the primary way keys get supplied anymore (see §1) — it's just
+a fallback.
 
 ---
 
-## What changed after the initial build, in order
+## What changed, in order
 
 ### 1. In-app API keys panel (replaces relying solely on `.env.local`)
 
-- New header button **"API keys"** opens `ApiKeysModal.tsx` — fields for
+- Header button **"API keys"** opens `ApiKeysModal.tsx` — fields for
   Anthropic key, ElevenLabs key, ElevenLabs voice ID.
-- These are now part of persisted `StudioState` (`anthropicApiKey`,
-  `elevenLabsApiKey`, `voiceId` in `src/lib/types.ts` /
-  `src/lib/storage.ts`), so they survive refresh like everything else.
+- Persisted in `StudioState` (`anthropicApiKey`, `elevenLabsApiKey`,
+  `voiceId`), survives refresh.
 - **"Clear all keys"** wipes both API keys but deliberately keeps the voice
   ID.
-- Every server route that needs a key now accepts it from the client
-  (request body for chat/detect-labels/generate-playbooks, query param for
-  the `GET /api/tts` route since `<audio src>` can't send custom headers)
-  and falls back to the `.env.local` value only if the client didn't send
-  one. See `src/lib/anthropicModel.ts` for the Anthropic side of this.
+- Every server route accepts the key from the client (body for
+  chat/detect-labels/generate-playbooks, query param for the `GET /api/tts`
+  route since `<audio src>` can't send headers) and falls back to
+  `.env.local` only if the client didn't send one (`src/lib/anthropicModel.ts`).
 
 ### 2. Fixed: auto-detected playbook names not matching the diagram
 
-Root cause: boxes were immediately given fake sequential names
-("Playbook 1", "Playbook 2"…) and only *maybe* overwritten later by a vision
-call that described button positions in text ("centered at roughly X%, Y%")
-— which the model often couldn't use reliably, especially for stacked/nearby
-cards.
+Root cause: boxes got fake sequential names immediately, only *maybe*
+overwritten by a vision call describing positions in text, which the model
+couldn't reliably map back to labels.
 
-Fix (`src/lib/detectHotspots.ts`, `src/components/PlaybookCanvas.tsx`):
-- Added `annotateWithMarkers()` — draws numbered red circle markers directly
-  onto a copy of the uploaded image, one per detected button, positioned
-  just above it.
-- `/api/detect-labels` now reads that annotated image and is told "marker N
-  → read the label at the top of that marker's card," which lets the model
-  use real visual/spatial reasoning instead of parsing percentages.
-- Boxes are **never** given a name until the label-reading step actually
-  returns one. If it fails (bad/missing key, wrong count returned), the user
-  gets a clear alert and boxes are named `Untitled box N` — never something
-  that looks like a real detected label but isn't.
+Fix (`src/lib/detectHotspots.ts`, `PlaybookCanvas.tsx`): `annotateWithMarkers()`
+draws numbered red circle markers onto a copy of the image; `/api/detect-labels`
+is told "marker N → read the label at the top of that marker's card" — real
+visual reasoning instead of percentage parsing. Boxes are never named until
+the label-reading step actually returns something; failure → clear alert +
+`Untitled box N`, never a fake-looking label.
 
 ### 3. Fixed: chat replies silently not appearing
 
-Two distinct bugs, found by building a mock `MockLanguageModelV4` (from
-`ai/test`) to reproduce exact Anthropic response shapes without needing a
-real API key — this technique is worth reusing if similar chat bugs show up
-again.
+Two distinct bugs, found by mocking `MockLanguageModelV4` (from `ai/test`) to
+reproduce exact Anthropic response shapes without a real key — reuse this
+technique for future chat bugs.
 
-- **Bug A**: with the spec's required single-step `stopWhen` (Priority
-  Directive #1), a tool's `execute` never actually runs, so a
-  `tool-changeStage` part never reaches `output-available` — it stops at
-  `input-available` forever. The client only checked for `output-available`,
-  so any turn where the model called `changeStage` rendered nothing. Fixed
-  in `ChatPanel.tsx` by treating `input-available` as the terminal state for
-  this tool (it's a pure client-side echo tool anyway, per the spec).
-- **Bug B**: if a turn finishes with *no* text and *no* tool call at all
-  (`finishReason` something odd, or a too-tight token budget), `useChat`
-  never even creates an assistant message entry — `messages` just stays as
-  it was. Added a safeguard banner in `ChatPanel.tsx`: if `status === 'ready'`
-  and the last message is still the student's own (no reply ever arrived),
-  show an amber "agent finished without sending a reply" note instead of
-  staying silent. Also bumped `maxOutputTokens` 300 → 1024 in
-  `src/app/api/chat/route.ts` (300 was plausibly too tight) and added
-  server-side `onFinish` logging of `finishReason`/`usage` for next time.
+- **Bug A**: with the spec's single-step `stopWhen`, a tool's `execute` never
+  runs, so `tool-changeStage` sticks at `input-available` and never reaches
+  `output-available`. Client only checked for the latter → silent no-op.
+  Fixed in `ChatPanel.tsx` by treating `input-available` as terminal for this
+  tool.
+- **Bug B**: a turn with no text and no tool call creates no assistant
+  message at all. Added an amber "agent finished without sending a reply"
+  fallback banner in `ChatPanel.tsx`, bumped `maxOutputTokens` 300 → 1024 in
+  `src/app/api/chat/route.ts`, added server-side `onFinish` logging.
 
 ### 4. Mic behavior fixes (`ChatPanel.tsx`)
 
-- `recognition.continuous` was `false`, so the browser silently stopped
-  listening after any pause — changed to `true`; mic now stays on until you
-  click it again or hit Send.
-- `handleSend` now calls `recognitionRef.current?.stop()` and clears the
-  input text.
-- **Known Web Speech API race**: clicking the mic again very soon after
-  Send/stop can throw `InvalidStateError` because the previous session's
-  teardown (`stop()` → `onend`) is async. Fixed with try/catch around
-  `recognition.start()` that auto-retries up to 3× with a 250ms backoff
-  before giving up and alerting. Confirmed the underlying mechanism is
-  correct; could not fully reproduce with real mic audio since this
-  environment's browser pane blocks mic access.
+- `recognition.continuous` `false` → `true` (was silently stopping after any
+  pause).
+- `handleSend` calls `recognitionRef.current?.stop()` and clears input.
+- **Known Web Speech API race**: restarting the mic soon after stop can throw
+  `InvalidStateError` (async teardown). Fixed with try/catch + auto-retry
+  (up to 3×, 250ms backoff) around `recognition.start()`.
 
 ### 5. Full visual redesign — "Minimalist Monochrome"
 
-Applied a strict black/white editorial design system across every component.
-Key pieces:
+Strict black/white editorial system across every component:
 
-- **Fonts** (`src/app/layout.tsx`): Playfair Display (headings), Source
-  Serif 4 (body), JetBrains Mono (labels/buttons/chrome) via `next/font`.
-- **Tokens** (`src/app/globals.css`): `--color-ink` (#000), `--color-paper`
-  (#fff), `--color-muted` (#f5f5f5), `--color-muted-ink` (#525252),
-  `--color-hair` (#e5e5e5) exposed as Tailwind utilities (`bg-ink`,
-  `text-paper`, etc.) via `@theme inline`. Also a subtle global horizontal-line
-  texture overlay and `font-display`/`font-body`/`font-label` utilities.
-- **Centralized style primitives** (`src/lib/styles.ts`): `buttonPrimary`,
-  `buttonOutline`, `buttonGhost`, `buttonIcon`, `fieldInput`, `fieldLabel` —
-  every button/input across all components uses these instead of one-off
-  Tailwind strings, so the look lives in one file.
-- Zero border-radius, zero shadows, everywhere. Emphasis via **inversion**
-  (black-on-white / white-on-black) instead of accent colors — e.g. user chat
-  bubbles are solid black, hard errors are an inverted black block, warnings
-  are a heavy 4px-bordered box. No red/amber/cyan/fuchsia/slate anywhere
-  anymore.
-- **Bug found and fixed during this pass**: an unconditional `outline-none`
-  on form fields permanently pinned the shared Tailwind CSS variable
-  `--tw-outline-style` to `none`, which the `focus-visible:outline-*` utility
-  classes read from but never reset — so no focus ring ever actually
-  rendered, for any input, anywhere. Removed the unconditional `outline-none`;
-  confirmed via `getComputedStyle` and real keyboard Tab navigation that the
-  3px black focus ring now works everywhere.
-- Also fixed a text-overlap bug in the voice-settings sliders: mono uppercase
-  labels ("STABILITY", "SIMILARITY") didn't fit the compact 2-column grid at
-  the new font — shortened to "Stab"/"Sim"/etc. and loosened tracking.
+- **Fonts** (`layout.tsx`): Playfair Display / Source Serif 4 / JetBrains
+  Mono via `next/font`.
+- **Tokens** (`globals.css`): `--color-ink` #000, `--color-paper` #fff,
+  `--color-muted` #f5f5f5, `--color-muted-ink` #525252, `--color-hair` #e5e5e5,
+  exposed via `@theme inline`. Subtle global texture overlay.
+- **Centralized primitives** (`src/lib/styles.ts`): `buttonPrimary`,
+  `buttonOutline`, `buttonGhost`, `buttonIcon`, `fieldInput`, `fieldLabel`,
+  `panel` — every component uses these.
+- Zero border-radius, zero shadows. Emphasis via inversion, not color.
+- **Bug found & fixed**: an unconditional `outline-none` on `fieldInput`
+  permanently pinned the shared `--tw-outline-style` CSS variable to `none`,
+  which `focus-visible:outline-*` reads but never resets — no focus ring ever
+  rendered, anywhere. Removed the unconditional class; verified via
+  `getComputedStyle` + real Tab navigation.
+- Fixed slider-label overlap (mono uppercase didn't fit) — shortened labels,
+  loosened tracking.
 
 ### 6. Voice settings panel + presets + test button
 
-- `VoiceSettingsPanel.tsx` — 4 sliders (Stability, Similarity, Style, Speed)
-  + a Speaker Boost checkbox, matching ElevenLabs' actual `voice_settings`
-  API fields exactly (`stability`, `similarity_boost`, `style`, `speed`,
-  `use_speaker_boost` — confirmed via their docs; ranges are 0–1 for the
-  first three, 0.7–1.2 for speed — narrowed from the API's full 0.25–4.0
-  range since that's ElevenLabs' own recommendation for conversational
-  agents rather than one-off narration).
-- **"Test voice" button** next to the panel — plays "Hi there, this is what
-  I sound like right now. Pretty good, right?" through `/api/tts` using the
-  current slider values, so you can adjust-then-test in a loop.
-- **Four preset slots** (`VoicePresetButtons.tsx`) to the right of Test
-  Voice — click an empty slot to save current settings into it, click a
-  filled slot to load it back onto the sliders, **hold** a filled slot
-  (~550ms) to overwrite it with current settings. Stored in
-  `StudioState.voicePresets` (array of 4, nullable), persisted like
-  everything else.
-- `/api/tts/route.ts` now builds the ElevenLabs `voice_settings` object from
-  query params sent by the client.
+- `VoiceSettingsPanel.tsx` — 4 sliders (Stability/Similarity/Style/Speed) +
+  Speaker Boost checkbox, matching ElevenLabs' `voice_settings` fields
+  exactly.
+- **"Test voice"** button plays a fixed test line through `/api/tts` using
+  current slider values.
+- **4 preset slots** (`VoicePresetButtons.tsx`) — click empty to save, click
+  filled to load, hold (~550ms) to overwrite. Stored in
+  `StudioState.voicePresets`, persisted.
 
-### 7. Layout: chat panel narrowed
+### 7. Layout: chat panel narrowed (round 1)
 
-`src/app/page.tsx`'s grid went from `grid-cols-[1.4fr_1fr]` to
-`grid-cols-[17fr_7fr]` — this exact ratio makes the chat column's rendered
-width precisely 70% of what it was (30% narrower), with all freed space
-going to the canvas column. (Verified by measuring actual rendered widths,
-not just eyeballing the ratio.)
+Grid went `1.4fr_1fr` → `17fr_7fr` (chat column ≈70% of original width, 30%
+narrower), freed space to the canvas column.
 
 ### 8. Flow-diagram canvas: pan/zoom infinite canvas
 
-`PlaybookCanvas.tsx` was restructured into a Figma-like infinite canvas:
+`PlaybookCanvas.tsx` restructured into a Figma-like infinite canvas:
 
-- Fixed-height (`h-[560px]`) `overflow-hidden` viewport. The image renders
-  at its natural pixel size in an absolutely-positioned layer with
-  `transform: translate(x,y) scale(scale)`, `transform-origin: 0 0`.
-- **Scroll / trackpad swipe** → pan. **Ctrl/Cmd+scroll or pinch** → zoom
-  toward the cursor position (pinch is reported as `wheel` + `ctrlKey` by
-  browsers). Implemented via a native (non-passive) `wheel` listener in a
-  `useEffect`, not React's `onWheel`, because passive-listener ambiguity
-  makes `preventDefault()` unreliable there.
-- **Click-drag on empty canvas** → pan. Hotspot elements are marked with a
-  `data-hotspot` attribute so the pan handler's
-  `target.closest('[data-hotspot]')` check excludes them — dragging a
-  hotspot's own move/resize handles still works exactly as before and never
-  triggers canvas panning.
-- **+ / − zoom buttons** and a live percentage readout in the toolbar.
-- **"Reset view" button** — computes a contain-fit scale
-  (`min(viewportW/naturalW, viewportH/naturalH)`) and centers the image;
-  also runs automatically whenever a new image loads.
-- Existing hotspot drag/resize math (`startDrag` in the same file) needed
-  **zero changes** — it already computed deltas as
-  `(screen-space pointer delta) / (element's current getBoundingClientRect()
-  size)`, which is scale-invariant by construction. Verified this explicitly
-  by dragging a hotspot at a non-100% zoom level and confirming only the
-  hotspot moved (image position on screen unchanged), and separately that
-  background-drag only pans (box position in storage unchanged).
+- Fixed-height `overflow-hidden` viewport; image in an absolutely-positioned
+  layer with `transform: translate(x,y) scale(scale)`, `transform-origin: 0 0`.
+- Scroll/swipe → pan. Ctrl/Cmd+scroll or pinch → zoom toward cursor. Native
+  (non-passive) `wheel` listener in `useEffect`, not React's `onWheel`
+  (passive-listener ambiguity breaks `preventDefault()` there).
+- Click-drag on empty canvas → pan; hotspots marked `data-hotspot` so the pan
+  handler's `closest('[data-hotspot]')` check excludes them.
+- `+`/`−` zoom buttons, live percentage readout, **"Reset view"** button.
+- Hotspot drag/resize math needed zero changes — already scale-invariant
+  (screen-space delta / current `getBoundingClientRect()` size).
+
+---
+
+### 9. GitHub push + layout narrowed again (round 2)
+
+- Repo created and pushed: `gh repo create --source=. --remote=origin --push`
+  → https://github.com/GPonGithub/gallery-guide-studio.
+- User asked to narrow the chat panel **and voice controls** by another 30%
+  on top of round 1. Current grid in `page.tsx`:
+  `lg:grid-cols-[minmax(0,191fr)_minmax(0,49fr)]` — this specific
+  `minmax(0, Nfr)` form, not bare `fr`, was required (see gotcha below).
+- **Gotcha discovered**: bare `fr` tracks on a CSS Grid respect the content's
+  *intrinsic* min-width as a floor (`min-width: auto` default) — so narrowing
+  the ratio alone silently did nothing, and looked exactly like a caching bug
+  (checked fresh tabs, fresh ports, cleared `.next`, all identical). Fixed
+  with `minmax(0, Nfr)` on both tracks + `min-w-0` on the chat wrapper div.
+  That then made the voice-controls row overflow/overlap at the new narrower
+  width — fixed by adding `flex-wrap` to that row in `ChatPanel.tsx`.
+
+### 10. Playbook editor modal: resized + basic-instructions template + per-box generate
+
+`PlaybookEditorModal.tsx`:
+
+- Resized 150% taller / 100% wider: `max-w-lg`→`max-w-5xl` (512px→1024px
+  exact), textarea `h-56`→`h-[560px]` (224px→560px exact).
+- New **"+ Basic instructions"** button (`buttonOutline`) inserts a
+  `## Personality` / `## Flow` / `## Rules` / `## Edge cases` numbered-list
+  template (`BASIC_INSTRUCTIONS_TEMPLATE` constant), appended to existing
+  content if any.
+- New **"Generate prompt"** button (`buttonPrimary`) next to it, with local
+  `isGenerating` state — calls a new `onGeneratePrompt: () => Promise<void>`
+  prop, which `page.tsx` wires to a new `generateSinglePlaybook(boxId)`
+  function (separate from the existing bulk `generatePlaybooks()`). Confirms
+  before overwriting if the box already has content. Caption text: "Generate
+  prompt updates only this playbook, using your master playbook and any
+  others as reference."
+
+### 11. Relaxed the "need a hand-written reference" requirement
+
+Both `generatePlaybooks()` and `generateSinglePlaybook()` in `page.tsx` used
+to refuse to run if zero boxes had hand-written instructions. Changed the
+guard to `references.length === 0 && !state.masterPlaybook.trim()` — so a
+master playbook alone is now enough context; only block if *both* are empty.
+
+`src/app/api/generate-playbooks/route.ts` updated to match: the "match
+reference style" prompt block is now conditional on `references.length > 0`;
+added an `else` branch telling the model to establish the format itself from
+the master-playbook context, defaulting to the same
+Personality/Flow/Rules/Edge-cases structure (consistent with §10's template)
+when there's no reference and nothing more specific implied.
+
+### 12. Fixed: Reset View / initial auto-fit computing garbage scale
+
+**Bug**: `fitToFrame()` (the "frame the PNG within the frame" logic) was
+sometimes called before the CSS Grid viewport had finished layout, reading a
+near-zero `getBoundingClientRect()` and locking in a `scale` clamped to
+`MIN_SCALE` (0.1) that nothing ever recalculated — reproducible on a real
+complex diagram (2400×900, 18 boxes): expected fit was 39.6%, actual was
+stuck at 10% (or occasionally the un-fit default `scale(1)`), and manually
+clicking Reset View afterward always fixed it — proving `fitToFrame()`'s math
+was correct and the bug was purely about *timing* of the first call.
+
+- First attempt (double `requestAnimationFrame`) was tested and found
+  insufficient — rAF can stall while the Browser pane is hidden/backgrounded,
+  a real robustness concern beyond just this test environment.
+- **Final fix** (`PlaybookCanvas.tsx`): `fitToFrame()` itself now refuses to
+  act on a near-zero viewport (`rect.width < 2 || rect.height < 2`) so no
+  caller can ever lock in a bogus scale. A `ResizeObserver` watches the
+  viewport and retries `fitToFrame()` whenever its real layout size changes.
+  Because `ResizeObserver` only fires on an actual size *change* — if the
+  viewport happens to already be at its final size when observed, it may
+  never fire again — `handleImageLoad` explicitly re-arms it
+  (`unobserve`+`observe`) whenever its own immediate `fitToFrame()` attempt
+  didn't yet see a usable size, forcing one more guaranteed "initial
+  observation" callback per the ResizeObserver spec.
+- **Verified live** in the browser with a fresh 2400×900/18-box test image
+  (uploaded via a synthetic `DataTransfer`, not manually): the very first
+  render after upload landed at exactly `scale(0.395592)`,
+  `translate(0px, 101.983px)` — the mathematically correct centered fit,
+  matching what Reset View itself produces — with no manual click needed.
+  Reset View re-tested afterward reproduces the identical transform.
+  Typecheck/lint/build all pass.
+
+### 13. Added: "Clear image & boxes" button
+
+`PlaybookCanvas.tsx` — new toolbar button right after "+ Add playbook box":
+
+```tsx
+const clearAll = () => {
+  if (!imageDataUrl && boxes.length === 0) return;
+  const proceed = window.confirm(
+    'This removes the uploaded image and every playbook box, including their written instructions. Continue?',
+  );
+  if (!proceed) return;
+  naturalSizeRef.current = null;
+  setView({ scale: 1, x: 0, y: 0 });
+  onClearAll();
+};
+```
+
+Disabled when there's nothing to clear. New `onClearAll` prop wired in
+`page.tsx` to reset `imageDataUrl`, `imageName`, `boxes`, `activeBoxId` to
+empty. **Typecheck/lint/build all pass**, but the live confirm-dialog click
+flow was not exercised end-to-end in the browser before the session was
+paused (was mid-test — uploaded a synthetic SVG and clicked "+ Add playbook
+box" to set up the scenario — when the user interrupted with "stop"). Worth a
+quick manual click-through before considering it fully verified, though the
+code path is simple and the surrounding parts (state reset shape) are
+identical to patterns already proven elsewhere in `page.tsx`.
 
 ---
 
@@ -202,51 +267,62 @@ not just eyeballing the ratio.)
 ```
 src/
   app/
-    layout.tsx              — fonts (Playfair/Source Serif/JetBrains Mono)
-    globals.css              — design tokens, texture, base styles
-    page.tsx                 — header, grid layout, all modals wired up
+    layout.tsx               — fonts (Playfair/Source Serif/JetBrains Mono)
+    globals.css               — design tokens, texture, base styles
+    page.tsx                  — header, grid layout, all modals wired up,
+                                 generatePlaybooks(), generateSinglePlaybook()
     api/
-      chat/route.ts           — streamText + changeStage tool
-      detect-labels/route.ts  — marker-based vision label reading
-      generate-playbooks/route.ts
-      tts/route.ts             — GET, streams ElevenLabs, voice_settings from query
+      chat/route.ts            — streamText + changeStage tool
+      detect-labels/route.ts   — marker-based vision label reading
+      generate-playbooks/route.ts — bulk + single, reference-optional
+      tts/route.ts              — GET, streams ElevenLabs, voice_settings from query
   components/
-    PlaybookCanvas.tsx        — pan/zoom canvas, hotspot CRUD, auto-detect
-    ChatPanel.tsx             — useChat, mic, TTS playback, voice settings row
-    VoiceSettingsPanel.tsx    — 4 sliders + speaker boost checkbox
-    VoicePresetButtons.tsx    — 4 save/load/overwrite slots
-    PlaybookEditorModal.tsx   — per-box instructions, autosave
-    MasterPlaybookModal.tsx   — global context, autosave
-    ApiKeysModal.tsx          — key entry + clear
+    PlaybookCanvas.tsx         — pan/zoom canvas, hotspot CRUD, auto-detect,
+                                  clearAll()
+    ChatPanel.tsx              — useChat, mic, TTS playback, voice settings row
+    VoiceSettingsPanel.tsx     — 4 sliders + speaker boost checkbox
+    VoicePresetButtons.tsx     — 4 save/load/overwrite slots
+    PlaybookEditorModal.tsx    — per-box instructions, basic-instructions
+                                  template, per-box "Generate prompt"
+    MasterPlaybookModal.tsx    — global context, autosave
+    ApiKeysModal.tsx           — key entry + clear
   lib/
-    types.ts                  — StudioState, PlaybookBox, VoiceSettings
-    storage.ts                 — localStorage load/save, defaults
-    styles.ts                  — buttonPrimary/Outline/Ghost/Icon, fieldInput, panel
-    detectHotspots.ts          — blue-button CV detection + marker annotation
-    anthropicModel.ts          — client-key-or-env-fallback provider builder
+    types.ts                   — StudioState, PlaybookBox, VoiceSettings
+    storage.ts                  — localStorage load/save, defaults
+    styles.ts                   — buttonPrimary/Outline/Ghost/Icon, fieldInput, panel
+    detectHotspots.ts           — blue-button CV detection + marker annotation
+    anthropicModel.ts           — client-key-or-env-fallback provider builder
 ```
 
 ## Known limitations (carried over from REBUILD_SPEC.md, still true)
 
 - No knowledge-base/PDF upload, no TouchDesigner/OSC authoring, no
-  multi-user — all out of scope per the original vision, not implemented.
+  multi-user — out of scope, not implemented.
 - No Figma live-import (org Figma seat licensing issue) — PNG export +
   auto-detect is the workflow.
-- No truncation-detection heuristic (was built, then removed upstream of
-  this session) — worth revisiting if truncated replies show up.
+- No truncation-detection heuristic (built, then removed upstream of this
+  session) — worth revisiting if truncated replies show up.
 
-## Things to verify with a real API key (this session's browser sandbox blocks mic + can't hold real keys)
+## Things to verify with a real API key / real browser (this session's tools block mic + can't hold real keys)
 
-- Real end-to-end voice test with a live ElevenLabs key (only tested via
-  mocks and "no key configured" error paths here).
-- Real microphone continuous-listening behavior and the restart-race fix
-  under actual audio input (mic access is blocked in this session's browser
-  pane, so only the code path and error handling were verified, not real
-  speech capture).
+- Real end-to-end voice test with a live ElevenLabs key.
+- Real microphone continuous-listening + restart-race fix under actual audio
+  input (mic access blocked in this session's browser pane).
 - Auto-detect label reading accuracy on the user's actual uploaded diagrams
-  with a working Anthropic key (verified the mechanism and prompt design
-  thoroughly with synthetic test images and mocks, but not the user's real
-  files with a real key in this session).
+  with a working Anthropic key.
+- **"Clear image & boxes" button** (§13) — implemented and type/lint/build
+  clean, but not yet clicked through live with the confirm dialog.
+
+## Immediate next step for a fresh session
+
+1. Confirm with the user whether the uncommitted changes (git status —
+   5 modified files, see "Repo / GitHub" above) should be committed/pushed.
+2. If continuing verification work: reload the dev server, clear
+   `localStorage` (`gallery-guide-studio:v1`), upload a test image, add a
+   playbook box, click "Clear image & boxes", confirm the dialog, and check
+   both the image and box are gone. Clean up any synthetic test files
+   afterward (mirror the pattern used throughout this session — don't leave
+   test images in `public/` or test state in the dev browser's localStorage).
 
 ## Session state notes
 
@@ -254,5 +330,7 @@ src/
   works; check the current preview/run result.
 - Browser localStorage key: `gallery-guide-studio:v1`. Test sessions in this
   environment repeatedly wrote and cleared this key with synthetic data —
-  the user's own browser (wherever they've actually been testing) holds
-  their real state, separate from this session's sandboxed browser pane.
+  the user's own browser holds their real state, separate from this
+  session's sandboxed browser pane.
+- Two untracked PNGs (`APPOINTMENT FLOW CHART_02.png`, `_03.png`) sit at the
+  repo root — not created by this session, don't touch without asking.
