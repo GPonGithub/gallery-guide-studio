@@ -18,14 +18,19 @@ export const defaultState: StudioState = {
   imageName: null,
   boxes: [],
   activeBoxId: null,
+  activeStepIndex: 0,
+  variables: {},
   voiceId: DEFAULT_VOICE_ID,
   voiceSettings: DEFAULT_VOICE_SETTINGS,
   voicePresets: [null, null, null, null],
   masterPlaybook: '',
+  designerInitials: '',
   anthropicApiKey: '',
   elevenLabsApiKey: '',
   figmaApiKey: '',
   figmaFileUrl: '',
+  imagePixelSize: null,
+  figmaWriteDirty: false,
 };
 
 export function loadState(): StudioState {

@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 12px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 12px;
+    color: #1a1a1a;
+  }
+  h1 {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0 0 10px;
+  }
+  label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #555;
+    margin: 10px 0 4px;
+  }
+  input[type="text"], input[type="password"] {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+  .hint {
+    font-size: 10px;
+    color: #888;
+    margin-top: 3px;
+  }
+  .listenRow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 14px 0 0;
+  }
+  .listenRow label {
+    display: inline;
+    margin: 0;
+    text-transform: none;
+    font-weight: 400;
+    font-size: 11px;
+    color: #1a1a1a;
+    letter-spacing: normal;
+  }
+  #jobStatus {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #18a0fb;
+    min-height: 14px;
+  }
+  button {
+    margin-top: 14px;
+    width: 100%;
+    padding: 9px 10px;
+    border: none;
+    border-radius: 6px;
+    background: #18a0fb;
+    color: white;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled {
+    background: #b6b6b6;
+    cursor: not-allowed;
+  }
+  #log {
+    margin-top: 14px;
+    height: 260px;
+    overflow-y: auto;
+    background: #f5f5f5;
+    border-radius: 6px;
+    padding: 8px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+  <h1>Playbook Builder</h1>
+
+  <label for="initials">Designer initials</label>
+  <input id="initials" type="text" placeholder="GP" maxlength="4" />
+
+  <label for="apiKey">Anthropic API key</label>
+  <input id="apiKey" type="password" placeholder="sk-ant-…" autocomplete="off" />
+  <div class="hint">Stored locally to this plugin, on this machine — never sent anywhere except directly to Anthropic.</div>
+
+  <button id="runBtn">Grow &amp; populate</button>
+
+  <div class="listenRow">
+    <input id="listenToggle" type="checkbox" checked />
+    <label for="listenToggle">Listen for Generate Steps requests from the app</label>
+  </div>
+  <div id="jobStatus"></div>
+
+  <div id="log"></div>
+
+<script>
+  const initialsEl = document.getElementById('initials');
+  const apiKeyEl = document.getElementById('apiKey');
+  const runBtn = document.getElementById('runBtn');
+  const logEl = document.getElementById('log');
+  const listenToggleEl = document.getElementById('listenToggle');
+  const jobStatusEl = document.getElementById('jobStatus');
+
+  // Fixed dev-server default — the app's manifest network-access entry is a
+  // static allowlist, so this can't be a student-entered setting; running
+  // the app's `npm run dev` on a different port breaks only this remote
+  // trigger, not the button above.
+  const APP_ORIGIN = 'http://localhost:3000';
+  let activeJobId = null;
+  let jobHadError = false;
+
+  function appendLog(message) {
+    logEl.textContent += (logEl.textContent ? '\n' : '') + message;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setJobStatus(text) {
+    jobStatusEl.textContent = text;
+  }
+
+  function saveSettings() {
+    parent.postMessage(
+      {
+        pluginMessage: {
+          type: 'save-settings',
+          initials: initialsEl.value.trim(),
+          apiKey: apiKeyEl.value.trim(),
+          listenForJobs: listenToggleEl.checked,
+        },
+      },
+      '*',
+    );
+  }
+  initialsEl.addEventListener('change', saveSettings);
+  apiKeyEl.addEventListener('change', saveSettings);
+  listenToggleEl.addEventListener('change', () => {
+    saveSettings();
+    setJobStatus(listenToggleEl.checked ? 'Waiting for a job…' : '');
+  });
+
+  // Reports this job's progress back to the app so its own "Generate
+  // Steps" button can show live status. Best-effort — a network hiccup here
+  // shouldn't interrupt the actual board generation.
+  async function reportJob(id, patch) {
+    try {
+      await fetch(`${APP_ORIGIN}/api/figma-jobs/${id}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+    } catch {
+      // App isn't reachable right now — the manual button flow still works.
+    }
+  }
+
+  function startRun() {
+    logEl.textContent = '';
+    runBtn.disabled = true;
+    runBtn.textContent = 'Working…';
+    saveSettings();
+    parent.postMessage(
+      { pluginMessage: { type: 'run', initials: initialsEl.value.trim(), apiKey: apiKeyEl.value.trim() } },
+      '*',
+    );
+  }
+
+  async function pollForJob() {
+    if (!listenToggleEl.checked || activeJobId || runBtn.disabled) return;
+    try {
+      const res = await fetch(`${APP_ORIGIN}/api/figma-jobs?claim=1`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.job) return;
+      activeJobId = data.job.id;
+      jobHadError = false;
+      if (data.job.kind === 'apply-edits') {
+        setJobStatus('Job received — writing edits…');
+        await reportJob(activeJobId, { status: 'running', message: 'Picked up by the plugin — writing edits…' });
+        logEl.textContent = '';
+        runBtn.disabled = true;
+        runBtn.textContent = 'Working…';
+        parent.postMessage({ pluginMessage: { type: 'apply-edits', payload: data.job.payload } }, '*');
+      } else {
+        setJobStatus('Job received — generating…');
+        await reportJob(activeJobId, { status: 'running', message: 'Picked up by the plugin — generating…' });
+        startRun();
+      }
+    } catch {
+      // App isn't reachable right now (e.g. dev server not running) — try
+      // again on the next tick, and the manual button still works either way.
+    }
+  }
+  setInterval(pollForJob, 4000);
+
+  const STEP_TABLE_SYSTEM_PROMPT = [
+    'You write step tables for a voice-agent prototyping tool. Each playbook is a card the caller can be in; each',
+    'step is BOT (the agent speaks), USER (wait for the caller’s reply, optionally saving it to a named variable),',
+    'or NAV (jump to another playbook by its code).',
+    '',
+    'Rules, all load-bearing — the whole point of this table format is that the conversation never stalls:',
+    '- Never embed a condition inside a BOT line (no "if they say X, say Y") — the model saying that line has not',
+    '  heard the reply yet. Any real branch must be a USER step to capture the answer, followed by NAV row(s).',
+    '- A NAV row that is the only one at that point in the table is an unconditional jump — phrase its',
+    '  instruction as "go to Playbook <code>". Two or more consecutive NAV rows form a branch — phrase each',
+    '  as the condition that picks it, e.g. "if the patient says X, go to Playbook <code>". Only ever reference',
+    '  codes from the known playbook list you are given — never invent one.',
+    '- A NAV branch does not need an explicit USER row before it if a BOT question immediately precedes it —',
+    '  the engine implicitly waits for the reply. Do add a USER row when the answer itself needs saving.',
+    '- Assign a `variable` name (short, snake_case) on a USER row only when that answer is worth remembering',
+    '  later in the conversation — skip it otherwise.',
+    '- Keep BOT lines to a sentence or two — this is a spoken, not written, conversation.',
+    '- End with a clean resolution: either a terminal BOT line, or a NAV to another real playbook. Never leave a',
+    '  dangling question with no way for the conversation to continue.',
+  ].join('\n');
+
+  const STEP_TOOL = {
+    name: 'write_steps',
+    description: 'The generated step table for this one playbook.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        steps: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              option: { type: 'string', enum: ['BOT', 'USER', 'NAV'] },
+              instruction: { type: 'string' },
+              variable: { type: 'string' },
+            },
+            required: ['option', 'instruction'],
+          },
+        },
+      },
+      required: ['steps'],
+    },
+  };
+
+  async function generateSteps(apiKey, payload) {
+    const knownList = payload.knownPlaybooks
+      .map((p) => `- ${p.code}: ${p.label}`)
+      .join('\n');
+    const userPrompt = [
+      `Known playbooks in this flow (use these exact codes for any NAV row):\n${knownList}`,
+      `Now write the step table for Playbook ${payload.code}: ${payload.label}, from this brief:\n${payload.instructionPrompt}`,
+    ].join('\n\n');
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-5',
+        max_tokens: 2048,
+        system: STEP_TABLE_SYSTEM_PROMPT,
+        tools: [STEP_TOOL],
+        tool_choice: { type: 'tool', name: 'write_steps' },
+        messages: [{ role: 'user', content: userPrompt }],
+      }),
+    });
+
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => '');
+      throw new Error(`Anthropic API error (${res.status}): ${bodyText.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    const toolUse = (data.content || []).find((block) => block.type === 'tool_use' && block.name === 'write_steps');
+    if (!toolUse || !toolUse.input || !Array.isArray(toolUse.input.steps)) {
+      throw new Error('No usable step data in the model response.');
+    }
+    return toolUse.input.steps;
+  }
+
+  window.onmessage = async (event) => {
+    const msg = event.data.pluginMessage;
+    if (!msg) return;
+
+    if (msg.type === 'settings') {
+      initialsEl.value = msg.initials || '';
+      apiKeyEl.value = msg.apiKey || '';
+      listenToggleEl.checked = msg.listenForJobs !== false;
+      setJobStatus(listenToggleEl.checked ? 'Waiting for a job…' : '');
+    } else if (msg.type === 'log') {
+      appendLog(msg.message);
+      if (activeJobId) {
+        if (/^Error:/.test(msg.message)) jobHadError = true;
+        reportJob(activeJobId, { message: msg.message });
+      }
+    } else if (msg.type === 'done') {
+      runBtn.disabled = false;
+      runBtn.textContent = 'Grow & populate';
+      if (activeJobId) {
+        const id = activeJobId;
+        activeJobId = null;
+        reportJob(id, { status: jobHadError ? 'error' : 'done' });
+        setJobStatus(listenToggleEl.checked ? 'Waiting for a job…' : '');
+      }
+    } else if (msg.type === 'generate') {
+      try {
+        const steps = await generateSteps(apiKeyEl.value.trim(), msg);
+        parent.postMessage({ pluginMessage: { type: 'generation-result', requestId: msg.requestId, steps } }, '*');
+      } catch (err) {
+        appendLog(`Playbook ${msg.code}: ${err.message || err}`);
+        parent.postMessage({ pluginMessage: { type: 'generation-result', requestId: msg.requestId, steps: null } }, '*');
+      }
+    }
+  };
+
+  runBtn.addEventListener('click', startRun);
+
+  parent.postMessage({ pluginMessage: { type: 'load-settings-request' } }, '*');
+</script>
+</body>
+</html>

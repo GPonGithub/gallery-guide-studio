@@ -1,336 +1,141 @@
-# Gallery Guide Studio — Session Handoff
+# v3 session handoff — step-engine rebuild, night 1
 
-This picks up after the app was built from `REBUILD_SPEC.md` and then extended
-across two long follow-up sessions. Read `REBUILD_SPEC.md` first for the
-original architecture and the latency-tuning rationale — it's still accurate
-for the chat/voice pipeline. This file covers everything added or changed
-**after** that initial build, in chronological order, so a fresh session can
-continue without re-deriving any of it.
+Picking this up tomorrow: read this file first, then the full technical
+plan at `/Users/grahamplumb/.claude/plans/buzzing-meandering-dawn.md` (still
+there, not deleted) if you need the exact design rationale for anything
+below. `HANDOFF.md` in this same folder is the *original* v2→v3 handoff
+(architecture problem + step-table concept) — still accurate background,
+not superseded by this file.
 
-## Stack (unchanged from spec)
+## Where things stand
 
-Next.js App Router + TypeScript, Tailwind CSS v4, AI SDK (`ai` package) calling
-Anthropic directly, ElevenLabs via a raw `fetch` proxy. All state in browser
-`localStorage`. No backend database.
+**The rebuild described in HANDOFF.md is implemented and typechecks/builds/
+lints clean.** What's *not* done yet: live-testing the actual conversation
+flow against a real model (no Anthropic API key was available in last
+night's environment — see "First thing tomorrow" below).
 
-## Repo / GitHub
+- Repo: this folder (`Immersiive Lab UI Design_v3`) is now its own git
+  checkout of `github.com/GPonGithub/gallery-guide-studio`, on branch
+  **`v3-step-engine`** (tracking `origin/main`). `npm install` already ran.
+  **Nothing has been committed yet** — all of tonight's work is sitting as
+  uncommitted local changes (`git status` shows 10 modified files + the
+  untracked `HANDOFF.md`). That was deliberate — didn't want to commit
+  before you'd seen it run. Decide tomorrow whether to commit as one chunk
+  or in pieces.
+- v2 itself is untouched at `../Immersiive Lab UI Design_v2`.
 
-Pushed to **https://github.com/GPonGithub/gallery-guide-studio** (public,
-`origin/main`). `.env*` is gitignored.
+## What actually changed (the step-engine rebuild)
 
-**⚠️ As of this handoff, the working tree has uncommitted changes** covering
-everything in sections 9–12 below (git status shows modifications to
-`src/app/api/generate-playbooks/route.ts`, `src/app/page.tsx`,
-`src/components/ChatPanel.tsx`, `src/components/PlaybookCanvas.tsx`,
-`src/components/PlaybookEditorModal.tsx`) — nothing has been committed or
-pushed since the initial commit. There are also two **untracked** files at the
-repo root, `APPOINTMENT FLOW CHART_02.png` and `APPOINTMENT FLOW CHART_03.png`
-— these look like the user's own reference images dropped into the project
-directory (not created by any session work); leave them alone unless the user
-says otherwise, and don't `git add -A` blindly.
+Every box's free-form `instructions: string` is gone, replaced by an
+ordered `steps: PlaybookStep[]` table — each step is `BOT` (agent speaks),
+`USER` (wait for a reply, optionally saving it to a named variable), or
+`NAV` (jump to another box; unconditional if it's the only NAV at that
+point, or a branch to classify between if there are several in a row).
+**The app now walks this table mechanically** — the server (`/api/chat`)
+decides sequencing/transitions from table structure, not from an LLM
+judgment call each turn. Full rationale for why this fixes v2's five
+documented failure modes is in `HANDOFF.md`.
 
-## How to run it
+Files touched (all in this repo, none in v2):
 
-```bash
-npm run dev
-```
+- **`src/lib/types.ts`** — new `PlaybookStep`/`StepOption` types;
+  `PlaybookBox.instructions` → `PlaybookBox.steps`; `StudioState` gained
+  `activeStepIndex`, `variables`, `designerInitials`.
+- **`src/lib/storage.ts`** — matching `defaultState` fields.
+- **`src/app/api/chat/route.ts`** — full rewrite. The `walk()` function is
+  the actual engine; see its doc comment for the exact rules, especially
+  the "`canConsume`" logic that stops the visitor's very first kickoff
+  message from being misread as the answer to the table's first real
+  question. Replaced the old `changeStage` tool with a custom
+  `data-position` stream part (deterministic, app-computed — see
+  `createUIMessageStream` usage) carrying the new `{boxId, stepIndex,
+  transitions, variableUpdates}`.
+- **`src/app/api/generate-playbooks/route.ts`** — AI-assisted generation
+  now outputs step arrays (with the model assigning `variable` names and
+  `navTarget` ids) instead of prose.
+- **`src/app/api/sync-figma/route.ts`** — a synced box's raw Figma text now
+  seeds a single BOT step instead of populating `instructions`.
+- **`src/components/PlaybookEditorModal.tsx`** — rebuilt as the 10-row,
+  7-column table from your screenshot (STEP / BOT·USER·NAV / INSTRUCTION /
+  VARIABLE / Send to TD / Save to sheet / Designer ID). Rows fill
+  sequentially (no gaps); NAV rows get an inline target picker prioritized
+  by `leadsTo` (real Figma neighbors) when present. **Confirmed with you
+  tonight: this table is the popup editor (click a box to open it) — the
+  canvas itself still shows the plain compact box like today, not the
+  table inline.** The two blank buttons next to "OPEN PLAYBOOK EDITOR" in
+  your mockup are intentionally *not* built yet — you said not decided,
+  I'll build them once you say what they do.
+- **`src/components/ChatPanel.tsx`** — dropped the old `changeStage`-tool
+  handling and the empty-reply auto-retry machinery (both were mitigations
+  for failure modes the step engine makes structurally impossible now).
+  Reads the new `data-position` data part instead; shows a small read-only
+  "Variables:" strip for captured values.
+- **`src/app/page.tsx`** — wiring: `activeStepIndex`/`variables` plumbed
+  through, box index passed to the editor (drives the "PLAYBOOK N : LABEL"
+  header and the Designer ID prefix), generate-playbooks calls updated for
+  the new response shape.
+- **`src/components/ApiKeysModal.tsx`** — added a "Designer initials" field
+  (e.g. `GP`) that feeds the auto Designer ID column (`GP_01_01`, etc).
+- **`src/components/PlaybookCanvas.tsx`** — trivial: new-box defaults now
+  `steps: []` instead of `instructions: ''`.
 
-Or use the Browser pane's `preview_start` with name `gallery-guide-studio`
-(config already exists at `.claude/launch.json`). The dev server's port
-changes every restart (autoPort) — check the tool's response for the current
-URL rather than assuming one.
+"Send to TD" and "Save data to sheet" are wired as inert persisted
+checkboxes only — no TouchDesigner/sheet integration, matches HANDOFF.md's
+"that's separate, later scope." You said you'd explain both later.
 
-`.env.local` has empty `ANTHROPIC_API_KEY` / `ELEVENLABS_API_KEY` placeholders
-and is **not** the primary way keys get supplied anymore (see §1) — it's just
-a fallback.
+## Verified tonight
 
----
+- `npx tsc --noEmit` — clean (the one `LayoutProps` error in `layout.tsx`
+  is a Next.js generated-types artifact, gone as soon as `npm run build`
+  or `npm run dev` runs once; unrelated to anything touched here).
+- `npm run build` — succeeds.
+- `npm run lint` — clean.
+- Manual browser pass (via a synthetic uploaded test PNG, not a real
+  diagram): image upload works, "+ Add playbook box" works, the editor
+  modal opens on box click with the exact 10×7 table shape, and setting a
+  row's option to `BOT` + typing an instruction correctly creates a real
+  step in state (confirmed via `localStorage` inspection). Also created two
+  extra empty boxes ("Playbook 2", "Playbook 3") as NAV-target scaffolding
+  for the next test.
 
-## What changed, in order
+## NOT verified — first thing tomorrow
 
-### 1. In-app API keys panel (replaces relying solely on `.env.local`)
+**The actual conversation engine has never run against a real model.**
+There's no `ANTHROPIC_API_KEY` in this machine's shell env and none was
+pasted in before we paused. To pick this up:
 
-- Header button **"API keys"** opens `ApiKeysModal.tsx` — fields for
-  Anthropic key, ElevenLabs key, ElevenLabs voice ID.
-- Persisted in `StudioState` (`anthropicApiKey`, `elevenLabsApiKey`,
-  `voiceId`), survives refresh.
-- **"Clear all keys"** wipes both API keys but deliberately keeps the voice
-  ID.
-- Every server route accepts the key from the client (body for
-  chat/detect-labels/generate-playbooks, query param for the `GET /api/tts`
-  route since `<audio src>` can't send headers) and falls back to
-  `.env.local` only if the client didn't send one (`src/lib/anthropicModel.ts`).
+1. Restart the dev server (`.claude/launch.json` already configured — port
+   3000, or whatever's free) and open it, or just `npm run dev` in this
+   folder.
+2. Enter a real Anthropic API key in the app's "API keys" panel (stored
+   client-side only, same as before).
+3. Rebuild — or just re-verify, since it may still be in that browser
+   profile's `localStorage` from tonight — the reference table on
+   "Playbook 1":
+   ```
+   1  BOT   Welcome the patient and ask for their name.
+   2  USER  Patient says their name.          → variable: user_name
+   3  BOT   Ask the patient if this is an emergency.
+   4  NAV   If it is an emergency, go to Playbook 2.
+   5  NAV   If it is not an emergency, go to Playbook 3.
+   ```
+   (Only step 1 was actually typed in through the UI tonight — the rest
+   still needs building, either by hand or you can just try "Generate
+   prompt" once a key is in.)
+4. Give Playbook 2 and Playbook 3 each one simple BOT step so a NAV jump
+   has something to say immediately.
+5. Run the conversation and confirm the full verification checklist from
+   the plan file: step 1 speaks on the first message; naming yourself
+   advances past step 2 and the name shows up in the Variables strip; step
+   3 speaks; answering the emergency question correctly classifies and
+   jumps to the right box with a "Moved to" banner; the old empty-turn
+   "Note" banner never appears during normal flow.
 
-### 2. Fixed: auto-detected playbook names not matching the diagram
+## Open decisions for tomorrow
 
-Root cause: boxes got fake sequential names immediately, only *maybe*
-overwritten by a vision call describing positions in text, which the model
-couldn't reliably map back to labels.
-
-Fix (`src/lib/detectHotspots.ts`, `PlaybookCanvas.tsx`): `annotateWithMarkers()`
-draws numbered red circle markers onto a copy of the image; `/api/detect-labels`
-is told "marker N → read the label at the top of that marker's card" — real
-visual reasoning instead of percentage parsing. Boxes are never named until
-the label-reading step actually returns something; failure → clear alert +
-`Untitled box N`, never a fake-looking label.
-
-### 3. Fixed: chat replies silently not appearing
-
-Two distinct bugs, found by mocking `MockLanguageModelV4` (from `ai/test`) to
-reproduce exact Anthropic response shapes without a real key — reuse this
-technique for future chat bugs.
-
-- **Bug A**: with the spec's single-step `stopWhen`, a tool's `execute` never
-  runs, so `tool-changeStage` sticks at `input-available` and never reaches
-  `output-available`. Client only checked for the latter → silent no-op.
-  Fixed in `ChatPanel.tsx` by treating `input-available` as terminal for this
-  tool.
-- **Bug B**: a turn with no text and no tool call creates no assistant
-  message at all. Added an amber "agent finished without sending a reply"
-  fallback banner in `ChatPanel.tsx`, bumped `maxOutputTokens` 300 → 1024 in
-  `src/app/api/chat/route.ts`, added server-side `onFinish` logging.
-
-### 4. Mic behavior fixes (`ChatPanel.tsx`)
-
-- `recognition.continuous` `false` → `true` (was silently stopping after any
-  pause).
-- `handleSend` calls `recognitionRef.current?.stop()` and clears input.
-- **Known Web Speech API race**: restarting the mic soon after stop can throw
-  `InvalidStateError` (async teardown). Fixed with try/catch + auto-retry
-  (up to 3×, 250ms backoff) around `recognition.start()`.
-
-### 5. Full visual redesign — "Minimalist Monochrome"
-
-Strict black/white editorial system across every component:
-
-- **Fonts** (`layout.tsx`): Playfair Display / Source Serif 4 / JetBrains
-  Mono via `next/font`.
-- **Tokens** (`globals.css`): `--color-ink` #000, `--color-paper` #fff,
-  `--color-muted` #f5f5f5, `--color-muted-ink` #525252, `--color-hair` #e5e5e5,
-  exposed via `@theme inline`. Subtle global texture overlay.
-- **Centralized primitives** (`src/lib/styles.ts`): `buttonPrimary`,
-  `buttonOutline`, `buttonGhost`, `buttonIcon`, `fieldInput`, `fieldLabel`,
-  `panel` — every component uses these.
-- Zero border-radius, zero shadows. Emphasis via inversion, not color.
-- **Bug found & fixed**: an unconditional `outline-none` on `fieldInput`
-  permanently pinned the shared `--tw-outline-style` CSS variable to `none`,
-  which `focus-visible:outline-*` reads but never resets — no focus ring ever
-  rendered, anywhere. Removed the unconditional class; verified via
-  `getComputedStyle` + real Tab navigation.
-- Fixed slider-label overlap (mono uppercase didn't fit) — shortened labels,
-  loosened tracking.
-
-### 6. Voice settings panel + presets + test button
-
-- `VoiceSettingsPanel.tsx` — 4 sliders (Stability/Similarity/Style/Speed) +
-  Speaker Boost checkbox, matching ElevenLabs' `voice_settings` fields
-  exactly.
-- **"Test voice"** button plays a fixed test line through `/api/tts` using
-  current slider values.
-- **4 preset slots** (`VoicePresetButtons.tsx`) — click empty to save, click
-  filled to load, hold (~550ms) to overwrite. Stored in
-  `StudioState.voicePresets`, persisted.
-
-### 7. Layout: chat panel narrowed (round 1)
-
-Grid went `1.4fr_1fr` → `17fr_7fr` (chat column ≈70% of original width, 30%
-narrower), freed space to the canvas column.
-
-### 8. Flow-diagram canvas: pan/zoom infinite canvas
-
-`PlaybookCanvas.tsx` restructured into a Figma-like infinite canvas:
-
-- Fixed-height `overflow-hidden` viewport; image in an absolutely-positioned
-  layer with `transform: translate(x,y) scale(scale)`, `transform-origin: 0 0`.
-- Scroll/swipe → pan. Ctrl/Cmd+scroll or pinch → zoom toward cursor. Native
-  (non-passive) `wheel` listener in `useEffect`, not React's `onWheel`
-  (passive-listener ambiguity breaks `preventDefault()` there).
-- Click-drag on empty canvas → pan; hotspots marked `data-hotspot` so the pan
-  handler's `closest('[data-hotspot]')` check excludes them.
-- `+`/`−` zoom buttons, live percentage readout, **"Reset view"** button.
-- Hotspot drag/resize math needed zero changes — already scale-invariant
-  (screen-space delta / current `getBoundingClientRect()` size).
-
----
-
-### 9. GitHub push + layout narrowed again (round 2)
-
-- Repo created and pushed: `gh repo create --source=. --remote=origin --push`
-  → https://github.com/GPonGithub/gallery-guide-studio.
-- User asked to narrow the chat panel **and voice controls** by another 30%
-  on top of round 1. Current grid in `page.tsx`:
-  `lg:grid-cols-[minmax(0,191fr)_minmax(0,49fr)]` — this specific
-  `minmax(0, Nfr)` form, not bare `fr`, was required (see gotcha below).
-- **Gotcha discovered**: bare `fr` tracks on a CSS Grid respect the content's
-  *intrinsic* min-width as a floor (`min-width: auto` default) — so narrowing
-  the ratio alone silently did nothing, and looked exactly like a caching bug
-  (checked fresh tabs, fresh ports, cleared `.next`, all identical). Fixed
-  with `minmax(0, Nfr)` on both tracks + `min-w-0` on the chat wrapper div.
-  That then made the voice-controls row overflow/overlap at the new narrower
-  width — fixed by adding `flex-wrap` to that row in `ChatPanel.tsx`.
-
-### 10. Playbook editor modal: resized + basic-instructions template + per-box generate
-
-`PlaybookEditorModal.tsx`:
-
-- Resized 150% taller / 100% wider: `max-w-lg`→`max-w-5xl` (512px→1024px
-  exact), textarea `h-56`→`h-[560px]` (224px→560px exact).
-- New **"+ Basic instructions"** button (`buttonOutline`) inserts a
-  `## Personality` / `## Flow` / `## Rules` / `## Edge cases` numbered-list
-  template (`BASIC_INSTRUCTIONS_TEMPLATE` constant), appended to existing
-  content if any.
-- New **"Generate prompt"** button (`buttonPrimary`) next to it, with local
-  `isGenerating` state — calls a new `onGeneratePrompt: () => Promise<void>`
-  prop, which `page.tsx` wires to a new `generateSinglePlaybook(boxId)`
-  function (separate from the existing bulk `generatePlaybooks()`). Confirms
-  before overwriting if the box already has content. Caption text: "Generate
-  prompt updates only this playbook, using your master playbook and any
-  others as reference."
-
-### 11. Relaxed the "need a hand-written reference" requirement
-
-Both `generatePlaybooks()` and `generateSinglePlaybook()` in `page.tsx` used
-to refuse to run if zero boxes had hand-written instructions. Changed the
-guard to `references.length === 0 && !state.masterPlaybook.trim()` — so a
-master playbook alone is now enough context; only block if *both* are empty.
-
-`src/app/api/generate-playbooks/route.ts` updated to match: the "match
-reference style" prompt block is now conditional on `references.length > 0`;
-added an `else` branch telling the model to establish the format itself from
-the master-playbook context, defaulting to the same
-Personality/Flow/Rules/Edge-cases structure (consistent with §10's template)
-when there's no reference and nothing more specific implied.
-
-### 12. Fixed: Reset View / initial auto-fit computing garbage scale
-
-**Bug**: `fitToFrame()` (the "frame the PNG within the frame" logic) was
-sometimes called before the CSS Grid viewport had finished layout, reading a
-near-zero `getBoundingClientRect()` and locking in a `scale` clamped to
-`MIN_SCALE` (0.1) that nothing ever recalculated — reproducible on a real
-complex diagram (2400×900, 18 boxes): expected fit was 39.6%, actual was
-stuck at 10% (or occasionally the un-fit default `scale(1)`), and manually
-clicking Reset View afterward always fixed it — proving `fitToFrame()`'s math
-was correct and the bug was purely about *timing* of the first call.
-
-- First attempt (double `requestAnimationFrame`) was tested and found
-  insufficient — rAF can stall while the Browser pane is hidden/backgrounded,
-  a real robustness concern beyond just this test environment.
-- **Final fix** (`PlaybookCanvas.tsx`): `fitToFrame()` itself now refuses to
-  act on a near-zero viewport (`rect.width < 2 || rect.height < 2`) so no
-  caller can ever lock in a bogus scale. A `ResizeObserver` watches the
-  viewport and retries `fitToFrame()` whenever its real layout size changes.
-  Because `ResizeObserver` only fires on an actual size *change* — if the
-  viewport happens to already be at its final size when observed, it may
-  never fire again — `handleImageLoad` explicitly re-arms it
-  (`unobserve`+`observe`) whenever its own immediate `fitToFrame()` attempt
-  didn't yet see a usable size, forcing one more guaranteed "initial
-  observation" callback per the ResizeObserver spec.
-- **Verified live** in the browser with a fresh 2400×900/18-box test image
-  (uploaded via a synthetic `DataTransfer`, not manually): the very first
-  render after upload landed at exactly `scale(0.395592)`,
-  `translate(0px, 101.983px)` — the mathematically correct centered fit,
-  matching what Reset View itself produces — with no manual click needed.
-  Reset View re-tested afterward reproduces the identical transform.
-  Typecheck/lint/build all pass.
-
-### 13. Added: "Clear image & boxes" button
-
-`PlaybookCanvas.tsx` — new toolbar button right after "+ Add playbook box":
-
-```tsx
-const clearAll = () => {
-  if (!imageDataUrl && boxes.length === 0) return;
-  const proceed = window.confirm(
-    'This removes the uploaded image and every playbook box, including their written instructions. Continue?',
-  );
-  if (!proceed) return;
-  naturalSizeRef.current = null;
-  setView({ scale: 1, x: 0, y: 0 });
-  onClearAll();
-};
-```
-
-Disabled when there's nothing to clear. New `onClearAll` prop wired in
-`page.tsx` to reset `imageDataUrl`, `imageName`, `boxes`, `activeBoxId` to
-empty. **Typecheck/lint/build all pass**, but the live confirm-dialog click
-flow was not exercised end-to-end in the browser before the session was
-paused (was mid-test — uploaded a synthetic SVG and clicked "+ Add playbook
-box" to set up the scenario — when the user interrupted with "stop"). Worth a
-quick manual click-through before considering it fully verified, though the
-code path is simple and the surrounding parts (state reset shape) are
-identical to patterns already proven elsewhere in `page.tsx`.
-
----
-
-## Current file map
-
-```
-src/
-  app/
-    layout.tsx               — fonts (Playfair/Source Serif/JetBrains Mono)
-    globals.css               — design tokens, texture, base styles
-    page.tsx                  — header, grid layout, all modals wired up,
-                                 generatePlaybooks(), generateSinglePlaybook()
-    api/
-      chat/route.ts            — streamText + changeStage tool
-      detect-labels/route.ts   — marker-based vision label reading
-      generate-playbooks/route.ts — bulk + single, reference-optional
-      tts/route.ts              — GET, streams ElevenLabs, voice_settings from query
-  components/
-    PlaybookCanvas.tsx         — pan/zoom canvas, hotspot CRUD, auto-detect,
-                                  clearAll()
-    ChatPanel.tsx              — useChat, mic, TTS playback, voice settings row
-    VoiceSettingsPanel.tsx     — 4 sliders + speaker boost checkbox
-    VoicePresetButtons.tsx     — 4 save/load/overwrite slots
-    PlaybookEditorModal.tsx    — per-box instructions, basic-instructions
-                                  template, per-box "Generate prompt"
-    MasterPlaybookModal.tsx    — global context, autosave
-    ApiKeysModal.tsx           — key entry + clear
-  lib/
-    types.ts                   — StudioState, PlaybookBox, VoiceSettings
-    storage.ts                  — localStorage load/save, defaults
-    styles.ts                   — buttonPrimary/Outline/Ghost/Icon, fieldInput, panel
-    detectHotspots.ts           — blue-button CV detection + marker annotation
-    anthropicModel.ts           — client-key-or-env-fallback provider builder
-```
-
-## Known limitations (carried over from REBUILD_SPEC.md, still true)
-
-- No knowledge-base/PDF upload, no TouchDesigner/OSC authoring, no
-  multi-user — out of scope, not implemented.
-- No Figma live-import (org Figma seat licensing issue) — PNG export +
-  auto-detect is the workflow.
-- No truncation-detection heuristic (built, then removed upstream of this
-  session) — worth revisiting if truncated replies show up.
-
-## Things to verify with a real API key / real browser (this session's tools block mic + can't hold real keys)
-
-- Real end-to-end voice test with a live ElevenLabs key.
-- Real microphone continuous-listening + restart-race fix under actual audio
-  input (mic access blocked in this session's browser pane).
-- Auto-detect label reading accuracy on the user's actual uploaded diagrams
-  with a working Anthropic key.
-- **"Clear image & boxes" button** (§13) — implemented and type/lint/build
-  clean, but not yet clicked through live with the confirm dialog.
-
-## Immediate next step for a fresh session
-
-1. Confirm with the user whether the uncommitted changes (git status —
-   5 modified files, see "Repo / GitHub" above) should be committed/pushed.
-2. If continuing verification work: reload the dev server, clear
-   `localStorage` (`gallery-guide-studio:v1`), upload a test image, add a
-   playbook box, click "Clear image & boxes", confirm the dialog, and check
-   both the image and box are gone. Clean up any synthetic test files
-   afterward (mirror the pattern used throughout this session — don't leave
-   test images in `public/` or test state in the dev browser's localStorage).
-
-## Session state notes
-
-- Dev server URL changes on every restart — don't assume a prior URL still
-  works; check the current preview/run result.
-- Browser localStorage key: `gallery-guide-studio:v1`. Test sessions in this
-  environment repeatedly wrote and cleared this key with synthetic data —
-  the user's own browser holds their real state, separate from this
-  session's sandboxed browser pane.
-- Two untracked PNGs (`APPOINTMENT FLOW CHART_02.png`, `_03.png`) sit at the
-  repo root — not created by this session, don't touch without asking.
+- Commit this work? Nothing's committed yet — branch `v3-step-engine`
+  only exists locally right now, not pushed.
+- What do the two blank buttons in your mockup (next to "OPEN PLAYBOOK
+  EDITOR") do? Not built yet, waiting on you.
+- Semantics of "Send to TD" and "Save data to sheet" — you said you'd
+  explain later; still just inert checkboxes.

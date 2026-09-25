@@ -117,10 +117,22 @@ export function detectBlueHotspots(img: HTMLImageElement): DetectedRect[] {
  * marker up to whatever card/label sits above the button, regardless of how
  * far away that label is or how the diagram is laid out.
  */
+// Anthropic downscales any image over this on its long edge before reading
+// it anyway, and rejects anything over ~5MB base64-encoded outright — a
+// full-resolution export of a multi-card board screenshot can land well
+// past both. Scaling down here first keeps the request fast and avoids
+// that size rejection, without costing any label-reading accuracy (the
+// server-side downscale would happen regardless).
+const MAX_LONG_EDGE = 1568;
+
 export function annotateWithMarkers(img: HTMLImageElement, rects: DetectedRect[]): string {
-  const width = img.naturalWidth;
-  const height = img.naturalHeight;
-  if (!width || !height) return img.src;
+  const naturalWidth = img.naturalWidth;
+  const naturalHeight = img.naturalHeight;
+  if (!naturalWidth || !naturalHeight) return img.src;
+
+  const scale = Math.min(1, MAX_LONG_EDGE / Math.max(naturalWidth, naturalHeight));
+  const width = Math.round(naturalWidth * scale);
+  const height = Math.round(naturalHeight * scale);
 
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -142,49 +154,6 @@ export function annotateWithMarkers(img: HTMLImageElement, rects: DetectedRect[]
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
     ctx.fillStyle = '#e11d48';
-    ctx.fill();
-    ctx.lineWidth = Math.max(2, radius * 0.15);
-    ctx.strokeStyle = '#ffffff';
-    ctx.stroke();
-
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(String(i + 1), cx, cy + 1);
-  });
-
-  return canvas.toDataURL('image/png');
-}
-
-/**
- * Draws a numbered marker at the CENTER of each rect (in reading order) onto
- * a copy of the image — unlike `annotateWithMarkers` (which sits just above
- * a rect, for reading the label printed on the card above it), arrow
- * endpoints tend to land on or near a box's middle, so a center marker gives
- * a vision model the clearest anchor for "which box does this arrow touch."
- */
-export function annotateWithCenterMarkers(img: HTMLImageElement, rects: DetectedRect[]): string {
-  const width = img.naturalWidth;
-  const height = img.naturalHeight;
-  if (!width || !height) return img.src;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return img.src;
-  ctx.drawImage(img, 0, 0, width, height);
-
-  const radius = Math.max(16, Math.round(Math.min(width, height) * 0.018));
-  ctx.font = `bold ${Math.round(radius * 1.1)}px sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-
-  rects.forEach((r, i) => {
-    const cx = (r.x / 100) * width + ((r.width / 100) * width) / 2;
-    const cy = (r.y / 100) * height + ((r.height / 100) * height) / 2;
-
-    ctx.beginPath();
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.fillStyle = '#7c3aed';
     ctx.fill();
     ctx.lineWidth = Math.max(2, radius * 0.15);
     ctx.strokeStyle = '#ffffff';

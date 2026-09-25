@@ -1,0 +1,13 @@
+{
+  "name": "Gallery Guide Studio — Playbook Builder",
+  "id": "gallery-guide-studio-playbook-builder-dev",
+  "api": "1.0.0",
+  "editorType": ["figjam"],
+  "main": "code.js",
+  "ui": "ui.html",
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": ["https://api.anthropic.com", "http://localhost:3000"],
+    "reasoning": "Generates step-table content by calling the Anthropic API directly with the designer's own API key, and polls the Gallery Guide Studio app's local dev server (fixed default port) so the app's \"Generate Steps\" button can trigger a run remotely."
+  }
+}
