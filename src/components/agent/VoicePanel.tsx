@@ -7,14 +7,17 @@ import { buttonOutline, fieldInput, fieldLabel } from '@/lib/styles';
 
 // The ElevenLabs voice controls, in a panel that pops open from the chat
 // toolbar: up to five saved voices (each testable with the normal and the
-// expressive model), which one the agent uses, and the shared settings.
-// Changes apply to the very next thing the agent says.
+// expressive model), which one the agent uses, and the settings sliders.
+// Each voice can keep its own settings ("Save settings"); choosing a voice
+// moves the sliders to what was saved for it. Changes apply to the very
+// next thing the agent says.
 
 export const MAX_VOICES = 5;
 /** ElevenLabs' public "Rachel" voice — what an empty voice ID falls back to. */
 const DEFAULT_VOICE_NAME = 'Rachel (ElevenLabs default)';
 
-export type SavedVoice = { name: string; voiceId: string };
+/** `settings`: the slider positions saved for this voice, if any. */
+export type SavedVoice = { name: string; voiceId: string; settings?: VoiceSettings };
 
 /** A voice in the user's ElevenLabs account (see /api/tts/voices). */
 export type AccountVoice = { voiceId: string; name: string; description: string };
@@ -60,9 +63,9 @@ export function VoicePanel({
   onSettingsChange: (settings: VoiceSettings) => void;
   onVoicesChange: (voices: SavedVoice[], activeVoice: number) => void;
   /** Speaks a sample line in this voice with the normal model; resolves when it starts (or fails). */
-  onTest: (voiceId: string) => Promise<void>;
+  onTest: (voiceId: string, settings: VoiceSettings) => Promise<void>;
   /** Same, through the expressive model, with performance cues in the sample. */
-  onTestExpressive: (voiceId: string) => Promise<void>;
+  onTestExpressive: (voiceId: string, settings: VoiceSettings) => Promise<void>;
   /** Renders a sample once per setting (fixed seed) to see which ones change the audio. */
   onCheck: () => Promise<VoiceCheck>;
   /** The voices in the user's ElevenLabs account, to pick from by name. */
@@ -76,6 +79,17 @@ export function VoicePanel({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [account, setAccount] = useState<AccountVoices | null>(null);
   const [loadingAccount, setLoadingAccount] = useState(false);
+  // Index of the voice whose settings were just saved (for a moment's "Saved ✓").
+  const [justSaved, setJustSaved] = useState<number | null>(null);
+  // Which voices are unfolded to show their details (all folded by default).
+  const [unfolded, setUnfolded] = useState<Set<number>>(new Set());
+  const toggleFold = (index: number) =>
+    setUnfolded((current) => {
+      const next = new Set(current);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
 
   const refreshAccount = async () => {
     setLoadingAccount(true);
@@ -118,7 +132,20 @@ export function VoicePanel({
     // Keep the same voice selected if it survives; otherwise fall back to the first.
     const nextActive = index === activeVoice ? 0 : index < activeVoice ? activeVoice - 1 : activeVoice;
     onVoicesChange(next, Math.min(nextActive, Math.max(0, next.length - 1)));
+    // Voices after the removed one move up a place; keep them unfolded as they were.
+    setUnfolded((current) => new Set([...current].filter((n) => n !== index).map((n) => (n > index ? n - 1 : n))));
   };
+
+  // Keeps the sliders as they are now for this voice.
+  const saveSettings = (index: number) => {
+    updateVoice(index, { settings: { ...settings } });
+    setJustSaved(index);
+    setTimeout(() => setJustSaved((current) => (current === index ? null : current)), 1500);
+  };
+
+  // A voice is tested with the sliders if it's the one in use (so you can
+  // hear a change before saving it); otherwise with its own saved settings.
+  const settingsFor = (index: number) => (index === activeVoice ? settings : (voices[index]?.settings ?? settings));
 
   const runTest = async (key: string, play: () => Promise<void>) => {
     setTesting(key);
@@ -144,6 +171,9 @@ export function VoicePanel({
             </p>
             {voices.map((voice, i) => {
               const selected = i === activeVoice;
+              const unsaved = selected && voice.settings !== undefined && !sameSettings(voice.settings, settings);
+              const open = unfolded.has(i);
+              const label = voice.name.trim() || `Voice ${i + 1}`;
               return (
                 <div key={i} className={`flex flex-col gap-1.5 border-2 p-2 ${selected ? 'border-ink' : 'border-hair'}`}>
                   <div className="flex items-center gap-2">
@@ -153,14 +183,26 @@ export function VoicePanel({
                       checked={selected}
                       onChange={() => onVoicesChange(voices, i)}
                       className="accent-ink"
-                      aria-label={`Use ${voice.name || `voice ${i + 1}`}`}
+                      aria-label={`Use ${label}`}
                     />
-                    <input
-                      value={voice.name}
-                      onChange={(e) => updateVoice(i, { name: e.target.value })}
-                      placeholder={`Voice ${i + 1} name`}
-                      className="min-w-0 flex-1 border-b-2 border-hair bg-transparent px-1 py-0.5 font-body text-sm text-ink focus:border-ink focus:outline-none"
-                    />
+                    {/* The voice's name line: click it to unfold the details. */}
+                    <button
+                      onClick={() => toggleFold(i)}
+                      aria-expanded={open}
+                      title={open ? 'Fold away this voice’s details' : 'Show this voice’s details'}
+                      className="flex min-w-0 flex-1 items-center gap-1.5 text-left font-body text-sm text-ink hover:underline"
+                    >
+                      <span className="w-3 shrink-0 text-[10px] text-muted-ink">{open ? '▾' : '▸'}</span>
+                      <span className="truncate">{label}</span>
+                      {unsaved && (
+                        <span
+                          className="shrink-0 font-label text-[9px] uppercase tracking-widest text-[#b45309]"
+                          title="Sliders changed since this voice's settings were saved"
+                        >
+                          • not saved
+                        </span>
+                      )}
+                    </button>
                     {selected && <span className="font-label text-[10px] uppercase tracking-widest text-ink">In use</span>}
                     <button
                       onClick={() => removeVoice(i)}
@@ -172,61 +214,90 @@ export function VoicePanel({
                       ×
                     </button>
                   </div>
-                  {accountVoices.length > 0 && (
-                    <select
-                      value={nameFor(voice.voiceId) ? voice.voiceId : ''}
-                      onChange={(e) => {
-                        const picked = accountVoices.find((v) => v.voiceId === e.target.value);
-                        if (!picked) return;
-                        // Name the slot after the voice unless it already has a name of your own.
-                        const unnamed = !voice.name.trim() || /^Voice \d+$/.test(voice.name.trim());
-                        updateVoice(i, { voiceId: picked.voiceId, ...(unnamed ? { name: picked.name } : {}) });
-                      }}
-                      className="w-full border-2 border-ink bg-paper px-2 py-1 font-body text-[13px] text-ink"
-                    >
-                      <option value="">Pick from my ElevenLabs voices…</option>
-                      {accountVoices.map((v) => (
-                        <option key={v.voiceId} value={v.voiceId}>
-                          {v.name}
-                          {v.description ? ` — ${v.description}` : ''}
-                        </option>
-                      ))}
-                    </select>
+                  {open && (
+                    <div className="flex flex-col gap-1.5">
+                      <input
+                        value={voice.name}
+                        onChange={(e) => updateVoice(i, { name: e.target.value })}
+                        placeholder={`Voice ${i + 1} name`}
+                        aria-label="Voice name"
+                        className={`w-full text-[13px] ${fieldInput}`}
+                      />
+                      {accountVoices.length > 0 && (
+                        <select
+                          value={nameFor(voice.voiceId) ? voice.voiceId : ''}
+                          onChange={(e) => {
+                            const picked = accountVoices.find((v) => v.voiceId === e.target.value);
+                            if (!picked) return;
+                            // Name the slot after the voice unless it already has a name of your own.
+                            const unnamed = !voice.name.trim() || /^Voice \d+$/.test(voice.name.trim());
+                            updateVoice(i, { voiceId: picked.voiceId, ...(unnamed ? { name: picked.name } : {}) });
+                          }}
+                          className="w-full border-2 border-ink bg-paper px-2 py-1 font-body text-[13px] text-ink"
+                        >
+                          <option value="">Pick from my ElevenLabs voices…</option>
+                          {accountVoices.map((v) => (
+                            <option key={v.voiceId} value={v.voiceId}>
+                              {v.name}
+                              {v.description ? ` — ${v.description}` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <input
+                        value={voice.voiceId}
+                        onChange={(e) => updateVoice(i, { voiceId: e.target.value.trim() })}
+                        placeholder={`Voice ID — empty = ${DEFAULT_VOICE_NAME}`}
+                        className={`w-full font-label text-[11px] ${fieldInput}`}
+                      />
+                      {voice.voiceId && accountVoices.length > 0 && (
+                        <span className="font-body text-[11px] text-muted-ink">
+                          {nameFor(voice.voiceId)
+                            ? `= ${nameFor(voice.voiceId)!.name} in your ElevenLabs account`
+                            : 'Not one of your ElevenLabs voices (a Voice Library voice may need adding to My Voices)'}
+                        </span>
+                      )}
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          onClick={() => runTest(`${i}-normal`, () => onTest(voice.voiceId, settingsFor(i)))}
+                          disabled={testing !== null}
+                          className={smallButton}
+                        >
+                          {testing === `${i}-normal` ? 'Playing…' : '🔊 Test'}
+                        </button>
+                        <button
+                          onClick={() => runTest(`${i}-expressive`, () => onTestExpressive(voice.voiceId, settingsFor(i)))}
+                          disabled={testing !== null}
+                          className={smallButton}
+                        >
+                          {testing === `${i}-expressive` ? 'Playing…' : '✦ Test expressive'}
+                        </button>
+                        <button
+                          onClick={() => saveSettings(i)}
+                          className={smallButton}
+                          title={
+                            selected
+                              ? 'Keep the sliders as they are now for this voice'
+                              : 'Save the sliders as they are now to this voice (they currently show the voice in use)'
+                          }
+                        >
+                          {justSaved === i ? 'Saved ✓' : 'Save settings'}
+                        </button>
+                        {!selected && (
+                          <button onClick={() => onVoicesChange(voices, i)} className={`ml-auto ${smallButton}`}>
+                            Use this voice
+                          </button>
+                        )}
+                      </div>
+                      <span className={`font-body text-[11px] ${unsaved ? 'text-[#b45309]' : 'text-muted-ink'}`}>
+                        {voice.settings
+                          ? `Saved: ${describeSettings(voice.settings)}${unsaved ? ' · sliders changed since — not saved' : ''}`
+                          : selected
+                            ? 'No saved settings yet — uses the sliders below.'
+                            : 'No saved settings yet — uses the sliders when chosen.'}
+                      </span>
+                    </div>
                   )}
-                  <input
-                    value={voice.voiceId}
-                    onChange={(e) => updateVoice(i, { voiceId: e.target.value.trim() })}
-                    placeholder={`Voice ID — empty = ${DEFAULT_VOICE_NAME}`}
-                    className={`w-full font-label text-[11px] ${fieldInput}`}
-                  />
-                  {voice.voiceId && accountVoices.length > 0 && (
-                    <span className="font-body text-[11px] text-muted-ink">
-                      {nameFor(voice.voiceId)
-                        ? `= ${nameFor(voice.voiceId)!.name} in your ElevenLabs account`
-                        : 'Not one of your ElevenLabs voices (a Voice Library voice may need adding to My Voices)'}
-                    </span>
-                  )}
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      onClick={() => runTest(`${i}-normal`, () => onTest(voice.voiceId))}
-                      disabled={testing !== null}
-                      className={smallButton}
-                    >
-                      {testing === `${i}-normal` ? 'Playing…' : '🔊 Test'}
-                    </button>
-                    <button
-                      onClick={() => runTest(`${i}-expressive`, () => onTestExpressive(voice.voiceId))}
-                      disabled={testing !== null}
-                      className={smallButton}
-                    >
-                      {testing === `${i}-expressive` ? 'Playing…' : '✦ Test expressive'}
-                    </button>
-                    {!selected && (
-                      <button onClick={() => onVoicesChange(voices, i)} className={`ml-auto ${smallButton}`}>
-                        Use this voice
-                      </button>
-                    )}
-                  </div>
                 </div>
               );
             })}
@@ -243,7 +314,11 @@ export function VoicePanel({
               )}
             </p>
             <button
-              onClick={() => onVoicesChange([...voices, { name: '', voiceId: '' }], activeVoice)}
+              onClick={() => {
+                // A new voice opens unfolded, ready to fill in.
+                setUnfolded((current) => new Set(current).add(voices.length));
+                onVoicesChange([...voices, { name: '', voiceId: '' }], activeVoice);
+              }}
               disabled={voices.length >= MAX_VOICES}
               className="self-start font-label text-[11px] uppercase tracking-widest text-ink hover:underline disabled:text-muted-ink disabled:no-underline"
             >
@@ -253,7 +328,7 @@ export function VoicePanel({
 
           <section className="flex flex-col gap-3 border-t-2 border-ink pt-3">
             <div className="flex items-center justify-between">
-              <p className={fieldLabel}>Settings · shared by all voices</p>
+              <p className={fieldLabel}>Settings · {active?.name.trim() || `Voice ${activeVoice + 1}`}</p>
               <button
                 onClick={() => onSettingsChange({ ...DEFAULT_VOICE_SETTINGS })}
                 className="font-label text-[10px] uppercase tracking-widest text-muted-ink hover:text-ink hover:underline"
@@ -331,4 +406,18 @@ export function VoicePanel({
       )}
     </div>
   );
+}
+
+function sameSettings(a: VoiceSettings, b: VoiceSettings): boolean {
+  return (
+    a.stability === b.stability &&
+    a.similarityBoost === b.similarityBoost &&
+    a.style === b.style &&
+    a.speed === b.speed &&
+    a.useSpeakerBoost === b.useSpeakerBoost
+  );
+}
+
+function describeSettings(s: VoiceSettings): string {
+  return `stability ${s.stability.toFixed(2)} · similarity ${s.similarityBoost.toFixed(2)} · style ${s.style.toFixed(2)} · speed ${s.speed.toFixed(2)}`;
 }

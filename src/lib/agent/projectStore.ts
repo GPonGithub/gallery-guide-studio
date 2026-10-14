@@ -1,24 +1,78 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import type { SavedVoice } from '@/components/agent/VoicePanel';
+import type { VoiceSettings } from '@/lib/types';
 import type { AgentFlow } from './types';
 
 /**
- * Saved Goal Agent Studio projects — a flow plus the brief it came from and
- * the FigJam board it lives on. Kept in a JSON file next to the app (not in
- * the browser) so projects survive cleared browser data and show up in any
- * browser on this computer. API keys are never part of a project.
+ * Saved Goal Agent Studio projects — a flow plus the brief it came from, the
+ * FigJam board it lives on, its voices and its background music. Kept next
+ * to the app (not in the browser) so projects survive cleared browser data
+ * and show up in any browser on this computer. API keys are never part of a
+ * project.
  */
+export type ProjectVoice = {
+  voices: SavedVoice[];
+  activeVoice: number;
+  voiceSettings: VoiceSettings | null;
+};
+
+/** The music's file is stored separately (see musicFile); `key` changes whenever a new file is dropped in. */
+export type ProjectMusic = { name: string; key: string; volume: number; dip: number };
+
 export type AgentProject = {
   id: string;
   name: string;
   flow: AgentFlow;
   brief: string;
   boardUrl: string;
+  /** Missing on projects saved before voices were part of a project. */
+  voice?: ProjectVoice;
+  /** null/missing = no background music. */
+  music?: ProjectMusic | null;
   updatedAt: number;
 };
 
-const STORE_FILE = path.join(process.cwd(), '.data', 'agent-projects.json');
+const DATA_DIR = path.join(process.cwd(), '.data');
+const STORE_FILE = path.join(DATA_DIR, 'agent-projects.json');
+const MUSIC_DIR = path.join(DATA_DIR, 'agent-music');
+
+/** Where a project's music file lives (ids are UUIDs we made, but never trust a path). */
+export function musicFile(id: string): string | null {
+  return /^[A-Za-z0-9-]{1,64}$/.test(id) ? path.join(MUSIC_DIR, id) : null;
+}
+
+export function writeMusic(id: string, bytes: Uint8Array): boolean {
+  const file = musicFile(id);
+  if (!file) return false;
+  mkdirSync(MUSIC_DIR, { recursive: true });
+  writeFileSync(file, bytes);
+  return true;
+}
+
+export function readMusic(id: string): Buffer | null {
+  const file = musicFile(id);
+  return file && existsSync(file) ? readFileSync(file) : null;
+}
+
+export function copyMusic(fromId: string, toId: string): boolean {
+  const from = musicFile(fromId);
+  const to = musicFile(toId);
+  if (!from || !to || !existsSync(from)) return false;
+  mkdirSync(MUSIC_DIR, { recursive: true });
+  copyFileSync(from, to);
+  return true;
+}
+
+function deleteMusic(id: string) {
+  const file = musicFile(id);
+  if (file) rmSync(file, { force: true });
+}
+
+export function getProject(id: string): AgentProject | null {
+  return readAll().find((p) => p.id === id) ?? null;
+}
 
 function readAll(): AgentProject[] {
   try {
@@ -47,6 +101,7 @@ export function saveProject(input: Omit<AgentProject, 'id' | 'updatedAt'> & { id
   if (index >= 0) projects[index] = project;
   else projects.push(project);
   writeAll(projects);
+  if (!project.music) deleteMusic(project.id);
   return project;
 }
 
@@ -55,5 +110,6 @@ export function deleteProject(id: string): boolean {
   const remaining = projects.filter((p) => p.id !== id);
   if (remaining.length === projects.length) return false;
   writeAll(remaining);
+  deleteMusic(id);
   return true;
 }

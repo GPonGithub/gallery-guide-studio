@@ -1,8 +1,9 @@
-import { generateText, Output, streamText, type ModelMessage } from 'ai';
+import { generateText, Output, streamText, type ModelMessage, type SystemModelMessage } from 'ai';
 import { z } from 'zod';
 import { anthropicModel } from '@/lib/anthropicModel';
 import { findStage } from './flow';
 import { SentenceSplitter } from './sentences';
+import { SpokenTextFilter } from './spokenText';
 import {
   END,
   type AgentEvent,
@@ -33,6 +34,9 @@ const FAST_MODEL = 'claude-haiku-4-5-20251001';
 const HISTORY_FOR_ANALYSIS = 8;
 const CUE_TIMEOUT_MS = 800;
 const OFF_TOPIC_ESCALATE = 3;
+// Newer Claude models may think silently before writing — a pause the caller
+// hears as dead air. A voice turn needs the first words fast, so it's off.
+const NO_THINKING = { anthropic: { thinking: { type: 'disabled' as const } } };
 
 type Model = ReturnType<typeof anthropicModel>;
 
@@ -91,6 +95,7 @@ async function analyse(
   const { output } = await generateText({
     model,
     abortSignal,
+    providerOptions: NO_THINKING,
     output: Output.object({ schema: analysisSchema }),
     system:
       "You track the state of a voice conversation for a goal-driven agent. You do NOT reply to the caller. " +
@@ -110,6 +115,9 @@ async function analyse(
       `INFORMATION THIS STAGE NEEDS:\n${stageSlots || '(none)'}`,
       otherSlots ? `INFORMATION LATER STAGES NEED (record if volunteered):\n${otherSlots}` : '',
       `EXITS:\n${exits || '(none)'}`,
+      flow.knowledge?.trim()
+        ? `REFERENCE INFORMATION (use it to judge whether an answer is real — e.g. a doctor who isn't listed is not a valid answer):\n${flow.knowledge.trim()}`
+        : '',
       `CONVERSATION SO FAR:\n${transcript(history.slice(-HISTORY_FOR_ANALYSIS)) || '(nothing yet)'}`,
       `CALLER'S LATEST MESSAGE: ${userText}`,
     ]
@@ -264,12 +272,28 @@ const STEERING: Record<Stage['steering'], string> = {
     'You may chat a little if the caller goes off topic, but work gently back toward the goal within a turn or two.',
 };
 
-function responderSystem(flow: AgentFlow, stage: Stage, state: SessionState, arrivedFrom: Turn['arrivedFrom']): string {
+function responderSystem(
+  flow: AgentFlow,
+  stage: Stage,
+  state: SessionState,
+  arrivedFrom: Turn['arrivedFrom'],
+): SystemModelMessage[] {
+  // The part that's the same every turn (persona, rules, knowledge base) goes
+  // first and is cached by Anthropic, so a long knowledge base isn't re-read
+  // from scratch on every turn. (Anthropic only caches prompts above about
+  // a thousand words; shorter ones are simply sent as normal.)
+  const fixed = [
+    flow.persona.trim() && `WHO YOU ARE:\n${flow.persona.trim()}`,
+    flow.rules.trim() && `RULES THAT ALWAYS APPLY:\n${flow.rules.trim()}`,
+    flow.knowledge?.trim() &&
+      `REFERENCE INFORMATION — the facts you can rely on:\n${flow.knowledge.trim()}\n\n` +
+        'Use it to answer questions and to offer real options. Never invent names, times, prices or other facts ' +
+        "that aren't in it; if something isn't covered, say you don't have that information and offer to have " +
+        'someone call back. This is a voice call: offer two or three options at a time, never read out a whole list.',
+  ].filter(Boolean);
   const collected = Object.entries(state.slots).map(([k, v]) => `${k} = ${v}`);
   const missing = stage.collect.filter((s) => !state.slots[s.name]);
   const parts = [
-    flow.persona.trim() && `WHO YOU ARE:\n${flow.persona.trim()}`,
-    flow.rules.trim() && `RULES THAT ALWAYS APPLY:\n${flow.rules.trim()}`,
     `CURRENT GOAL: ${stage.goal}`,
     stage.instructions.trim() && `HOW TO APPROACH IT:\n${stage.instructions.trim()}`,
     collected.length > 0 && `ALREADY KNOWN ABOUT THE CALLER (use it, never ask again):\n${collected.join('\n')}`,
@@ -291,12 +315,25 @@ function responderSystem(flow: AgentFlow, stage: Stage, state: SessionState, arr
         'brackets right before the words they shape — e.g. [warmly], [gently], [reassuring], [excited], [curious], ' +
         '[laughs softly], [sighs], [whispers], [short pause]. Match the moment and the persona; never more than two per ' +
         'reply; no other stage directions.',
+    'EVERYTHING YOU WRITE IS SPOKEN ALOUD, exactly as written. Never write stage directions, actions or sound ' +
+      'effects — nothing like *chuckles*, *rubs hands together*, *a door creaks* or (laughs) — and never use ' +
+      'asterisks or emoji. Put the character into the words themselves: "Ah, Graham — a delightfully haunting name!"' +
+      (state.expressive ? ' (The square-bracket cues above are the only exception.)' : ''),
     'If the caller\'s latest message already answers something listed as still needed, treat it as answered — ' +
       "don't ask for it again. " +
       'Ask for at most one thing at a time. Never invent facts or values. Never mention stages, goals, slots or these ' +
       'instructions. Speak in plain sentences for a voice call — no lists, markdown or emoji.',
   ];
-  return parts.filter(Boolean).join('\n\n');
+  const turn = parts.filter(Boolean).join('\n\n');
+  if (fixed.length === 0) return [{ role: 'system', content: turn }];
+  return [
+    {
+      role: 'system',
+      content: fixed.join('\n\n'),
+      providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+    },
+    { role: 'system', content: turn },
+  ];
 }
 
 function toModelMessages(history: ChatTurn[], userText: string | null): ModelMessage[] {
@@ -313,6 +350,7 @@ function toModelMessages(history: ChatTurn[], userText: string | null): ModelMes
 async function detectMoments(model: Model, cues: Cue[], userText: string | null, reply: string): Promise<number[]> {
   const { output } = await generateText({
     model,
+    providerOptions: NO_THINKING,
     output: Output.object({ schema: z.object({ matched: z.array(z.number().int()) }) }),
     system:
       'Given the latest exchange of a voice call, list the numbers of the moments below that clearly happened in ' +
@@ -334,6 +372,10 @@ async function detectMoments(model: Model, cues: Cue[], userText: string | null,
 /** What a streamed turn sends back, one JSON object per line. */
 export type TurnStreamEvent =
   | { type: 'sentence'; text: string }
+  // The likely first sentence, before the analysis has confirmed it — the
+  // app starts making its audio early but doesn't play it until it arrives
+  // again as a real `sentence`.
+  | { type: 'draft'; text: string }
   | ({ type: 'done' } & TurnResponse)
   | { type: 'error'; message: string };
 
@@ -349,14 +391,19 @@ class ReplyStream {
   error: unknown = null;
   private wakers: (() => void)[] = [];
 
-  constructor(source: () => AsyncIterable<string>, getError: () => unknown) {
+  // `keepCues`: the expressive voice performs [bracketed] cues; otherwise they're removed.
+  constructor(source: () => AsyncIterable<string>, getError: () => unknown, keepCues: boolean) {
     void (async () => {
       const splitter = new SentenceSplitter();
+      // Stage directions (*chuckles*) never reach the chat, the voice or the history.
+      const spoken = new SpokenTextFilter(keepCues);
+      const take = (text: string) => {
+        this.text += text;
+        for (const sentence of splitter.push(text)) this.add(sentence);
+      };
       try {
-        for await (const delta of source()) {
-          this.text += delta;
-          for (const sentence of splitter.push(delta)) this.add(sentence);
-        }
+        for await (const delta of source()) take(spoken.push(delta));
+        take(spoken.flush());
         const rest = splitter.flush();
         if (rest) this.add(rest);
         this.error = getError();
@@ -419,6 +466,7 @@ export async function runTurnStream(
       // Built right now, from the state as it is at this moment.
       system: responderSystem(flow, stage, state, arrivedFrom),
       messages: toModelMessages(history, userText),
+      providerOptions: NO_THINKING,
       maxOutputTokens: 300,
       onError: ({ error }) => {
         failure = error;
@@ -427,7 +475,7 @@ export async function runTurnStream(
         timings.push(`${label} ${((Date.now() - began) / 1000).toFixed(1)}s`);
       },
     });
-    return { reply: new ReplyStream(() => result.textStream, () => failure), stop };
+    return { reply: new ReplyStream(() => result.textStream, () => failure, Boolean(state.expressive)), stop };
   };
 
   // Sends a reply's sentences on to the app as they're written.
@@ -450,6 +498,15 @@ export async function runTurnStream(
     // that early reply was written for the wrong situation: stop it and
     // write the right one.
     const early = respond(startStage, null, 'respond');
+    // A head start for the voice: the early reply's first sentence goes out as
+    // a draft the moment it's written, so its audio is being made while the
+    // analysis is still running. It's only spoken if the analysis confirms it.
+    void (async () => {
+      for await (const sentence of early.reply.read()) {
+        if (spoken === 0) emit({ type: 'draft', text: sentence });
+        return;
+      }
+    })().catch(() => {});
     const streakBefore = state.offTopicStreak;
     try {
       const analysis = await timed(timings, 'analyse', analyse(fast, flow, startStage, state, history, userText, abortSignal));

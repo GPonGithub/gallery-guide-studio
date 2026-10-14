@@ -289,6 +289,7 @@ const AGENT_COLORS = {
   lightGray: hexColor(0xd9, 0xd9, 0xd9),
   lightBlue: hexColor(0xc2, 0xe5, 0xff),
   lightYellow: hexColor(0xff, 0xec, 0xbd),
+  lightGreen: hexColor(0xcd, 0xf4, 0xd3),
   white: hexColor(0xff, 0xff, 0xff),
 };
 
@@ -333,10 +334,10 @@ async function drawAgentFlow(spec) {
   // every card on the board, so two sets would collide. Say so up front.
   const otherCards = page.findAllWithCriteria({ types: ['TABLE'] }).filter(function (t) {
     const kind = t.cellAt(0, 0).text.characters.trim().toUpperCase();
-    return kind === 'STAGE' || kind === 'MASTER';
+    return kind === 'STAGE' || kind === 'MASTER' || kind === 'KNOWLEDGE';
   });
   if (otherCards.length > 0) {
-    log('Warning: this board already has ' + otherCards.length + ' STAGE/MASTER cards the plugin did not draw. Import reads every card, so use an empty board for a new flow (or delete the old cards).');
+    log('Warning: this board already has ' + otherCards.length + ' STAGE/MASTER/KNOWLEDGE cards the plugin did not draw. Import reads every card, so use an empty board for a new flow (or delete the old cards).');
   }
 
   // Start to the right of anything else already on the board.
@@ -382,7 +383,7 @@ async function drawAgentFlow(spec) {
     created.push(table);
     topBottom = Math.max(topBottom, table.y + table.height);
   }
-  log('Drew the MASTER and GUIDE cards.');
+  log('Drew the MASTER, GUIDE and KNOWLEDGE cards.');
 
   const flowTop = topBottom + 260;
   spec.flowTop = flowTop;

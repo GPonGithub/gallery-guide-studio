@@ -23,6 +23,8 @@ export async function POST(req: Request) {
     flow: body.flow,
     brief: body.brief ?? '',
     boardUrl: body.boardUrl ?? '',
+    voice: body.voice,
+    music: body.music ?? null,
   });
   return Response.json({ project });
 }

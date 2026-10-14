@@ -1,12 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { AgentProject } from '@/lib/agent/projectStore';
+import type { AgentProject, ProjectMusic, ProjectVoice } from '@/lib/agent/projectStore';
 import type { AgentFlow } from '@/lib/agent/types';
 import { buttonOutline, buttonPrimary, fieldInput, fieldLabel } from '@/lib/styles';
 
-// Save the current flow (with its brief and FigJam board) under a name, and
-// reopen any saved project later — including jumping straight to its board.
+// Save the current flow (with its brief, FigJam board, voices and background
+// music) under a name, and reopen any saved project later — including
+// jumping straight to its board.
 
 function timeAgo(ms: number): string {
   const minutes = Math.round((Date.now() - ms) / 60_000);
@@ -24,6 +25,10 @@ export type CurrentProject = {
   flow: AgentFlow;
   brief: string;
   boardUrl: string;
+  voice: ProjectVoice;
+  music: ProjectMusic | null;
+  /** The music file itself, if this browser has it. */
+  musicBlob: () => Promise<Blob | null>;
 };
 
 export async function saveProjectRequest(current: CurrentProject, name: string, asNew: boolean): Promise<AgentProject> {
@@ -36,11 +41,36 @@ export async function saveProjectRequest(current: CurrentProject, name: string, 
       flow: current.flow,
       brief: current.brief,
       boardUrl: current.boardUrl,
+      voice: current.voice,
+      music: current.music,
     }),
   });
   const data = (await res.json()) as { project: AgentProject } | { error: string };
   if ('error' in data) throw new Error(data.error);
-  return data.project;
+  const project = data.project;
+  // The music file goes up alongside — or, for a copy of a project whose file
+  // only the server has, is copied across there.
+  if (current.music) {
+    const blob = await current.musicBlob();
+    const upload = blob
+      ? fetch(`/api/agent/projects/music?id=${encodeURIComponent(project.id)}`, { method: 'PUT', body: blob })
+      : asNew && current.id
+        ? fetch(`/api/agent/projects/music?id=${encodeURIComponent(project.id)}&from=${encodeURIComponent(current.id)}`, {
+            method: 'POST',
+          })
+        : null;
+    if (!upload && !blob) {
+      // Never quietly save a project whose music file didn't go with it.
+      throw new Error(
+        `The project was saved, but its music file “${current.music.name}” isn’t loaded here — drop it into the Music panel and save again.`,
+      );
+    }
+    const stored = upload ? await upload : null;
+    if (stored && !stored.ok) {
+      throw new Error(`The project was saved, but its music wasn’t: ${((await stored.json()) as { error?: string }).error ?? 'unknown error'}`);
+    }
+  }
+  return project;
 }
 
 export function ProjectsMenu({
@@ -157,7 +187,9 @@ export function ProjectsMenu({
                     )}
                   </p>
                   <p className="font-label text-[10px] uppercase tracking-wide text-muted-ink">
-                    {p.flow.stages.length} stages · saved {timeAgo(p.updatedAt)}
+                    {p.flow.stages.length} stages
+                    {p.voice && ` · voice: ${p.voice.voices[p.voice.activeVoice]?.name.trim() || `Voice ${p.voice.activeVoice + 1}`}`}
+                    {p.music && ` · ♫ ${p.music.name}`} · saved {timeAgo(p.updatedAt)}
                   </p>
                 </div>
                 {p.boardUrl ? (

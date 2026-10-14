@@ -90,12 +90,22 @@ function toFlow(g: Generated): AgentFlow {
   };
 }
 
-export async function generateFlow(brief: string, anthropicApiKey: string): Promise<{ flow: AgentFlow; problems: string[] }> {
+export async function generateFlow(
+  brief: string,
+  anthropicApiKey: string,
+  knowledge = '',
+): Promise<{ flow: AgentFlow; problems: string[] }> {
   const model = anthropicModel(anthropicApiKey);
+  // The knowledge base isn't designed here (students write it) but it tells
+  // the designer what the agent will actually know — real services, names,
+  // options — so the stages fit them. The agent gets it separately at run time.
+  const context = knowledge.trim()
+    ? `\n\nTHE AGENT'S KNOWLEDGE BASE (facts it will have at run time; design around them, don't copy them into instructions):\n${knowledge.trim()}`
+    : '';
   const first = await generateText({
     model,
     system: SYSTEM,
-    prompt: `BRIEF FROM THE STUDENT:\n${brief.trim()}`,
+    prompt: `BRIEF FROM THE STUDENT:\n${brief.trim()}${context}`,
     output: Output.object({ schema: flowSchema }),
     maxOutputTokens: 8000,
   });
@@ -107,7 +117,7 @@ export async function generateFlow(brief: string, anthropicApiKey: string): Prom
       model,
       system: SYSTEM,
       prompt:
-        `BRIEF FROM THE STUDENT:\n${brief.trim()}\n\nYOUR PREVIOUS DESIGN:\n${JSON.stringify(first.output)}\n\n` +
+        `BRIEF FROM THE STUDENT:\n${brief.trim()}${context}\n\nYOUR PREVIOUS DESIGN:\n${JSON.stringify(first.output)}\n\n` +
         `IT HAS THESE PROBLEMS — return the corrected full design:\n${problems.map((p) => `- ${p}`).join('\n')}`,
       output: Output.object({ schema: flowSchema }),
       maxOutputTokens: 8000,

@@ -122,12 +122,40 @@ plus the existing `figma-jobs` queue (extended).
    confirms it — while the rest is still being written. Normal voice gets the previous
    sentence as `previous_text` for continuity (retries without it if ElevenLabs objects).
 5. Moment cues checked after the reply, off the critical path.
+6. *(after c5374a8)* Voice head start: the early reply's first sentence is sent as a
+   `draft` event and its audio starts being made while the analysis runs (played only if
+   confirmed). Model "thinking" explicitly disabled on every turn call. The fixed part of
+   the reply prompt (persona, rules, knowledge base) is marked for Anthropic prompt caching.
 
 Last measured (before items 2–4): agent turn 1.4–3.4s, full-clip voice 0.9–1.7s.
 **Not yet measured with real keys after items 2–4** — the inspector shows
 `first sentence ready X.Xs` per turn; check it first thing.
 
 ---
+
+### Added in the second session (commit after c5374a8)
+
+- **Knowledge base** (Design tab, yellow field): student-written facts the agent may use and
+  must not go beyond. In both the analysis and reply prompts. Round-trips as a KNOWLEDGE card
+  on the FigJam board (top row: MASTER, GUIDE, KNOWLEDGE). Kept on generate; on import, the
+  board's card wins, and without one the app's copy is kept.
+- **Voice reliability:** `ttsTickets.ts` reads ElevenLabs audio into memory immediately (an
+  idle upstream stream was being cut off mid-sentence). If a streamed sentence still fails,
+  `speechQueue.ts` fetches the whole clip from `/api/tts` and plays that.
+- **Per-voice settings:** each voice has "Save settings"; choosing a voice moves the sliders
+  to its saved settings. Voice cards fold (click the name line).
+- **Background music** (`♫ Music` panel): drop an MP3, volume 0–10 (squared), dip 0–10
+  (share of volume kept while the agent talks: 1 − dip/10), "Try the dip". Starts on
+  "Agent speaks first" (either one), ease-curve fades via a Web Audio gain node
+  (`backgroundMusic.ts`), fades out at call end / Restart. The open mic can hear the music
+  on speakers — not yet handled.
+- **No stage directions:** `spokenText.ts` filters the reply stream. It removes \*actions\*
+  and (laughs), keeps short \*emphasis\* as plain words, and drops [cues] unless the
+  expressive voice is on. The prompt also forbids them.
+- **Projects save voices and music.** Header button: grey with red "Not saved" when the
+  flow/brief/knowledge/board/voices/music differ from the last save; it opens Projects. The
+  music file is stored at `.data/agent-music/<projectId>` (`/api/agent/projects/music`). The
+  browser's working copy is in IndexedDB (`musicStore.ts`), keyed so it matches the project.
 
 ## 4. Verified vs. not verified
 

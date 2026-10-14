@@ -12,6 +12,10 @@ import { buttonOutline, buttonPrimary, fieldInput, fieldLabel } from '@/lib/styl
 // this app for jobs while its panel is open (see figmaJobStore.ts).
 
 const PLUGIN_TIMEOUT_MS = 90_000;
+
+// The fields students write themselves (the brief and the knowledge base)
+// get a light yellow fill, so it's obvious where their input goes.
+const studentField = fieldInput.replace('bg-paper', 'bg-[#fff6cc]');
 const POLL_MS = 1500;
 
 type Job = { status: 'pending' | 'running' | 'done' | 'error'; log: string[]; result?: unknown };
@@ -49,6 +53,31 @@ async function runPluginJob(kind: 'draw-agent-flow' | 'read-agent-flow', payload
   );
 }
 
+const KNOWLEDGE_PLACEHOLDER = [
+  'e.g.',
+  'Opening hours: Mon–Fri 8am–6pm, Sat 9am–1pm',
+  'Doctors: Dr. Maya Chen (family medicine), Dr. Luis Ortega (family medicine)',
+  'Specialists: Dr. Priya Shah (cardiology), Dr. Ben Okafor (dermatology)',
+  'Free appointment times this week: Tue 10:00, Tue 14:30, Thu 9:15',
+  'Prescriptions on file: Zoloft, BuSpar, Propranolol',
+].join('\n');
+
+// Everything here goes to the model on every turn (twice: the reply and the
+// analysis), so a very long knowledge base slows every reply and costs more.
+const KNOWLEDGE_SOFT_LIMIT_WORDS = 3000;
+
+function KnowledgeSize({ text }: { text: string }) {
+  const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+  if (words === 0) return null;
+  const long = words > KNOWLEDGE_SOFT_LIMIT_WORDS;
+  return (
+    <p className={`font-label text-[10px] uppercase tracking-wide ${long ? 'text-[#b91c1c]' : 'text-muted-ink'}`}>
+      {words.toLocaleString()} words
+      {long ? ' — long: every reply reads all of this, so replies get slower. Trim to what the bot needs.' : ''}
+    </p>
+  );
+}
+
 const BRIEF_PLACEHOLDER =
   'e.g. A voice guide at the entrance of a science museum. It welcomes visitors, asks what they are curious about ' +
   '(space, dinosaurs or the human body), recommends the matching gallery, asks if they want the audio tour, and ' +
@@ -62,6 +91,7 @@ export function DesignPanel({
   onBriefChange,
   onBoardUrlChange,
   onFlowLoaded,
+  onKnowledgeChange,
   onNeedKey,
 }: {
   flow: AgentFlow;
@@ -71,6 +101,7 @@ export function DesignPanel({
   onBriefChange: (brief: string) => void;
   onBoardUrlChange: (url: string) => void;
   onFlowLoaded: (flow: AgentFlow) => void;
+  onKnowledgeChange: (knowledge: string) => void;
   onNeedKey: () => void;
 }) {
   const [busy, setBusy] = useState<null | 'generate' | 'draw' | 'import'>(null);
@@ -133,11 +164,12 @@ export function DesignPanel({
       const res = await fetch('/api/agent/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brief, anthropicApiKey }),
+        body: JSON.stringify({ brief, anthropicApiKey, knowledge: flow.knowledge ?? '' }),
       });
       const data = (await res.json()) as { flow: AgentFlow; problems: string[] } | { error: string };
       if ('error' in data) throw new Error(data.error);
-      generated = { ...data.flow, tdUrl: flow.tdUrl };
+      // Keep what isn't part of the design: the TD address and the knowledge base.
+      generated = { ...data.flow, tdUrl: flow.tdUrl, knowledge: flow.knowledge ?? '' };
       onFlowLoaded(generated);
       setProblems(data.problems);
       say(`✓ Designed ${generated.stages.length} stages — they're in the editor tabs above.`);
@@ -154,7 +186,7 @@ export function DesignPanel({
     setProblems([]);
     try {
       const tables = (await runPluginJob('read-agent-flow', null, say)) as ReadTable[] | undefined;
-      const { flow: imported, warnings } = boardToFlow(tables ?? [], { tdUrl: flow.tdUrl });
+      const { flow: imported, warnings } = boardToFlow(tables ?? [], { tdUrl: flow.tdUrl, knowledge: flow.knowledge ?? '' });
       if (imported.stages.length === 0) {
         say('✗ No STAGE cards found on that board. Is the plugin open in the right board?');
         return;
@@ -185,7 +217,7 @@ export function DesignPanel({
           value={brief}
           onChange={(e) => onBriefChange(e.target.value)}
           placeholder={BRIEF_PLACEHOLDER}
-          className={`min-h-[160px] w-full resize-y leading-snug ${fieldInput}`}
+          className={`min-h-[160px] w-full resize-y leading-snug ${studentField}`}
         />
         <label className="flex items-center gap-1.5 font-label text-[10px] uppercase tracking-wide text-muted-ink">
           <input
@@ -199,6 +231,22 @@ export function DesignPanel({
         <button onClick={generate} disabled={busy !== null || !brief.trim()} className={`self-start ${buttonPrimary}`}>
           {busy === 'generate' ? 'Designing…' : 'Generate flow'}
         </button>
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <p className={fieldLabel}>Knowledge base · facts the bot can use</p>
+        <p className="font-body text-xs italic text-muted-ink">
+          Everything the bot should know but not invent: names, times, prices, options. It answers questions and
+          offers choices from this, and says when something isn&rsquo;t covered. Drawn on the board as a KNOWLEDGE card;
+          importing a board with one replaces this (without one, this is kept). Generating a flow never changes it.
+        </p>
+        <textarea
+          value={flow.knowledge ?? ''}
+          onChange={(e) => onKnowledgeChange(e.target.value)}
+          placeholder={KNOWLEDGE_PLACEHOLDER}
+          className={`min-h-[200px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
+        />
+        <KnowledgeSize text={flow.knowledge ?? ''} />
       </section>
 
       <section className="flex flex-col gap-2">

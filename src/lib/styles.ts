@@ -18,6 +18,12 @@ export const buttonOutline =
   'hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:border-hair disabled:text-muted-ink disabled:hover:bg-paper disabled:hover:text-muted-ink ' +
   'focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-[3px]';
 
+// The header Save button while there are unsaved changes: grey, with "Not
+// saved" in red — a deliberate break from monochrome so it can't be missed.
+export const buttonUnsaved =
+  `border-2 border-[#9ca3af] bg-[#e5e7eb] px-4 py-2 ${labelText} text-[#b91c1c] transition-colors duration-100 ` +
+  'hover:bg-[#d1d5db] focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-[3px]';
+
 // The one deliberate break from the otherwise-strict monochrome system —
 // reserved for destructive actions (e.g. "Reset from Figma"), never used
 // for anything else, so red stays a reliable danger signal.

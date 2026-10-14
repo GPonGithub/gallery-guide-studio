@@ -12,6 +12,8 @@
 export type SpeechQueueOptions = {
   /** Fetches a one-time playback ticket for a sentence (see /api/tts/stream). */
   requestTicket: (text: string, previousText: string) => Promise<string>;
+  /** Safety net: the whole clip for a sentence, fetched in one go, if streaming it failed. */
+  requestClip: (text: string, previousText: string) => Promise<Blob>;
   playbackRate: () => number;
   expressive: boolean;
   onSpeakingChange: (speaking: boolean) => void;
@@ -19,7 +21,7 @@ export type SpeechQueueOptions = {
 };
 
 export class SpeechQueue {
-  private tickets: Promise<string | null>[] = [];
+  private tickets: { text: string; previous: string; ticket: Promise<string | null> }[] = [];
   private spokenSoFar = '';
   private playing: HTMLAudioElement | null = null;
   private finished = false;
@@ -31,16 +33,22 @@ export class SpeechQueue {
 
   constructor(private options: SpeechQueueOptions) {}
 
-  /** Adds the next sentence of the reply. */
-  add(sentence: string) {
+  /**
+   * Adds the next sentence of the reply. `headStart` is a ticket for audio
+   * already being made for it (asked for before the sentence was confirmed);
+   * if that didn't work out, it's simply asked for again here.
+   */
+  add(sentence: string, headStart?: Promise<string | null>) {
     if (this.cancelled) return;
     const previous = this.spokenSoFar;
     this.spokenSoFar = `${this.spokenSoFar} ${sentence}`.trim();
-    const ticket = this.options.requestTicket(sentence, previous).catch((err: unknown) => {
-      this.options.onError(`Voice failed: ${err instanceof Error ? err.message : 'unknown error'}`);
-      return null;
-    });
-    this.tickets.push(ticket);
+    const ticket = (headStart ?? Promise.resolve(null))
+      .then((early) => early ?? this.options.requestTicket(sentence, previous))
+      .catch((err: unknown) => {
+        this.options.onError(`Voice failed: ${err instanceof Error ? err.message : 'unknown error'}`);
+        return null;
+      });
+    this.tickets.push({ text: sentence, previous, ticket });
     if (!this.active) {
       this.active = true;
       this.options.onSpeakingChange(true);
@@ -82,24 +90,51 @@ export class SpeechQueue {
       else this.waiting = true;
       return;
     }
-    const ticket = await next;
+    const ticket = await next.ticket;
     if (this.cancelled) return;
     if (!ticket) return this.playNext();
-    const audio = new Audio(`/api/tts/stream?ticket=${encodeURIComponent(ticket)}`);
+    this.play(`/api/tts/stream?ticket=${encodeURIComponent(ticket)}`, () => this.playFallback(next));
+  }
+
+  // Plays one source; `onFail` runs instead of moving on if it can't play.
+  private play(src: string, onFail: (detail: string) => void) {
+    const audio = new Audio(src);
     this.playing = audio;
     if (this.options.expressive) {
       // The expressive models have no speed setting, so apply it here.
       audio.playbackRate = this.options.playbackRate();
       audio.preservesPitch = true;
     }
-    audio.onended = () => void this.playNext();
-    audio.onerror = () => {
-      this.options.onError('Voice playback stopped unexpectedly — try again, or check the voice in the Voice panel.');
+    let settled = false;
+    const fail = (detail: string) => {
+      if (settled || this.cancelled) return;
+      settled = true;
+      onFail(detail);
+    };
+    audio.onended = () => {
+      if (settled) return;
+      settled = true;
+      if (src.startsWith('blob:')) URL.revokeObjectURL(src);
       void this.playNext();
     };
+    audio.onerror = () => fail(`error code ${audio.error?.code ?? '?'}${audio.error?.message ? `: ${audio.error.message}` : ''}`);
+    audio.play().catch((err: unknown) => fail(err instanceof Error ? err.message : 'could not start'));
+  }
+
+  // Streaming that sentence failed (e.g. the connection broke off): fetch the
+  // whole clip in one go and play it, so the reply carries on.
+  private async playFallback(item: { text: string; previous: string }) {
     try {
-      await audio.play();
-    } catch {
+      const blob = await this.options.requestClip(item.text, item.previous);
+      if (this.cancelled) return;
+      const url = URL.createObjectURL(blob);
+      this.play(url, (detail) => {
+        URL.revokeObjectURL(url);
+        this.options.onError(`Voice playback stopped unexpectedly (${detail}) — try again, or check the voice in the Voice panel.`);
+        void this.playNext();
+      });
+    } catch (err) {
+      this.options.onError(`Voice failed: ${err instanceof Error ? err.message : 'unknown error'}`);
       void this.playNext();
     }
   }

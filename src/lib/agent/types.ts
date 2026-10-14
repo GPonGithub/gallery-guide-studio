@@ -76,6 +76,13 @@ export type AgentFlow = {
   stages: Stage[];
   /** Where cues are POSTed. Blank = cues are only shown in the inspector. */
   tdUrl: string;
+  /**
+   * Facts the agent can draw on — doctors, opening hours, prices, menus…
+   * Written by the student (never generated), kept separate from the
+   * conversation design, and preserved when a flow is generated or
+   * imported from FigJam.
+   */
+  knowledge?: string;
 };
 
 /** Everything the runtime tracks about one conversation. Owned by code, not the LLM. */

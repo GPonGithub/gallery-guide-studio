@@ -5,16 +5,19 @@ import { DesignPanel } from '@/components/agent/DesignPanel';
 import { MasterEditor, StageEditor } from '@/components/agent/FlowEditor';
 import { OpenMic, type OpenMicStatus } from '@/components/agent/OpenMic';
 import { SpeechQueue } from '@/components/agent/speechQueue';
+import { BackgroundMusic } from '@/components/agent/backgroundMusic';
+import { MusicPanel } from '@/components/agent/MusicPanel';
+import { adoptKeylessTrack, clearTrack, loadTrack, saveTrack } from '@/lib/musicStore';
 import type { TurnStreamEvent } from '@/lib/agent/runtime';
 import { MAX_VOICES, VoicePanel, type AccountVoices, type SavedVoice, type VoiceCheck } from '@/components/agent/VoicePanel';
 import { DEFAULT_VOICE_SETTINGS } from '@/lib/storage';
 import type { VoiceSettings } from '@/lib/types';
-import { ProjectsMenu, saveProjectRequest, type CurrentProject } from '@/components/agent/ProjectsMenu';
-import type { AgentProject } from '@/lib/agent/projectStore';
+import { ProjectsMenu, type CurrentProject } from '@/components/agent/ProjectsMenu';
+import type { AgentProject, ProjectMusic, ProjectVoice } from '@/lib/agent/projectStore';
 import { Inspector, type TurnLog } from '@/components/agent/Inspector';
 import { blankStage, emptyFlow, initialState, sampleFlow, sortStages, startStage } from '@/lib/agent/flow';
 import type { AgentEvent, AgentFlow, ChatTurn, CueStatus, SessionState, Stage, TurnResponse } from '@/lib/agent/types';
-import { buttonIcon, buttonOutline, buttonPrimary, fieldInput, fieldLabel } from '@/lib/styles';
+import { buttonIcon, buttonOutline, buttonPrimary, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
 
 // v4 prototype: define a goal-driven agent by typing stage cards (no
 // image, no FigJam yet) and test it in the same page — chat in the
@@ -45,13 +48,33 @@ type Saved = {
   voices: SavedVoice[];
   /** Index into `voices` of the one the agent speaks with. */
   activeVoice: number;
+  /** Background music volume, 0–10. (The file itself lives in IndexedDB — see musicStore.) */
+  musicVolume: number;
+  /** How far the music dips while the agent talks, 0–10 (10 = silent). */
+  musicDip: number;
+  /** The open project's music (its file is in IndexedDB — see musicStore), or none. */
+  musicTrack: { name: string; key: string } | null;
 };
 
 // Performance cues ([warmly], [laughs softly]…) are for the voice, not the reader.
 const withoutCues = (text: string) => text.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
 
-const snapshotOf = (s: Pick<Saved, 'flow' | 'brief' | 'boardUrl'>) =>
-  JSON.stringify({ flow: s.flow, brief: s.brief, boardUrl: s.boardUrl });
+// What a project saves, as it stands now — compared with the last save to
+// tell whether anything (flow, brief, knowledge, board, voices, music) changed.
+type ProjectContent = Pick<AgentProject, 'flow' | 'brief' | 'boardUrl'> & { voice: ProjectVoice; music: ProjectMusic | null };
+
+const voiceOf = (s: Saved): ProjectVoice => ({ voices: s.voices, activeVoice: s.activeVoice, voiceSettings: s.voiceSettings });
+const musicOf = (s: Saved): ProjectMusic | null =>
+  s.musicTrack ? { ...s.musicTrack, volume: s.musicVolume, dip: s.musicDip } : null;
+const contentOf = (s: Saved): ProjectContent => ({ flow: s.flow, brief: s.brief, boardUrl: s.boardUrl, voice: voiceOf(s), music: musicOf(s) });
+
+// Keys sorted, so the same settings compare equal whatever order they were written in.
+const snapshotOf = (content: ProjectContent) =>
+  JSON.stringify(content, (_key, value: unknown) =>
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : value,
+  );
 
 type SpeechRecognitionLike = {
   interimResults: boolean;
@@ -79,6 +102,9 @@ function loadSaved(): Saved {
     pauseSeconds: 1.0,
     voices: [],
     activeVoice: 0,
+    musicVolume: 5,
+    musicDip: 5,
+    musicTrack: null,
   };
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -132,7 +158,7 @@ export default function AgentStudioPage() {
     text: string;
     basis: string;
     controller: AbortController;
-    stream: { listen: (onSentence: (sentence: string) => void) => void; done: Promise<TurnResponse> };
+    stream: TurnStream;
   } | null>(null);
   // True while the agent's voice is playing — the open mic stays deaf then.
   const [speaking, setSpeaking] = useState(false);
@@ -160,6 +186,81 @@ export default function AgentStudioPage() {
   }, [saved]);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  // Background music: starts when the agent is asked to open the call, dips
+  // while the agent talks, fades out when the call ends or restarts.
+  const musicRef = useRef<BackgroundMusic | null>(null);
+  const [musicPlaying, setMusicPlaying] = useState(false);
+  // Which music file the player has loaded (see the effect below), and the
+  // file itself — kept here too, in case this browser can't store it.
+  const loadedMusicKey = useRef<string | null>(null);
+  const musicFileRef = useRef<{ key: string; blob: Blob } | null>(null);
+  useEffect(() => {
+    const music = new BackgroundMusic(setMusicPlaying);
+    musicRef.current = music;
+    loadedMusicKey.current = null;
+    // Music dropped in before music belonged to projects had no key: adopt it
+    // into the open project (as an unsaved change), rather than losing it.
+    void adoptKeylessTrack().then((adopted) => {
+      if (adopted) setSaved((s) => (s && !s.musicTrack ? { ...s, musicTrack: adopted } : s));
+    });
+    return () => {
+      music.stop(0);
+      music.setTrack(null);
+    };
+  }, []);
+  // Loads the open project's music into the player whenever it changes
+  // (a project opened, a file dropped in or removed): from this browser's
+  // copy if it has it, otherwise from the saved project.
+  const musicKey = saved?.musicTrack?.key ?? null;
+  useEffect(() => {
+    const music = musicRef.current;
+    if (!music || !saved || musicKey === loadedMusicKey.current) return;
+    loadedMusicKey.current = musicKey;
+    if (!musicKey || !saved.musicTrack) {
+      music.setTrack(null);
+      return;
+    }
+    const { name } = saved.musicTrack;
+    const projectId = saved.projectId;
+    void (async () => {
+      const stored = await loadTrack();
+      let blob = musicFileRef.current?.key === musicKey ? musicFileRef.current.blob : null;
+      if (!blob && stored?.key === musicKey) blob = stored.blob;
+      // The same file under an older key (e.g. from before music belonged to projects): use it.
+      if (!blob && stored && stored.name === name) {
+        blob = stored.blob;
+        void saveTrack({ name, key: musicKey, blob });
+      }
+      if (!blob && projectId) {
+        const res = await fetch(`/api/agent/projects/music?id=${encodeURIComponent(projectId)}`, { cache: 'no-store' });
+        if (res.ok) {
+          blob = await res.blob();
+          void saveTrack({ name, key: musicKey, blob });
+        }
+      }
+      if (loadedMusicKey.current !== musicKey) return; // switched again meanwhile
+      if (blob) {
+        musicFileRef.current = { key: musicKey, blob };
+        music.setTrack(blob);
+      }
+      else setError(`The music file “${name}” couldn’t be found — drop it into the Music panel again.`);
+    })();
+  }, [musicKey]); // eslint-disable-line react-hooks/exhaustive-deps -- only a different file needs loading
+  useEffect(() => {
+    if (saved) musicRef.current?.setLevels(saved.musicVolume, saved.musicDip);
+  }, [saved?.musicVolume, saved?.musicDip]); // eslint-disable-line react-hooks/exhaustive-deps -- only the two levels matter
+  // While "Try the dip" is running, the agent finishing speaking mustn't cut it short (and vice versa).
+  const speakingRef = useRef(false);
+  const tryingDipRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    speakingRef.current = speaking;
+    if (!tryingDipRef.current) musicRef.current?.duck(speaking);
+  }, [speaking]);
+  // Once the call has ended and the goodbye has been spoken, the music fades out.
+  useEffect(() => {
+    if (session?.ended && !speaking) musicRef.current?.stop();
+  }, [session?.ended, speaking]);
 
   useEffect(() => {
     const loaded = loadSaved();
@@ -233,6 +334,7 @@ export default function AgentStudioPage() {
 
   const restart = (code = startAt) => {
     stopAudio();
+    musicRef.current?.stop();
     setSession(initialState(flow, code || undefined));
     setMessages([]);
     setLog([]);
@@ -246,13 +348,14 @@ export default function AgentStudioPage() {
     setSelected(select ?? sortStages(next.stages)[0]?.id ?? 'master');
     setStartAt('');
     stopAudio();
+    musicRef.current?.stop();
     setSession(initialState(next));
     setMessages([]);
     setLog([]);
     setError(null);
   };
 
-  const dirty = saved.projectId ? snapshotOf(saved) !== saved.savedSnapshot : flow.stages.length > 0;
+  const dirty = saved.projectId ? snapshotOf(contentOf(saved)) !== saved.savedSnapshot : flow.stages.length > 0;
   const current: CurrentProject = {
     id: saved.projectId,
     name: saved.projectName,
@@ -260,19 +363,61 @@ export default function AgentStudioPage() {
     flow,
     brief: saved.brief,
     boardUrl: saved.boardUrl,
+    voice: voiceOf(saved),
+    music: musicOf(saved),
+    musicBlob: async () => {
+      const key = saved.musicTrack?.key;
+      if (musicFileRef.current && musicFileRef.current.key === key) return musicFileRef.current.blob;
+      const stored = await loadTrack();
+      return stored && stored.key === key ? stored.blob : null;
+    },
   };
   const okToLeave = () =>
     !dirty || window.confirm(`"${saved.projectName}" has unsaved changes. Continue without saving them?`);
 
+  // Records `project` as what's on disk. (Projects saved before voices were
+  // part of a project keep whatever voice is set up now.)
   const markSaved = (project: AgentProject) =>
     setSaved((s) =>
-      s ? { ...s, projectId: project.id, projectName: project.name, savedSnapshot: snapshotOf(project) } : s,
+      s
+        ? {
+            ...s,
+            projectId: project.id,
+            projectName: project.name,
+            savedSnapshot: snapshotOf({
+              flow: project.flow,
+              brief: project.brief,
+              boardUrl: project.boardUrl,
+              voice: project.voice ?? voiceOf(s),
+              music: project.music ?? null,
+            }),
+          }
+        : s,
     );
 
   const openProject = (project: AgentProject) => {
     if (!okToLeave()) return;
     loadFlow(project.flow, 'design');
-    setSaved((s) => (s ? { ...s, brief: project.brief, boardUrl: project.boardUrl } : s));
+    const voice = project.voice;
+    const music = project.music ?? null;
+    setSaved((s) =>
+      s
+        ? {
+            ...s,
+            brief: project.brief,
+            boardUrl: project.boardUrl,
+            ...(voice && {
+              voices: voice.voices,
+              activeVoice: voice.activeVoice,
+              voiceSettings: voice.voiceSettings,
+              voiceId: voice.voices[voice.activeVoice]?.voiceId ?? '',
+            }),
+            // Only a project that has music saved with it plays any.
+            musicTrack: music && { name: music.name, key: music.key },
+            ...(music && { musicVolume: music.volume, musicDip: music.dip }),
+          }
+        : s,
+    );
     markSaved(project);
     setProjectsOpen(false);
   };
@@ -290,31 +435,20 @@ export default function AgentStudioPage() {
             projectId: null,
             projectName: kind === 'example' ? 'UCSF front desk (example)' : 'Untitled project',
             savedSnapshot: '',
+            musicTrack: null,
           }
         : s,
     );
     setProjectsOpen(false);
   };
 
-  // Header "Save": straight to disk for a project that already has a name;
-  // a brand-new one opens the menu to name it.
-  const quickSave = async () => {
-    if (!saved.projectId) {
-      setProjectsOpen(true);
-      return;
-    }
-    try {
-      markSaved(await saveProjectRequest(current, saved.projectName, false));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Save failed.');
-    }
-  };
-
   // `always` = play even with Spoken replies off (the voice panel's Test button).
   // `expressive` = the text carries performance cues for an expressive model.
   // `voiceId` = a specific saved voice (the panel's per-voice Test buttons);
-  // otherwise the voice in use.
-  const speak = async (text: string, always = false, expressive = false, voiceId?: string) => {
+  // otherwise the voice in use. `settings` = that voice's own saved settings;
+  // otherwise the sliders as they are now.
+  const speak = async (text: string, always = false, expressive = false, voiceId?: string, settings?: VoiceSettings) => {
+    const voiceSettings = settings ?? voiceRef.current.settings;
     if (!always && !voiceOn) return;
     if (!withoutCues(text)) return; // nothing to say (e.g. an empty reply)
     if (!voiceRef.current.apiKey.trim()) {
@@ -332,7 +466,7 @@ export default function AgentStudioPage() {
           text,
           voiceId: voiceId ?? voiceRef.current.voiceId,
           apiKey: voiceRef.current.apiKey,
-          voiceSettings: voiceRef.current.settings,
+          voiceSettings,
           expressive,
         }),
       });
@@ -345,7 +479,7 @@ export default function AgentStudioPage() {
       // The expressive models have no speed setting, so apply the Speed
       // slider here instead (keeping the pitch natural).
       if (expressive) {
-        audio.playbackRate = voiceRef.current.settings.speed;
+        audio.playbackRate = voiceSettings.speed;
         audio.preservesPitch = true;
       }
       audio.onplay = () => setSpeaking(true);
@@ -388,7 +522,33 @@ export default function AgentStudioPage() {
   // sentence received so far and each new one as it arrives — so a turn
   // started early can collect sentences silently and be voiced only once
   // it's actually used.
-  type TurnStream = { listen: (onSentence: (sentence: string) => void) => void; done: Promise<TurnResponse> };
+  // `takeTicket` hands over audio already being made for a sentence, if any.
+  type TurnStream = {
+    listen: (onSentence: (sentence: string) => void) => void;
+    takeTicket: (sentence: string) => Promise<string | null> | undefined;
+    done: Promise<TurnResponse>;
+  };
+
+  // Asks the server to start making one sentence's audio; returns a one-time
+  // ticket for playing it (see /api/tts/stream). Settings are read now, so a
+  // slider moved while the agent was thinking still applies.
+  const requestTicket = async (text: string, previousText: string, expressive: boolean) => {
+    const res = await fetch('/api/tts/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text,
+        voiceId: voiceRef.current.voiceId,
+        apiKey: voiceRef.current.apiKey,
+        voiceSettings: voiceRef.current.settings,
+        expressive,
+        // Keeps the normal voice's delivery continuous across sentences.
+        previousText: expressive ? undefined : previousText,
+      }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return ((await res.json()) as { ticket: string }).ticket;
+  };
 
   const startTurnStream = (
     state: SessionState,
@@ -399,6 +559,16 @@ export default function AgentStudioPage() {
     const sentences: string[] = [];
     // Set later by listen(), from outside this function.
     const hub: { listener: ((sentence: string) => void) | null } = { listener: null };
+    // A head start for the voice: the first sentence's audio starts being
+    // made as soon as the server has written it (a draft, or the first real
+    // sentence of a turn still waiting for the pause to end) — not when it's
+    // finally played. A draft the analysis rejects is simply never played.
+    const voiceReady = voiceOn && voiceRef.current.apiKey.trim() !== '';
+    const tickets = new Map<string, Promise<string | null>>();
+    const headStart = (text: string) => {
+      if (!voiceReady || tickets.size > 0 || !withoutCues(text)) return;
+      tickets.set(text, requestTicket(text, '', Boolean(state.expressive)).catch(() => null));
+    };
     const done = (async (): Promise<TurnResponse> => {
       const res = await fetch('/api/agent/turn', {
         method: 'POST',
@@ -419,7 +589,10 @@ export default function AgentStudioPage() {
           pending = pending.slice(newline + 1);
           if (!line) continue;
           const event = JSON.parse(line) as TurnStreamEvent;
-          if (event.type === 'sentence') {
+          if (event.type === 'draft') {
+            headStart(event.text);
+          } else if (event.type === 'sentence') {
+            if (sentences.length === 0) headStart(event.text);
             sentences.push(event.text);
             hub.listener?.(event.text);
           } else if (event.type === 'error') {
@@ -433,6 +606,11 @@ export default function AgentStudioPage() {
     })();
     return {
       done,
+      takeTicket: (sentence) => {
+        const ticket = tickets.get(sentence);
+        tickets.delete(sentence);
+        return ticket;
+      },
       listen: (onSentence) => {
         for (const sentence of sentences) onSentence(sentence);
         hub.listener = onSentence;
@@ -447,8 +625,9 @@ export default function AgentStudioPage() {
       playbackRate: () => voiceRef.current.settings.speed,
       onSpeakingChange: setSpeaking,
       onError: setError,
-      requestTicket: async (text, previousText) => {
-        const res = await fetch('/api/tts/stream', {
+      requestTicket: (text, previousText) => requestTicket(text, previousText, expressive),
+      requestClip: async (text, previousText) => {
+        const res = await fetch('/api/tts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -457,12 +636,11 @@ export default function AgentStudioPage() {
             apiKey: voiceRef.current.apiKey,
             voiceSettings: voiceRef.current.settings,
             expressive,
-            // Keeps the normal voice's delivery continuous across sentences.
             previousText: expressive ? undefined : previousText,
           }),
         });
         if (!res.ok) throw new Error(await res.text());
-        return ((await res.json()) as { ticket: string }).ticket;
+        return res.blob();
       },
     });
 
@@ -545,10 +723,11 @@ export default function AgentStudioPage() {
     const queue = voiceOn && voiceRef.current.apiKey.trim() ? newSpeechQueue(Boolean(state.expressive)) : null;
     queueRef.current = queue;
     let shown = '';
+    let stream: TurnStream | undefined = early;
     const onSentence = (sentence: string) => {
       shown = `${shown} ${sentence}`.trim();
       setMessages([...withCaller, { role: 'assistant', text: shown }]);
-      if (withoutCues(sentence)) queue?.add(sentence);
+      if (withoutCues(sentence)) queue?.add(sentence, stream?.takeTicket(sentence));
     };
     try {
       let data: TurnResponse | null = null;
@@ -563,7 +742,7 @@ export default function AgentStudioPage() {
         }
       }
       if (!data) {
-        const stream = startTurnStream(state, history, userText);
+        stream = startTurnStream(state, history, userText);
         stream.listen(onSentence);
         data = await stream.done;
       }
@@ -585,6 +764,14 @@ export default function AgentStudioPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  // "Agent speaks first" (normal or expressive): the music starts in the same
+  // click — browsers only let sound start from one — while the agent's
+  // opening line is being written.
+  const openCall = (expressive: boolean) => {
+    if (saved.anthropicApiKey.trim()) musicRef.current?.start();
+    void sendTurn(null, { expressive });
   };
 
   const submit = () => {
@@ -659,8 +846,14 @@ export default function AgentStudioPage() {
           <button onClick={() => setProjectsOpen(true)} className={buttonOutline}>
             Projects
           </button>
-          <button onClick={quickSave} disabled={!dirty} className={buttonPrimary}>
-            Save
+          {/* Opens Projects to save. Grey with red "Not saved" while anything (flow, brief,
+              knowledge base, voices, music) has changed since the last save. */}
+          <button
+            onClick={() => setProjectsOpen(true)}
+            className={dirty ? buttonUnsaved : buttonOutline}
+            title={dirty ? 'There are unsaved changes — click to save the project' : 'Everything is saved'}
+          >
+            {dirty ? 'Not saved' : 'Saved ✓'}
           </button>
           <button onClick={() => setKeysOpen((o) => !o)} className={buttonOutline}>
             Keys
@@ -744,6 +937,7 @@ export default function AgentStudioPage() {
                 onBriefChange={(brief) => setSaved({ ...saved, brief })}
                 onBoardUrlChange={(boardUrl) => setSaved({ ...saved, boardUrl })}
                 onFlowLoaded={(next) => loadFlow(next, 'design')}
+                onKnowledgeChange={(knowledge) => setFlow({ ...flow, knowledge })}
                 onNeedKey={() => {
                   setError('Add your Anthropic API key first (Keys, top right).');
                   setKeysOpen(true);
@@ -814,24 +1008,66 @@ export default function AgentStudioPage() {
               <input type="checkbox" checked={voiceOn} onChange={(e) => setVoiceOn(e.target.checked)} className="accent-ink" />
               Spoken replies
             </label>
+            <MusicPanel
+              trackName={saved.musicTrack?.name ?? null}
+              playing={musicPlaying}
+              volume={saved.musicVolume}
+              dip={saved.musicDip}
+              onFile={async (file) => {
+                const key = crypto.randomUUID();
+                const kept = await saveTrack({ name: file.name, key, blob: file });
+                musicRef.current?.setTrack(file);
+                loadedMusicKey.current = key;
+                musicFileRef.current = { key, blob: file };
+                setSaved((s) => (s ? { ...s, musicTrack: { name: file.name, key } } : s));
+                return kept ? null : 'Playing it now — save the project to keep it (this browser’s storage is blocked).';
+              }}
+              onRemove={() => {
+                musicRef.current?.setTrack(null);
+                loadedMusicKey.current = null;
+                musicFileRef.current = null;
+                setSaved((s) => (s ? { ...s, musicTrack: null } : s));
+                void clearTrack();
+              }}
+              onPreview={() => (musicPlaying ? musicRef.current?.stop() : musicRef.current?.start())}
+              onTryDip={() => {
+                if (tryingDipRef.current) clearTimeout(tryingDipRef.current);
+                musicRef.current?.duck(true);
+                tryingDipRef.current = setTimeout(() => {
+                  tryingDipRef.current = null;
+                  musicRef.current?.duck(speakingRef.current);
+                }, 3000);
+              }}
+              onVolumeChange={(musicVolume) => setSaved({ ...saved, musicVolume })}
+              onDipChange={(musicDip) => setSaved({ ...saved, musicDip })}
+            />
             <VoicePanel
               settings={saved.voiceSettings ?? DEFAULT_VOICE_SETTINGS}
               voices={saved.voices}
               activeVoice={saved.activeVoice}
               onSettingsChange={(voiceSettings) => setSaved({ ...saved, voiceSettings })}
-              onVoicesChange={(voices, activeVoice) =>
-                setSaved({ ...saved, voices, activeVoice, voiceId: voices[activeVoice]?.voiceId ?? '' })
+              onVoicesChange={(voices, activeVoice) => {
+                // Switching to a voice with saved settings moves the sliders to them.
+                const switchedTo = activeVoice !== saved.activeVoice ? voices[activeVoice]?.settings : undefined;
+                setSaved({
+                  ...saved,
+                  voices,
+                  activeVoice,
+                  voiceId: voices[activeVoice]?.voiceId ?? '',
+                  voiceSettings: switchedTo ? { ...switchedTo } : saved.voiceSettings,
+                });
+              }}
+              onTest={(voiceId, settings) =>
+                speak('Hi there, this is how I sound with these settings. Does that work for you?', true, false, voiceId, settings)
               }
-              onTest={(voiceId) =>
-                speak('Hi there, this is how I sound with these settings. Does that work for you?', true, false, voiceId)
-              }
-              onTestExpressive={(voiceId) =>
+              onTestExpressive={(voiceId, settings) =>
                 speak(
                   '[warmly] Hi there, this is my expressive voice. [laughs softly] I can sound pretty excited... ' +
                     '[whispers] or keep things quiet. [curious] So, how does this sound to you?',
                   true,
                   true,
                   voiceId,
+                  settings,
                 )
               }
               loadAccountVoices={async (): Promise<AccountVoices> => {
@@ -874,11 +1110,11 @@ export default function AgentStudioPage() {
                   Let the agent open the call, or just type (or speak) to start.
                 </p>
                 <div className="flex flex-wrap justify-center gap-2">
-                  <button onClick={() => sendTurn(null, { expressive: false })} disabled={!firstStage} className={buttonPrimary}>
+                  <button onClick={() => openCall(false)} disabled={!firstStage} className={buttonPrimary}>
                     Agent speaks first
                   </button>
                   <button
-                    onClick={() => sendTurn(null, { expressive: true })}
+                    onClick={() => openCall(true)}
                     disabled={!firstStage}
                     className={buttonOutline}
                     title="The agent performs its lines — [warmly], [laughs softly], [sighs]… — using ElevenLabs' expressive v4 Turbo model. A little slower to start speaking than the normal voice."

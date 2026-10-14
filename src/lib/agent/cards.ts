@@ -10,14 +10,14 @@ import { type AgentFlow, type Cue, type CueTrigger, type Exit, type Slot, type S
  */
 
 export type BoardCard = {
-  kind: 'MASTER' | 'GUIDE' | 'STAGE';
+  kind: 'MASTER' | 'GUIDE' | 'KNOWLEDGE' | 'STAGE';
   title: string;
   rows: [string, string][];
   /** 'top' = master/guide row above the flow; 'flow' = stage columns. */
   area: 'top' | 'flow';
   column: number;
   header: 'black' | 'darkGray';
-  labels: 'lightGray' | 'lightBlue' | 'lightYellow';
+  labels: 'lightGray' | 'lightBlue' | 'lightYellow' | 'lightGreen';
 };
 
 export type BoardLink = { from: number; to: number; label: string };
@@ -73,6 +73,10 @@ export const GUIDE_ROWS: [string, string][] = [
     'One per line, sent to TouchDesigner:\nCUE_NAME on enter  ·  on goal met  ·  on exit  ·  on <information name>\nCUE_NAME when <a moment, in plain English>',
   ],
   ['Arrows', 'Connectors between cards are only for the picture — the Exits row is what the agent follows.'],
+  [
+    'Knowledge',
+    'The KNOWLEDGE card holds facts the bot can use but must never invent: names, times, prices, options. Write them any way you like.',
+  ],
   ['New stage', 'Duplicate any STAGE card (⌘D / Ctrl+D) and edit it, then Import from FigJam in the app.'],
 ];
 
@@ -94,6 +98,15 @@ export function flowToBoard(flow: AgentFlow): BoardSpec {
       ],
     },
     { kind: 'GUIDE', title: 'How to write each row', area: 'top', column: 1, header: 'darkGray', labels: 'lightYellow', rows: GUIDE_ROWS },
+    {
+      kind: 'KNOWLEDGE',
+      title: 'Facts the bot can use',
+      area: 'top',
+      column: 2,
+      header: 'black',
+      labels: 'lightGreen',
+      rows: [['Facts', flow.knowledge?.trim() ?? '']],
+    },
   ];
 
   // One column per code number (1 | 2A 2B | 3A 3B 3C …) so the board reads left to right.
@@ -205,10 +218,24 @@ function parseList<T>(cell: string, parse: (line: string) => T | null, what: str
   return out;
 }
 
-export function boardToFlow(tables: ReadTable[], keep: { tdUrl?: string } = {}): { flow: AgentFlow; warnings: string[] } {
+export function boardToFlow(
+  tables: ReadTable[],
+  keep: { tdUrl?: string; knowledge?: string } = {},
+): { flow: AgentFlow; warnings: string[] } {
   const warnings: string[] = [];
-  const flow: AgentFlow = { name: '', persona: '', rules: '', globalExits: [], globalCues: [], stages: [], tdUrl: keep.tdUrl ?? '' };
+  // The knowledge base isn't on the board — keep the app's copy.
+  const flow: AgentFlow = {
+    name: '',
+    persona: '',
+    rules: '',
+    globalExits: [],
+    globalCues: [],
+    stages: [],
+    tdUrl: keep.tdUrl ?? '',
+    knowledge: keep.knowledge ?? '',
+  };
   let sawMaster = false;
+  let sawKnowledge = false;
 
   for (const table of tables) {
     const [header, ...body] = table.rows;
@@ -227,6 +254,19 @@ export function boardToFlow(tables: ReadTable[], keep: { tdUrl?: string } = {}):
       flow.globalCues = parseList(field('td cues'), parseCue, 'cue', 'MASTER', warnings);
       const address = field('touchdesigner address').trim();
       if (address) flow.tdUrl = address;
+    } else if (kind === 'KNOWLEDGE') {
+      // The board is the source of truth: a KNOWLEDGE card replaces the app's
+      // copy (even if emptied). Every row's text counts, in case students
+      // split it into several rows.
+      if (sawKnowledge) {
+        warnings.push('More than one KNOWLEDGE card — using the first.');
+        continue;
+      }
+      sawKnowledge = true;
+      flow.knowledge = body
+        .map(([label, value]) => (/^facts$/i.test(label.trim()) || !label.trim() ? value : `${label.trim()}: ${value}`).trim())
+        .filter(Boolean)
+        .join('\n\n');
     } else if (kind === 'STAGE') {
       const title = /^\s*([0-9]+[A-Za-z]*)\s*[:.\-–—]\s*(.+)$/.exec(header[1]);
       if (!title) {
