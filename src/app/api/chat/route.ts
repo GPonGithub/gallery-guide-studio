@@ -4,6 +4,7 @@ import {
 } from 'ai';
 import { z } from 'zod';
 import { anthropicModel } from '@/lib/anthropicModel';
+import { getBoxPlan, getFlowPlans, needsPlan, type BoxPlan } from '@/lib/flowPlan';
 
 export const maxDuration = 30;
 
@@ -18,7 +19,9 @@ const MAX_STEP_ADVANCES = 25;
 type StepOption = 'BOT' | 'USER' | 'NAV';
 type ChatStep = { id: string; option: StepOption; instruction: string; navTarget?: string; variable?: string };
 type StageBox = { id: string; label: string; steps: ChatStep[]; leadsTo?: string[] };
-type Transition = { toBoxId: string; toLabel: string };
+// `toStepNumber` set = a smart jump within the same playbook (see flowPlan.ts),
+// shown in the studio chat so a wrong interpretation is easy to spot.
+type Transition = { toBoxId: string; toLabel: string; toStepNumber?: number };
 type PositionData = { boxId: string | null; stepIndex: number; transitions: Transition[]; variableUpdates: Record<string, string> };
 type ServerUIMessage = UIMessage<never, { position: PositionData }>;
 
@@ -141,6 +144,17 @@ async function classifyBranch(
   return output.choiceId;
 }
 
+// Dev-log timing for each model call in a turn (see the [chat] line the
+// server prints), so latency can be traced to a specific step.
+async function timed<T>(timings: string[], label: string, work: Promise<T>): Promise<T> {
+  const start = Date.now();
+  try {
+    return await work;
+  } finally {
+    timings.push(`${label} ${((Date.now() - start) / 1000).toFixed(1)}s`);
+  }
+}
+
 type WalkResult = {
   textLines: string[];
   finalBoxId: string | null;
@@ -176,14 +190,28 @@ async function walk(opts: {
   variables: Record<string, string>;
   modelMessages: ModelMessage[];
   lastUserText: string | null;
+  /** Smart-jump plan for a playbook, or null when it has none (or smart jumps are off). */
+  planFor: (boxId: string) => Promise<BoxPlan | null>;
+  timings: string[];
 }): Promise<WalkResult> {
-  const { boxes, model, fastModel, masterPlaybook, modelMessages, lastUserText } = opts;
+  const { boxes, model, fastModel, masterPlaybook, modelMessages, lastUserText, timings } = opts;
+  // A branch decision started early, alongside the USER step's variable
+  // extraction (both only read the same reply) — consumed by the NAV group
+  // it was started for.
+  let prefetchedChoice: { navIndex: number; choice: Promise<string | null> } | null = null;
   const textLines: string[] = [];
   const transitions: Transition[] = [];
   const variableUpdates: Record<string, string> = {};
   const variables = { ...opts.variables };
   let canConsume = true;
   let consumed = false;
+  // The standard "USER: wait for an answer → NAV: if X… / NAV: if Y…"
+  // pattern: the USER step consumes the reply (saving its variable), and
+  // the branch right after it has to decide on that *same* reply — there's
+  // no second reply coming in this request. Without this, the walk stopped
+  // at the branch with nothing to say, waiting for a reply that had already
+  // been given.
+  let replyPendingForBranch = false;
   let boxId: string | null = opts.startBoxId;
   let stepIndex = opts.startStepIndex;
 
@@ -193,20 +221,34 @@ async function walk(opts: {
       return { textLines, finalBoxId: boxId, finalStepIndex: stepIndex, transitions, variableUpdates };
     }
     const step = box.steps[stepIndex];
+    const plan = needsPlan(box) ? await timed(timings, 'plan', opts.planFor(box.id)) : null;
+    const jumpTo = new Map(plan?.jumps.map((m) => [m.stepId, m.toIndex]));
+    const skipTo = new Map(plan?.skips.map((m) => [m.stepId, m.toIndex]));
+    // Where to continue once a step is done: the next row, unless the plan
+    // says this step ends a branch and the conversation rejoins further down.
+    const nextAfter = (s: ChatStep, fallback: number) => skipTo.get(s.id) ?? fallback;
+    // A maximal run of consecutive BOT steps from `from`, cut short at a
+    // step that has a skip (what follows it belongs to another branch).
+    const botRun = (from: number) => {
+      const run: ChatStep[] = [];
+      let k = from;
+      while (k < box.steps.length && box.steps[k].option === 'BOT') {
+        run.push(box.steps[k]);
+        k += 1;
+        if (skipTo.has(box.steps[k - 1].id)) break;
+      }
+      return { run, resumeAt: run.length > 0 ? nextAfter(run[run.length - 1], k) : k };
+    };
 
     if (step.option === 'USER') {
       if (canConsume && !consumed && lastUserText) {
-        const next = box.steps[stepIndex + 1];
+        const afterUser = nextAfter(step, stepIndex + 1);
+        const next = box.steps[afterUser];
         if (step.variable && next?.option === 'BOT') {
           // The next thing to say is already known to be a straight BOT
           // run — fold the variable extraction and that phrasing into one
           // call instead of two (see extractAndPhrase above).
-          const run: ChatStep[] = [];
-          let k = stepIndex + 1;
-          while (k < box.steps.length && box.steps[k].option === 'BOT') {
-            run.push(box.steps[k]);
-            k += 1;
-          }
+          const { run, resumeAt } = botRun(afterUser);
           // Merging saves a round trip in the common case, but asking one
           // call to produce two structured fields is inherently more
           // fragile than asking for one — if it fails for any reason, fall
@@ -215,33 +257,50 @@ async function walk(opts: {
           let value: string;
           let reply: string;
           try {
-            ({ value, reply } = await extractAndPhrase(
-              model,
-              masterPlaybook,
-              variables,
-              step.instruction,
-              run.map((s) => s.instruction),
-              modelMessages,
+            ({ value, reply } = await timed(
+              timings,
+              'extract+phrase',
+              extractAndPhrase(model, masterPlaybook, variables, step.instruction, run.map((s) => s.instruction), modelMessages),
             ));
           } catch {
-            value = await extractVariable(fastModel, step.instruction, modelMessages);
-            reply = await phraseLines(model, masterPlaybook, { ...variables, [step.variable]: value }, run.map((s) => s.instruction), modelMessages);
+            value = await timed(timings, 'extract', extractVariable(fastModel, step.instruction, modelMessages));
+            reply = await timed(
+              timings,
+              'phrase',
+              phraseLines(model, masterPlaybook, { ...variables, [step.variable]: value }, run.map((s) => s.instruction), modelMessages),
+            );
           }
           variableUpdates[step.variable] = value;
           variables[step.variable] = value;
           if (reply) textLines.push(reply);
           consumed = true;
           canConsume = false;
-          stepIndex = k;
+          stepIndex = resumeAt;
           continue;
         }
+        // USER → branch: the branch choice and the variable both come from
+        // this same reply and don't depend on each other, so start the
+        // choice now and let the two model calls run side by side.
+        if (next?.option === 'NAV' && box.steps[afterUser + 1]?.option === 'NAV') {
+          const options: ChatStep[] = [];
+          for (let j = afterUser; j < box.steps.length && box.steps[j].option === 'NAV'; j += 1) {
+            if (box.steps[j].navTarget && boxes.some((b) => b.id === box.steps[j].navTarget)) options.push(box.steps[j]);
+          }
+          if (options.length > 0) {
+            prefetchedChoice = {
+              navIndex: afterUser,
+              choice: timed(timings, 'classify', classifyBranch(fastModel, options, modelMessages)).catch(() => null),
+            };
+          }
+        }
         if (step.variable) {
-          const value = await extractVariable(fastModel, step.instruction, modelMessages);
+          const value = await timed(timings, 'extract', extractVariable(fastModel, step.instruction, modelMessages));
           variableUpdates[step.variable] = value;
           variables[step.variable] = value;
         }
         consumed = true;
-        stepIndex += 1;
+        replyPendingForBranch = true;
+        stepIndex = afterUser;
         continue;
       }
       return { textLines, finalBoxId: boxId, finalStepIndex: stepIndex, transitions, variableUpdates };
@@ -256,6 +315,12 @@ async function walk(opts: {
       }
 
       if (group.length === 1) {
+        const jumpIndex = jumpTo.get(group[0].id);
+        if (jumpIndex !== undefined) {
+          transitions.push({ toBoxId: box.id, toLabel: box.label, toStepNumber: jumpIndex + 1 });
+          stepIndex = jumpIndex;
+          continue;
+        }
         const targetBox = group[0].navTarget ? boxes.find((b) => b.id === group[0].navTarget) : undefined;
         if (!targetBox) {
           return { textLines, finalBoxId: boxId, finalStepIndex: stepIndex, transitions, variableUpdates };
@@ -266,15 +331,24 @@ async function walk(opts: {
         continue;
       }
 
-      if (canConsume && !consumed && lastUserText) {
+      if (canConsume && (!consumed || replyPendingForBranch) && lastUserText) {
         const validOptions = group.filter((g) => g.navTarget && boxes.some((b) => b.id === g.navTarget));
         if (validOptions.length === 0) {
           return { textLines, finalBoxId: boxId, finalStepIndex: stepIndex, transitions, variableUpdates };
         }
-        const chosenId = await classifyBranch(fastModel, validOptions, modelMessages);
+        const early = prefetchedChoice?.navIndex === stepIndex ? await prefetchedChoice.choice : null;
+        prefetchedChoice = null;
+        const chosenId = early ?? (await timed(timings, 'classify', classifyBranch(fastModel, validOptions, modelMessages)));
         const chosen = validOptions.find((g) => g.id === chosenId) ?? validOptions[0];
-        const targetBox = boxes.find((b) => b.id === chosen.navTarget)!;
         consumed = true;
+        replyPendingForBranch = false;
+        const jumpIndex = jumpTo.get(chosen.id);
+        if (jumpIndex !== undefined) {
+          transitions.push({ toBoxId: box.id, toLabel: box.label, toStepNumber: jumpIndex + 1 });
+          stepIndex = jumpIndex;
+          continue;
+        }
+        const targetBox = boxes.find((b) => b.id === chosen.navTarget)!;
         transitions.push({ toBoxId: targetBox.id, toLabel: targetBox.label });
         boxId = targetBox.id;
         stepIndex = 0;
@@ -285,16 +359,16 @@ async function walk(opts: {
     }
 
     // BOT — phrase the maximal run of consecutive BOT steps in one call.
-    const run: ChatStep[] = [];
-    let k = stepIndex;
-    while (k < box.steps.length && box.steps[k].option === 'BOT') {
-      run.push(box.steps[k]);
-      k += 1;
-    }
-    const phrased = await phraseLines(model, masterPlaybook, variables, run.map((s) => s.instruction), modelMessages);
+    const { run, resumeAt } = botRun(stepIndex);
+    const phrased = await timed(
+      timings,
+      'phrase',
+      phraseLines(model, masterPlaybook, variables, run.map((s) => s.instruction), modelMessages),
+    );
     if (phrased) textLines.push(phrased);
     canConsume = false;
-    stepIndex = k;
+    replyPendingForBranch = false;
+    stepIndex = resumeAt;
   }
 
   return { textLines, finalBoxId: boxId, finalStepIndex: stepIndex, transitions, variableUpdates };
@@ -302,7 +376,7 @@ async function walk(opts: {
 
 export async function POST(req: Request) {
   const {
-    messages, activeBoxId, activeStepIndex, boxes, masterPlaybook, variables, anthropicApiKey,
+    messages, activeBoxId, activeStepIndex, boxes, masterPlaybook, variables, anthropicApiKey, smartJumps = true,
   } = (await req.json()) as {
     messages: ServerUIMessage[];
     activeBoxId?: string | null;
@@ -311,6 +385,7 @@ export async function POST(req: Request) {
     masterPlaybook?: string;
     variables?: Record<string, string>;
     anthropicApiKey?: string;
+    smartJumps?: boolean;
   };
 
   const allBoxes = boxes ?? [];
@@ -324,9 +399,23 @@ export async function POST(req: Request) {
   const modelMessages = await convertToModelMessages(messages);
   const currentBox = allBoxes.find((b) => b.id === activeBoxId) ?? null;
 
+  // Plans are only awaited when the walk actually enters a playbook that
+  // needs one — but start all of them now, in the background, so they're
+  // usually ready by the time the conversation gets there. Cached, so this
+  // is free after the first time (see flowPlan.ts).
+  if (smartJumps) void getFlowPlans(model, allBoxes);
+  const planFor = async (boxId: string) => {
+    const box = allBoxes.find((b) => b.id === boxId);
+    if (!smartJumps || !box) return null;
+    // A failed plan just means this playbook behaves as written (jumps land on step 1).
+    return getBoxPlan(model, box, allBoxes).catch(() => null);
+  };
+
   return createUIMessageStreamResponse({
     stream: createUIMessageStream<ServerUIMessage>({
       execute: async ({ writer }) => {
+        const startedAt = Date.now();
+        const timings: string[] = [];
         let text: string;
         let position: PositionData;
 
@@ -352,6 +441,8 @@ export async function POST(req: Request) {
             variables: variables ?? {},
             modelMessages,
             lastUserText: getLastUserText(messages),
+            planFor,
+            timings,
           });
           text = result.textLines.join(' ');
           position = {
@@ -367,6 +458,7 @@ export async function POST(req: Request) {
         if (text) writer.write({ type: 'text-delta', id, delta: text });
         writer.write({ type: 'text-end', id });
         writer.write({ type: 'data-position', data: position });
+        console.log(`[chat] reply in ${((Date.now() - startedAt) / 1000).toFixed(1)}s — ${timings.join(', ') || 'no model calls'}`);
       },
       onError: (err) => (err instanceof Error ? err.message : 'Something went wrong.'),
     }),

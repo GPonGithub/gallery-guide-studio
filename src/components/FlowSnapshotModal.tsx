@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { PlaybookBox } from '@/lib/types';
+import type { FlowPlans } from '@/lib/flowPlan';
 import { buttonOutline, buttonPrimary } from '@/lib/styles';
 import { designerId } from '@/lib/designerId';
 
@@ -10,8 +11,12 @@ type Props = {
   activeBoxId: string | null;
   activeStepIndex: number;
   designerInitials: string;
+  smartJumps: boolean;
+  anthropicApiKey: string;
   onClose: () => void;
 };
+
+type PlanState = { status: 'off' | 'loading' | 'ready' | 'error'; plans: FlowPlans; failed: number };
 
 // A readable, structured stand-in for "what's actually in the FigJam
 // board right now" — built from the app's own synced data (accurate,
@@ -24,6 +29,7 @@ function buildSnapshotText(
   activeBoxId: string | null,
   activeStepIndex: number,
   designerInitials: string,
+  planState: PlanState,
 ): string {
   const boxById = new Map(boxes.map((b) => [b.id, b]));
   const lines: string[] = [];
@@ -43,14 +49,57 @@ function buildSnapshotText(
         `  ${stepIndex + 1}. [${id}] ${step.option}: ${step.instruction}${variableText}${targetText}${isHere ? '   ◀ CURRENT POSITION' : ''}`,
       );
     });
+    const loops = box.steps.some((s) => s.option === 'NAV' && s.navTarget === box.id);
+    if (loops && planState.status !== 'off') {
+      const plan = planState.plans[box.id];
+      const stepNumber = (stepId: string) => box.steps.findIndex((s) => s.id === stepId) + 1;
+      lines.push('  SMART JUMPS (worked out by Claude, because a branch points back to this playbook — check these):');
+      if (planState.status === 'loading') lines.push('    Working them out…');
+      else if (!plan) lines.push('    Couldn’t work these out — this playbook runs as written (those branches restart it at step 1).');
+      else {
+        plan.jumps.forEach((m) => lines.push(`    Step ${stepNumber(m.stepId)} → jumps to step ${m.toIndex + 1} — ${m.reason}`));
+        plan.skips.forEach((m) =>
+          lines.push(`    After step ${stepNumber(m.stepId)} → skips to step ${m.toIndex + 1} — ${m.reason}`),
+        );
+        if (plan.jumps.length === 0 && plan.skips.length === 0) lines.push('    None needed.');
+      }
+    }
     lines.push('');
   });
   return lines.join('\n').trim();
 }
 
-export function FlowSnapshotModal({ boxes, activeBoxId, activeStepIndex, designerInitials, onClose }: Props) {
+export function FlowSnapshotModal({
+  boxes,
+  activeBoxId,
+  activeStepIndex,
+  designerInitials,
+  smartJumps,
+  anthropicApiKey,
+  onClose,
+}: Props) {
   const [copied, setCopied] = useState(false);
-  const snapshotText = buildSnapshotText(boxes, activeBoxId, activeStepIndex, designerInitials);
+  const canPlan = smartJumps && anthropicApiKey.trim() !== '';
+  const [planState, setPlanState] = useState<PlanState>({ status: canPlan ? 'loading' : 'off', plans: {}, failed: 0 });
+  const snapshotText = buildSnapshotText(boxes, activeBoxId, activeStepIndex, designerInitials, planState);
+
+  // Same cache the chat uses, so this shows exactly what the conversation
+  // will do — and usually comes back instantly once a chat has run.
+  useEffect(() => {
+    if (!canPlan) return;
+    let cancelled = false;
+    fetch('/api/flow-plan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ boxes, anthropicApiKey }),
+    })
+      .then((res) => res.json() as Promise<{ plans: FlowPlans; failed: number }>)
+      .then(({ plans, failed }) => !cancelled && setPlanState({ status: 'ready', plans, failed }))
+      .catch(() => !cancelled && setPlanState({ status: 'error', plans: {}, failed: 0 }));
+    return () => {
+      cancelled = true;
+    };
+  }, [canPlan, boxes, anthropicApiKey]);
 
   const copyText = async () => {
     try {

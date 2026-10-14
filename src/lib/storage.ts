@@ -31,6 +31,7 @@ export const defaultState: StudioState = {
   figmaFileUrl: '',
   imagePixelSize: null,
   figmaWriteDirty: false,
+  smartJumps: true,
 };
 
 export function loadState(): StudioState {

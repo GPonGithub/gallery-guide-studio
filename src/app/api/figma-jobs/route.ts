@@ -1,4 +1,4 @@
-import { createJob, claimNextJob, type FigmaJobKind } from '@/lib/figmaJobStore';
+import { createJob, claimNextJob, pluginLastSeen, type FigmaJobKind } from '@/lib/figmaJobStore';
 
 // Called from two different origins: the app itself (same-origin POST to
 // queue a job) and the FigJam plugin's UI iframe (cross-origin GET to poll
@@ -28,7 +28,13 @@ export async function POST(req: Request) {
 // Polled by the plugin's UI: `?claim=1` atomically takes the oldest pending
 // job, if any.
 export async function GET(req: Request) {
-  const claim = new URL(req.url).searchParams.has('claim');
+  const params = new URL(req.url).searchParams;
+  // The app asking whether the plugin is alive — doesn't claim anything.
+  if (params.has('status')) {
+    const seen = pluginLastSeen();
+    return Response.json({ pluginLastSeenMsAgo: seen === null ? null : Date.now() - seen }, { headers: CORS_HEADERS });
+  }
+  const claim = params.has('claim');
   if (!claim) {
     return Response.json({ error: 'claim query param is required' }, { status: 400, headers: CORS_HEADERS });
   }

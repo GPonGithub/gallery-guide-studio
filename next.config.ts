@@ -13,6 +13,8 @@ const nextConfig: NextConfig = {
     '*.ngrok-free.app',
     '*.ngrok-free.dev',
   ],
+  // The default bottom-left spot covers the phone app's Restart button.
+  devIndicators: { position: 'top-left' },
 };
 
 export default nextConfig;

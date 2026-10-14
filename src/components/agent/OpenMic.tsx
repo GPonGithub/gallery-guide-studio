@@ -1,0 +1,220 @@
+'use client';
+
+import { useEffect, useRef, useState } from 'react';
+
+// Hands-free ("open mic") listening for the goal-agent chat: stays on across
+// turns, sends what was said once the caller has been quiet for the chosen
+// pause, and goes deaf while the agent is thinking or speaking so it can't
+// hear its own voice. Browser Web Speech API (Chrome on a computer).
+
+type SpeechRecognitionLike = {
+  interimResults: boolean;
+  continuous: boolean;
+  lang: string;
+  start: () => void;
+  stop: () => void;
+  onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
+  onend: (() => void) | null;
+  onerror: ((e: { error: string }) => void) | null;
+};
+
+type Ctor = new () => SpeechRecognitionLike;
+
+const RESTART_DELAY_MS = 300;
+// The same words sent twice within this window is an echo/glitch, not a reply.
+const DEDUPE_WINDOW_MS = 4000;
+// Sessions dying this fast this many times in a row means something's wrong
+// (blocked mic, no network for recognition) — stop instead of looping.
+const RAPID_FAIL_MS = 1000;
+const RAPID_FAIL_LIMIT = 5;
+// Real speech, not a breath/"um"/noise blip: Chrome has confirmed a whole
+// phrase, or there are at least this many words so far.
+const MIN_WORDS_FOR_SPEECH = 3;
+// While Chrome still thinks you're mid-phrase (its result isn't final yet),
+// allow this much extra on top of the pause before treating you as done.
+const MID_PHRASE_GRACE_MS = 2000;
+
+export type OpenMicStatus = 'off' | 'listening' | 'hearing' | 'paused' | 'starting';
+
+export function OpenMic({
+  on,
+  paused,
+  pauseSeconds,
+  onToggle,
+  onTranscript,
+  onUtterance,
+  onPhraseFinal,
+  onStatus,
+  onError,
+}: {
+  on: boolean;
+  /** True while the agent is thinking or speaking (or the call has ended). */
+  paused: boolean;
+  pauseSeconds: number;
+  onToggle: (on: boolean) => void;
+  /** Live words as they're heard, for the input box. */
+  onTranscript: (text: string) => void;
+  /** A finished utterance, after the pause. */
+  onUtterance: (text: string) => void;
+  /**
+   * Chrome has just confirmed a complete phrase — the pause timer is now
+   * running. The app can start working on a reply early; if the caller
+   * keeps talking, `onUtterance` later arrives with different text.
+   */
+  onPhraseFinal?: (text: string) => void;
+  onStatus: (status: OpenMicStatus) => void;
+  onError: (message: string) => void;
+}) {
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transcriptRef = useRef('');
+  // Nothing counts down until real speech has been heard in this listening session.
+  const heardSpeechRef = useRef(false);
+  const lastSentRef = useRef<{ text: string; at: number }>({ text: '', at: 0 });
+  const startedAtRef = useRef(0);
+  const rapidFailsRef = useRef(0);
+  const [restartTick, setRestartTick] = useState(0);
+
+  // Latest props for callbacks fired by the recognition engine later on.
+  const latest = useRef({ on, paused, pauseSeconds, onToggle, onTranscript, onUtterance, onPhraseFinal, onStatus, onError });
+  useEffect(() => {
+    latest.current = { on, paused, pauseSeconds, onToggle, onTranscript, onUtterance, onPhraseFinal, onStatus, onError };
+  });
+
+  const clearSilenceTimer = () => {
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    silenceTimerRef.current = null;
+  };
+
+  useEffect(() => {
+    if (!on) {
+      clearSilenceTimer();
+      recognitionRef.current?.stop();
+      latest.current.onStatus('off');
+      return;
+    }
+    if (paused) {
+      clearSilenceTimer();
+      recognitionRef.current?.stop();
+      latest.current.onStatus('paused');
+      return;
+    }
+    if (recognitionRef.current) return;
+
+    const SR =
+      (window as unknown as { SpeechRecognition?: Ctor; webkitSpeechRecognition?: Ctor }).SpeechRecognition ??
+      (window as unknown as { webkitSpeechRecognition?: Ctor }).webkitSpeechRecognition;
+    if (!SR) {
+      latest.current.onError('This browser has no speech recognition — use Chrome on a computer.');
+      latest.current.onToggle(false);
+      return;
+    }
+
+    const recognition = new SR();
+    recognition.lang = 'en-US';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    transcriptRef.current = '';
+    heardSpeechRef.current = false;
+
+    recognition.onresult = (e) => {
+      const results = Array.from(e.results);
+      const text = results
+        .map((r) => r[0].transcript)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      transcriptRef.current = text;
+      latest.current.onTranscript(text);
+      clearSilenceTimer();
+
+      // Don't start the clock on a breath, an "um" or background noise —
+      // only once you've genuinely started talking. Until then it just
+      // keeps listening, however long you take to begin.
+      const wordCount = text ? text.split(' ').length : 0;
+      if (!heardSpeechRef.current && (results.some((r) => r.isFinal) || wordCount >= MIN_WORDS_FOR_SPEECH)) {
+        heardSpeechRef.current = true;
+      }
+      if (!heardSpeechRef.current) return;
+      latest.current.onStatus('hearing');
+
+      // Chrome marks a phrase final once it judges you've stopped; until
+      // then you're probably mid-sentence, so give extra room. Re-read the
+      // slider every time, so a change applies to the very next pause.
+      const midPhrase = !results[results.length - 1]?.isFinal;
+      if (!midPhrase) latest.current.onPhraseFinal?.(text);
+      const waitMs = Math.round(latest.current.pauseSeconds * 1000) + (midPhrase ? MID_PHRASE_GRACE_MS : 0);
+      silenceTimerRef.current = setTimeout(() => {
+        silenceTimerRef.current = null;
+        const said = transcriptRef.current.trim();
+        transcriptRef.current = '';
+        recognition.stop();
+        if (!said) return;
+        const { text: lastText, at } = lastSentRef.current;
+        if (said === lastText && Date.now() - at < DEDUPE_WINDOW_MS) return;
+        lastSentRef.current = { text: said, at: Date.now() };
+        latest.current.onUtterance(said);
+      }, waitMs);
+    };
+
+    recognition.onerror = (e) => {
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        latest.current.onError('The microphone is blocked — allow it for this page (address bar → site settings) and try again.');
+        latest.current.onToggle(false);
+      }
+      // 'no-speech', 'aborted', 'network' etc. just end the session; onend restarts it.
+    };
+
+    recognition.onend = () => {
+      recognitionRef.current = null;
+      clearSilenceTimer();
+      const lived = Date.now() - startedAtRef.current;
+      rapidFailsRef.current = lived < RAPID_FAIL_MS ? rapidFailsRef.current + 1 : 0;
+      if (rapidFailsRef.current >= RAPID_FAIL_LIMIT) {
+        rapidFailsRef.current = 0;
+        latest.current.onError('The open mic keeps stopping straight away — check the microphone and your connection, then turn it on again.');
+        latest.current.onToggle(false);
+        return;
+      }
+      // Browsers end recognition on their own after a while; come straight back.
+      if (latest.current.on && !latest.current.paused) {
+        setTimeout(() => setRestartTick((t) => t + 1), RESTART_DELAY_MS);
+      }
+    };
+
+    recognitionRef.current = recognition;
+    startedAtRef.current = Date.now();
+    latest.current.onStatus('starting');
+    try {
+      recognition.start();
+      latest.current.onStatus('listening');
+    } catch {
+      recognitionRef.current = null;
+      setTimeout(() => setRestartTick((t) => t + 1), RESTART_DELAY_MS);
+    }
+  }, [on, paused, restartTick]);
+
+  // Turn everything off when leaving the page.
+  useEffect(
+    () => () => {
+      clearSilenceTimer();
+      recognitionRef.current?.stop();
+    },
+    [],
+  );
+
+  return (
+    <button
+      onClick={() => onToggle(!on)}
+      className={`h-[38px] w-[38px] shrink-0 border-2 font-body text-base transition-colors duration-100 ${
+        on
+          ? 'border-[#18a0fb] bg-[#18a0fb] text-white'
+          : 'border-[#18a0fb] bg-paper text-[#18a0fb] hover:bg-[#18a0fb] hover:text-white'
+      }`}
+      title={on ? 'Open mic is on — click to turn it off' : 'Open mic: stays on and sends when you pause, no clicking needed'}
+      aria-pressed={on}
+    >
+      🎙️
+    </button>
+  );
+}

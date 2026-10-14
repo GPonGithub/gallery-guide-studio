@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, type UIMessage } from 'ai';
+import { Capacitor } from '@capacitor/core';
+import { SpeechRecognition } from '@capacitor-community/speech-recognition';
 import type { PlaybookBox, VoiceSettings } from '@/lib/types';
 import { VoiceSettingsPanel } from './VoiceSettingsPanel';
 import { VoicePresetButtons } from './VoicePresetButtons';
 import { buttonIcon, buttonOutline, buttonPrimary, fieldInput } from '@/lib/styles';
 
-type Transition = { toBoxId: string; toLabel: string };
+type Transition = { toBoxId: string; toLabel: string; toStepNumber?: number };
 type PositionData = { boxId: string | null; stepIndex: number; transitions: Transition[]; variableUpdates: Record<string, string> };
 type ChatUIMessage = UIMessage<never, { position: PositionData }>;
 
@@ -66,6 +68,17 @@ type Props = {
   onPositionChange: (boxId: string, stepIndex: number, variableUpdates: Record<string, string>) => void;
   onVoiceSettingsChange: (settings: VoiceSettings) => void;
   onSaveVoicePreset: (index: number, settings: VoiceSettings) => void;
+  // 'phone' = the iPhone app's talk-only view: just the conversation and
+  // the hands-free mic. Everything for building/tuning a flow (voice
+  // settings, presets, variables, typed input) stays on the computer.
+  variant?: 'studio' | 'phone';
+  // Lets the phone app set the hands-free pause from its own settings
+  // instead of the slider that only exists in the studio layout.
+  pauseSecondsOverride?: number;
+  onReset?: () => void;
+  /** See StudioState.smartJumps. Defaults to on. */
+  smartJumps?: boolean;
+  onSmartJumpsChange?: (on: boolean) => void;
 };
 
 function voiceSettingsQuery(settings: VoiceSettings): string {
@@ -94,6 +107,11 @@ export function ChatPanel({
   onPositionChange,
   onVoiceSettingsChange,
   onSaveVoicePreset,
+  variant = 'studio',
+  pauseSecondsOverride,
+  onReset,
+  smartJumps = true,
+  onSmartJumpsChange,
 }: Props) {
   const boxesRef = useRef(boxes);
   const activeBoxIdRef = useRef(activeBoxId);
@@ -101,6 +119,7 @@ export function ChatPanel({
   const variablesRef = useRef(variables);
   const masterPlaybookRef = useRef(masterPlaybook);
   const anthropicApiKeyRef = useRef(anthropicApiKey);
+  const smartJumpsRef = useRef(smartJumps);
 
   useEffect(() => {
     boxesRef.current = boxes;
@@ -109,6 +128,7 @@ export function ChatPanel({
     variablesRef.current = variables;
     masterPlaybookRef.current = masterPlaybook;
     anthropicApiKeyRef.current = anthropicApiKey;
+    smartJumpsRef.current = smartJumps;
   });
 
   const transport = useMemo(
@@ -128,6 +148,7 @@ export function ChatPanel({
           })),
           masterPlaybook: masterPlaybookRef.current,
           anthropicApiKey: anthropicApiKeyRef.current,
+          smartJumps: smartJumpsRef.current,
         }),
       }),
     [],
@@ -177,8 +198,14 @@ export function ChatPanel({
   const [autoListening, setAutoListening] = useState(false);
   // Adjustable via the slider next to "Reset conversation", 0–3s in 0.2s
   // steps; 3s was the original fixed value.
-  const [pauseSeconds, setPauseSeconds] = useState(3);
+  const [pauseSecondsState, setPauseSeconds] = useState(3);
+  const pauseSeconds = pauseSecondsOverride ?? pauseSecondsState;
   const autoRecognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  // Set while a native (Capacitor) recognition session is active — the
+  // native plugin has no object-per-session handle the way the browser's
+  // SpeechRecognition does, so this stands in for "is one running" on that
+  // platform. See startNativeListening/stopListening below.
+  const nativeSessionActiveRef = useRef(false);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Mirrors of state read from inside recognition callbacks, which close
   // over whatever these were at recognition-start time — same pattern as
@@ -369,7 +396,106 @@ export function ChatPanel({
     }
   };
 
+  // Shared between the web (Web Speech API) and native (Capacitor plugin)
+  // listening paths — same silence-timer/dedupe/cooldown-triggering logic
+  // either way, so the two platforms can't drift out of sync on exactly
+  // the behavior that took several rounds to get right. `stopSession` is
+  // the one platform-specific part — "how do I actually end this session"
+  // differs between a Web Speech API object and the native plugin.
+  const handleAutoTranscript = (transcript: string, stopSession: () => void) => {
+    lastRecognitionActivityRef.current = Date.now();
+    setInputValue(transcript);
+    // Reset the pause timer on every new bit of speech — only once this
+    // goes quiet for the full window does the visitor's turn count as
+    // finished. Captures `transcript` directly rather than reading
+    // inputValue state back later, so there's nothing to go stale.
+    clearSilenceTimer();
+    silenceTimerRef.current = setTimeout(() => {
+      silenceTimerRef.current = null;
+      const text = transcript.trim();
+      const now = Date.now();
+      const last = lastAutoSendRef.current;
+      const isRepeat = last && now - last.at < DEDUPE_WINDOW_MS && last.text.toLowerCase() === text.toLowerCase();
+      if (text && activeBoxIdRef.current && !isRepeat) {
+        lastAutoSendRef.current = { text, at: now };
+        sendMessage({ text });
+        setInputValue('');
+      }
+      // Stop and let the platform-specific restart logic pick a fresh
+      // session back up — continuous mode's transcript only ever grows,
+      // so without this the next utterance would arrive with this one
+      // still glued to the front of it.
+      stopSession();
+      // Read fresh each time rather than capturing once, so dragging the
+      // slider mid-conversation takes effect on the very next pause.
+    }, Math.round(pauseSecondsRef.current * 1000));
+  };
+
+  // Requests iOS speech-recognition + microphone permission once, the
+  // first time hands-free mode is used natively — after that, checking is
+  // enough. Returns whether it's now safe to actually start listening.
+  const ensureNativeSpeechPermission = async (): Promise<boolean> => {
+    const { speechRecognition } = await SpeechRecognition.checkPermissions();
+    if (speechRecognition === 'granted') return true;
+    const requested = await SpeechRecognition.requestPermissions();
+    return requested.speechRecognition === 'granted';
+  };
+
+  // The native counterpart to startAutoRecognition below — same job
+  // (start listening, feed results through handleAutoTranscript, restart
+  // after a stop unless muted/mode off/a reply's in flight), but through
+  // the Capacitor plugin wrapping iOS's real SFSpeechRecognizer instead of
+  // the browser's SpeechRecognition. Its partialResults/listeningState
+  // events are wired up once, for the component's lifetime, in the effect
+  // below — this function only ever needs to kick a session off.
+  const startNativeListening = async (attempt = 1) => {
+    try {
+      const { available } = await SpeechRecognition.available();
+      if (!available) {
+        window.alert('Speech recognition isn’t available on this device.');
+        setAutoModeOn(false);
+        return;
+      }
+      if (!(await ensureNativeSpeechPermission())) {
+        window.alert(
+          'Speech recognition permission was denied — enable it for this app in Settings to use hands-free mode.',
+        );
+        setAutoModeOn(false);
+        return;
+      }
+      nativeSessionActiveRef.current = true;
+      // eslint-disable-next-line react-hooks/purity -- same as startAutoRecognition's startedAt, only ever runs from an effect or a click handler
+      lastRecognitionActivityRef.current = Date.now();
+      setAutoListening(true);
+      await SpeechRecognition.start({ language: 'en-US', partialResults: true });
+    } catch {
+      nativeSessionActiveRef.current = false;
+      // Right after the bot's voice finishes, iOS can still be switching the
+      // audio route back to the mic for a second or two ("Microphone not
+      // ready yet") — back off progressively rather than giving up fast.
+      if (attempt < 6) {
+        setTimeout(() => {
+          if (autoModeOnRef.current) startNativeListening(attempt + 1);
+        }, 300 * attempt);
+      } else {
+        setAutoListening(false);
+        setAutoModeOn(false);
+        window.alert('Could not start the microphone. Try clicking it again in a moment.');
+      }
+    }
+  };
+
+  // Single entry point regardless of platform — every call site (toggle,
+  // the "should be listening" effect, the watchdog, the restart-after-stop
+  // logic below) just calls this, and it dispatches to the native plugin
+  // when running inside the Capacitor shell, or the browser's Web Speech
+  // API otherwise. Keeps the platform check in one place instead of
+  // duplicated at every caller.
   const startAutoRecognition = (attempt = 1) => {
+    if (Capacitor.isNativePlatform()) {
+      void startNativeListening(attempt);
+      return;
+    }
     const SpeechRecognitionCtor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!SpeechRecognitionCtor) {
       window.alert('Voice input isn’t supported in this browser. Try Chrome or Edge.');
@@ -389,36 +515,13 @@ export function ChatPanel({
     recognition.interimResults = true;
     recognition.lang = 'en-US';
     recognition.onresult = (event) => {
-      lastRecognitionActivityRef.current = Date.now();
       const transcript = Array.from(event.results)
         .map((r) => r[0]?.transcript ?? '')
         .join('');
-      setInputValue(transcript);
-      // Reset the pause timer on every new bit of speech — only once this
-      // goes quiet for the full window does the visitor's turn count as
-      // finished. Captures `transcript` directly rather than reading
-      // inputValue state back later, so there's nothing to go stale.
-      clearSilenceTimer();
-      silenceTimerRef.current = setTimeout(() => {
-        silenceTimerRef.current = null;
-        const text = transcript.trim();
-        const now = Date.now();
-        const last = lastAutoSendRef.current;
-        const isRepeat = last && now - last.at < DEDUPE_WINDOW_MS && last.text.toLowerCase() === text.toLowerCase();
-        if (text && activeBoxIdRef.current && !isRepeat) {
-          lastAutoSendRef.current = { text, at: now };
-          sendMessage({ text });
-          setInputValue('');
-        }
-        // Stop and let onend's restart pick a fresh session back up —
-        // continuous mode's `event.results` only ever grows, so without
-        // this the next utterance would arrive with this one still glued
-        // to the front of it.
+      handleAutoTranscript(transcript, () => {
         stoppedAfterSend = true;
         autoRecognitionRef.current?.stop();
-        // Read fresh each time rather than capturing once, so dragging the
-        // slider mid-conversation takes effect on the very next pause.
-      }, Math.round(pauseSecondsRef.current * 1000));
+      });
     };
     recognition.onerror = () => setAutoListening(false);
     recognition.onend = () => {
@@ -483,6 +586,66 @@ export function ChatPanel({
     }
   };
 
+  // Dispatches a stop to whichever platform's session is actually running.
+  // On native this only fires the request — nativeSessionActiveRef itself
+  // gets cleared by the listeningState('stopped') handler below, once iOS
+  // confirms it, not optimistically here.
+  const stopListening = () => {
+    if (Capacitor.isNativePlatform()) {
+      if (nativeSessionActiveRef.current) SpeechRecognition.stop().catch(() => {});
+    } else {
+      autoRecognitionRef.current?.stop();
+    }
+  };
+
+  const hasActiveSession = () =>
+    Capacitor.isNativePlatform() ? nativeSessionActiveRef.current : Boolean(autoRecognitionRef.current);
+
+  // The native plugin has no per-session object with its own onresult/onend
+  // — instead it emits two app-wide events, wired up once here for the
+  // component's lifetime rather than per session. partialResults feeds the
+  // exact same handleAutoTranscript path the web recognition object uses;
+  // listeningState('stopped') mirrors the web path's onend restart logic
+  // (see the matching comment there for why the in-flight check matters).
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    const partialSub = SpeechRecognition.addListener('partialResults', (data) => {
+      const transcript = data.matches?.[0] ?? '';
+      handleAutoTranscript(transcript, () => {
+        nativeSessionActiveRef.current = false;
+        SpeechRecognition.stop().catch(() => {});
+      });
+    });
+    const stateSub = SpeechRecognition.addListener('listeningState', (data) => {
+      if (data.status === 'started') {
+        nativeSessionActiveRef.current = true;
+        lastRecognitionActivityRef.current = Date.now();
+        setAutoListening(true);
+        return;
+      }
+      nativeSessionActiveRef.current = false;
+      setAutoListening(false);
+      if (autoModeOnRef.current && !speakingIdRef.current && !isRequestInFlight(statusRef.current)) {
+        const sinceLastSend = lastAutoSendRef.current ? Date.now() - lastAutoSendRef.current.at : Infinity;
+        const remaining = RESTART_COOLDOWN_MS - sinceLastSend;
+        if (remaining > 0) {
+          setTimeout(() => {
+            if (autoModeOnRef.current && !speakingIdRef.current && !isRequestInFlight(statusRef.current)) {
+              startAutoRecognition();
+            }
+          }, remaining);
+        } else {
+          startAutoRecognition();
+        }
+      }
+    });
+    return () => {
+      partialSub.then((h) => h.remove()).catch(() => {});
+      stateSub.then((h) => h.remove()).catch(() => {});
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- handleAutoTranscript/startAutoRecognition are stable enough for this; registered once for the component's lifetime, not per session
+  }, []);
+
   // The single source of truth for "should the hands-free mic be running
   // right now" — on when the mode is toggled on, the bot isn't talking, and
   // no reply is currently in flight (`status`), off otherwise. Covers
@@ -492,9 +655,9 @@ export function ChatPanel({
   // startAutoRecognition's onend for why that extra cycle matters on iOS.
   useEffect(() => {
     if (autoModeOn && !speakingId && !isRequestInFlight(status)) {
-      if (!autoRecognitionRef.current) startAutoRecognition();
+      if (!hasActiveSession()) startAutoRecognition();
     } else {
-      autoRecognitionRef.current?.stop();
+      stopListening();
       clearSilenceTimer();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- startAutoRecognition is stable enough for this; re-running it on its own identity would defeat the point
@@ -505,21 +668,24 @@ export function ChatPanel({
   // should be live, and force-restarts it if nothing (not even an interim
   // result) has happened in a while. Only runs while actually supposed to
   // be listening, so it never fights the deliberate stops (muted for bot
-  // speech, cooldown after a send, mode off).
+  // speech, cooldown after a send, mode off). Primarily a web-path concern
+  // — the native plugin wraps a real SFSpeechRecognizer session and isn't
+  // expected to silently go dead the same way, but there's no real cost to
+  // covering both, and it's a useful safety net either way.
   useEffect(() => {
     if (!autoModeOn) return;
     const interval = setInterval(() => {
-      if (!autoRecognitionRef.current) return;
+      if (!hasActiveSession()) return;
       if (Date.now() - lastRecognitionActivityRef.current > WATCHDOG_STALL_MS) {
-        // .stop() is async — onend (which nulls autoRecognitionRef and
-        // re-stamps activity on the next session) may not have fired
-        // before the next tick. Stamping here too means a still-stopping
-        // session isn't stopped again every 2s until it actually finishes
-        // — repeated stop() calls on one session, on an engine already
-        // this unreliable, seemed like a real way to make things worse
-        // rather than better.
+        // .stop() is async — the eventual onend/listeningState (which
+        // clears the active-session tracking and re-stamps activity on the
+        // next session) may not have fired before the next tick. Stamping
+        // here too means a still-stopping session isn't stopped again
+        // every 2s until it actually finishes — repeated stop() calls on
+        // one session, on an engine already this unreliable, seemed like a
+        // real way to make things worse rather than better.
         lastRecognitionActivityRef.current = Date.now();
-        autoRecognitionRef.current.stop();
+        stopListening();
       }
     }, 2000);
     return () => clearInterval(interval);
@@ -543,21 +709,164 @@ export function ChatPanel({
   const activeBox = boxes.find((b) => b.id === activeBoxId);
   const variableEntries = Object.entries(variables);
 
+  const conversation = (
+    <div className="min-h-0 flex-1 space-y-3 overflow-y-auto py-2">
+      {messages.length === 0 && (
+        <p className="text-center font-label text-[11px] uppercase tracking-widest text-muted-ink">
+          {variant === 'phone'
+            ? 'Tap the blue mic and say hello.'
+            : activeBoxId
+              ? 'Say hello to start testing this playbook.'
+              : 'Select a playbook box to begin.'}
+        </p>
+      )}
+      {messages.map((m) => {
+        const text = getMessageText(m.parts);
+        const transitions = m.role === 'assistant' ? getPosition(m.parts)?.transitions ?? [] : [];
+        return (
+          <div key={m.id}>
+            {variant === 'studio' && transitions.map((t, i) => (
+              <div key={`${t.toBoxId}-${i}`} className="my-2 flex justify-center">
+                <span className="border border-ink px-2.5 py-0.5 font-label text-[10px] uppercase tracking-widest text-ink">
+                  {t.toStepNumber ? `↝ Smart jump to step ${t.toStepNumber}` : `↝ Moved to ${t.toLabel}`}
+                </span>
+              </div>
+            ))}
+            {text && (
+              <div className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className={`max-w-[80%] px-3 py-2 font-body text-sm ${
+                    m.role === 'user' ? 'bg-ink text-paper' : 'border-2 border-ink bg-paper text-ink'
+                  }`}
+                >
+                  {text}
+                  {speakingId === m.id && (
+                    <span className="ml-1.5 font-label text-[10px] uppercase tracking-widest text-muted-ink">
+                      speaking…
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {error && (
+        <div className="flex justify-start">
+          <div className="max-w-[85%] bg-ink px-3 py-2 text-paper">
+            <span className="font-label text-[10px] uppercase tracking-widest">Error — </span>
+            <span className="font-body text-sm">{error.message}</span>
+          </div>
+        </div>
+      )}
+      {!error && status === 'ready' && (() => {
+        const last = messages[messages.length - 1];
+        if (!last || last.role !== 'assistant' || getMessageText(last.parts)) return null;
+        // A real dead end (the table ran out, or a NAV step landed in a
+        // box with no steps yet) — not a retry-able failure, just nothing
+        // more configured at this point in the flow.
+        const transitioned = (getPosition(last.parts)?.transitions.length ?? 0) > 0;
+        return (
+          <div className="flex justify-start">
+            <div className="max-w-[85%] border-4 border-ink px-3 py-2">
+              <span className="font-label text-[10px] uppercase tracking-widest text-ink">Note — </span>
+              <span className="font-body text-sm text-ink">
+                {variant === 'phone'
+                  ? 'End of the conversation.'
+                  : transitioned
+                  ? 'The flow moved playbooks but there was nothing to say there — check that box has steps.'
+                  : 'Nothing left in this playbook’s step table from here. Add more steps, or a NAV step to move on.'}
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+
+  const statusLine = autoModeOn && (
+    <div className="flex items-center gap-2 pt-2 font-label text-[10px] uppercase tracking-widest text-muted-ink">
+      <span
+        className={`h-2 w-2 shrink-0 rounded-full ${
+          speakingId ? 'bg-ink' : autoListening ? 'animate-pulse bg-[#18a0fb]' : 'bg-hair'
+        }`}
+        aria-hidden="true"
+      />
+      {speakingId
+        ? 'Bot is speaking — mic paused so it can’t hear itself'
+        : isRequestInFlight(status)
+          ? 'Waiting for a reply…'
+          : autoListening
+            ? 'Listening…'
+            : 'Reconnecting the mic…'}
+    </div>
+  );
+
+  if (variant === 'phone') {
+    return (
+      <div className="flex h-full flex-col gap-3">
+        {conversation}
+        {statusLine}
+        <div className="grid grid-cols-3 items-center border-t-2 border-ink pt-4">
+          <button
+            onClick={() => {
+              stop();
+              setMessages([]);
+              onReset?.();
+            }}
+            disabled={messages.length === 0}
+            className={`justify-self-start ${buttonOutline}`}
+          >
+            Restart
+          </button>
+          <button
+            onClick={toggleAutoMode}
+            aria-label={autoModeOn ? 'Turn the microphone off' : 'Turn the microphone on'}
+            className={`flex h-[76px] w-[76px] items-center justify-center justify-self-center rounded-full border-2 border-[#18a0fb] text-3xl transition-colors duration-100 ${
+              autoModeOn ? 'bg-[#18a0fb] text-white' : 'bg-paper text-[#18a0fb]'
+            }`}
+          >
+            🎙️
+          </button>
+          <span className="justify-self-end font-label text-[10px] uppercase tracking-widest text-muted-ink">
+            {autoModeOn ? 'Tap to stop' : 'Tap to talk'}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col gap-3">
-      <div className="flex items-center justify-between border-b-2 border-ink pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b-2 border-ink pb-3">
         <div className="font-label text-[11px] uppercase tracking-widest text-muted-ink">
           Active playbook: <span className="text-ink">{activeBox?.label ?? 'None'}</span>
         </div>
-        <label className="flex items-center gap-1.5 font-label text-[11px] uppercase tracking-widest text-muted-ink">
-          <input
-            type="checkbox"
-            checked={voiceEnabled}
-            onChange={(e) => setVoiceEnabled(e.target.checked)}
-            className="accent-ink"
-          />
-          Voice replies
-        </label>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <label className="flex items-center gap-1.5 font-label text-[11px] uppercase tracking-widest text-muted-ink">
+            <input
+              type="checkbox"
+              checked={voiceEnabled}
+              onChange={(e) => setVoiceEnabled(e.target.checked)}
+              className="accent-ink"
+            />
+            Voice replies
+          </label>
+          {onSmartJumpsChange && (
+            <label
+              className="flex items-center gap-1.5 font-label text-[11px] uppercase tracking-widest text-muted-ink"
+              title="When a branch points back to its own playbook, jump to the step it most likely means instead of restarting the playbook. Check what it decided in Flow Snapshot."
+            >
+              <input
+                type="checkbox"
+                checked={smartJumps}
+                onChange={(e) => onSmartJumpsChange(e.target.checked)}
+                className="accent-ink"
+              />
+              Smart jumps
+            </label>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-wrap items-stretch gap-2">
@@ -623,90 +932,9 @@ export function ChatPanel({
         </div>
       )}
 
-      <div className="flex-1 space-y-3 overflow-y-auto py-2">
-        {messages.length === 0 && (
-          <p className="text-center font-label text-[11px] uppercase tracking-widest text-muted-ink">
-            {activeBoxId ? 'Say hello to start testing this playbook.' : 'Select a playbook box to begin.'}
-          </p>
-        )}
-        {messages.map((m) => {
-          const text = getMessageText(m.parts);
-          const transitions = m.role === 'assistant' ? getPosition(m.parts)?.transitions ?? [] : [];
-          return (
-            <div key={m.id}>
-              {transitions.map((t, i) => (
-                <div key={`${t.toBoxId}-${i}`} className="my-2 flex justify-center">
-                  <span className="border border-ink px-2.5 py-0.5 font-label text-[10px] uppercase tracking-widest text-ink">
-                    ↝ Moved to {t.toLabel}
-                  </span>
-                </div>
-              ))}
-              {text && (
-                <div className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div
-                    className={`max-w-[80%] px-3 py-2 font-body text-sm ${
-                      m.role === 'user' ? 'bg-ink text-paper' : 'border-2 border-ink bg-paper text-ink'
-                    }`}
-                  >
-                    {text}
-                    {speakingId === m.id && (
-                      <span className="ml-1.5 font-label text-[10px] uppercase tracking-widest text-muted-ink">
-                        speaking…
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {error && (
-          <div className="flex justify-start">
-            <div className="max-w-[85%] bg-ink px-3 py-2 text-paper">
-              <span className="font-label text-[10px] uppercase tracking-widest">Error — </span>
-              <span className="font-body text-sm">{error.message}</span>
-            </div>
-          </div>
-        )}
-        {!error && status === 'ready' && (() => {
-          const last = messages[messages.length - 1];
-          if (!last || last.role !== 'assistant' || getMessageText(last.parts)) return null;
-          // A real dead end (the table ran out, or a NAV step landed in a
-          // box with no steps yet) — not a retry-able failure, just nothing
-          // more configured at this point in the flow.
-          const transitioned = (getPosition(last.parts)?.transitions.length ?? 0) > 0;
-          return (
-            <div className="flex justify-start">
-              <div className="max-w-[85%] border-4 border-ink px-3 py-2">
-                <span className="font-label text-[10px] uppercase tracking-widest text-ink">Note — </span>
-                <span className="font-body text-sm text-ink">
-                  {transitioned
-                    ? 'The flow moved playbooks but there was nothing to say there — check that box has steps.'
-                    : 'Nothing left in this playbook’s step table from here. Add more steps, or a NAV step to move on.'}
-                </span>
-              </div>
-            </div>
-          );
-        })()}
-      </div>
+      {conversation}
 
-      {autoModeOn && (
-        <div className="flex items-center gap-2 pt-2 font-label text-[10px] uppercase tracking-widest text-muted-ink">
-          <span
-            className={`h-2 w-2 shrink-0 rounded-full ${
-              speakingId ? 'bg-ink' : autoListening ? 'animate-pulse bg-[#18a0fb]' : 'bg-hair'
-            }`}
-            aria-hidden="true"
-          />
-          {speakingId
-            ? 'Bot is speaking — mic paused so it can’t hear itself'
-            : isRequestInFlight(status)
-              ? 'Waiting for a reply…'
-              : autoListening
-                ? 'Listening…'
-                : 'Reconnecting the mic…'}
-        </div>
-      )}
+      {statusLine}
 
       <div className="flex items-center gap-2 border-t-2 border-ink pt-3">
         <button

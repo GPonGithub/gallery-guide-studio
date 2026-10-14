@@ -102,4 +102,10 @@ export type StudioState = {
    * vs. enabled/green state.
    */
   figmaWriteDirty: boolean;
+  /**
+   * When a NAV step points back at its own playbook, jump to the step it
+   * most plausibly means (worked out once by Claude, see flowPlan.ts)
+   * instead of restarting that playbook. On by default.
+   */
+  smartJumps: boolean;
 };

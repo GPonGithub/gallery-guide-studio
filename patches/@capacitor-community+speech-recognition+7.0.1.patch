@@ -1,0 +1,252 @@
+diff --git a/node_modules/@capacitor-community/speech-recognition/ios/Plugin/Plugin.swift b/node_modules/@capacitor-community/speech-recognition/ios/Plugin/Plugin.swift
+index 5d1b35b..3b744a8 100644
+--- a/node_modules/@capacitor-community/speech-recognition/ios/Plugin/Plugin.swift
++++ b/node_modules/@capacitor-community/speech-recognition/ios/Plugin/Plugin.swift
+@@ -31,14 +31,15 @@ public class SpeechRecognition: CAPPlugin {
+         ])
+     }
+ 
+-    @objc func start(_ call: CAPPluginCall) {
+-        if self.audioEngine != nil {
+-            if self.audioEngine!.isRunning {
+-                call.reject(self.messageOngoing)
+-                return
+-            }
+-        }
++    // PATCHED (Gallery Guide Studio, see patches/): the original start()/stop()
++    // touched shared state from several threads at once, and a cancelled
++    // previous session's late callback would nil out the *new* session's
++    // request and then force-unwrap it — crashing the app on the second
++    // hands-free turn. Now every state change runs on the main queue, each
++    // session gets an id, and callbacks from a superseded session are ignored.
++    private var sessionId: UUID?
+ 
++    @objc func start(_ call: CAPPluginCall) {
+         let status: SFSpeechRecognizerAuthorizationStatus = SFSpeechRecognizer.authorizationStatus()
+         if status != SFSpeechRecognizerAuthorizationStatus.authorized {
+             call.reject(self.messageMissingPermission)
+@@ -46,115 +47,149 @@ public class SpeechRecognition: CAPPlugin {
+         }
+ 
+         AVAudioSession.sharedInstance().requestRecordPermission { (granted) in
+-            if !granted {
+-                call.reject(self.messageAccessDeniedMicrophone)
+-                return
++            DispatchQueue.main.async {
++                if !granted {
++                    call.reject(self.messageAccessDeniedMicrophone)
++                    return
++                }
++                self.beginSession(call)
+             }
++        }
++    }
+ 
+-            let language: String = call.getString("language") ?? "en-US"
+-            let maxResults: Int = call.getInt("maxResults") ?? self.defaultMatches
+-            let partialResults: Bool = call.getBool("partialResults") ?? false
++    // Main queue only.
++    private func beginSession(_ call: CAPPluginCall) {
++        if let engine = self.audioEngine, engine.isRunning {
++            call.reject(self.messageOngoing)
++            return
++        }
++        self.teardown()
+ 
+-            if self.recognitionTask != nil {
+-                self.recognitionTask?.cancel()
+-                self.recognitionTask = nil
+-            }
++        let language: String = call.getString("language") ?? "en-US"
++        let maxResults: Int = call.getInt("maxResults") ?? self.defaultMatches
++        let partialResults: Bool = call.getBool("partialResults") ?? false
+ 
+-            self.audioEngine = AVAudioEngine.init()
+-            self.speechRecognizer = SFSpeechRecognizer.init(locale: Locale(identifier: language))
+-
+-            let audioSession: AVAudioSession = AVAudioSession.sharedInstance()
+-            do {
+-                try audioSession.setCategory(AVAudioSession.Category.playAndRecord, options: AVAudioSession.CategoryOptions.defaultToSpeaker)
+-                try audioSession.setMode(AVAudioSession.Mode.default)
+-                do {
+-                    try audioSession.setActive(true, options: AVAudioSession.SetActiveOptions.notifyOthersOnDeactivation)
+-                } catch {
+-                      call.reject("Microphone is already in use by another application.")
+-                      return
+-                }
+-            } catch {
++        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: language)) else {
++            call.reject("Speech recognition isn't available for \(language)")
++            return
++        }
+ 
+-            }
++        let audioSession: AVAudioSession = AVAudioSession.sharedInstance()
++        do {
++            try audioSession.setCategory(AVAudioSession.Category.playAndRecord, options: AVAudioSession.CategoryOptions.defaultToSpeaker)
++            try audioSession.setMode(AVAudioSession.Mode.default)
++            try audioSession.setActive(true, options: AVAudioSession.SetActiveOptions.notifyOthersOnDeactivation)
++        } catch {
++            call.reject("Microphone is already in use by another application.")
++            return
++        }
++
++        let engine = AVAudioEngine()
++        let request = SFSpeechAudioBufferRecognitionRequest()
++        request.shouldReportPartialResults = partialResults
++
++        let inputNode: AVAudioInputNode = engine.inputNode
++        let format: AVAudioFormat = inputNode.outputFormat(forBus: 0)
++        // A 0 Hz / 0-channel format (audio route still switching over after
++        // playback) makes installTap throw an uncatchable exception.
++        guard format.sampleRate > 0, format.channelCount > 0 else {
++            call.reject("Microphone not ready yet")
++            return
++        }
+ 
+-            self.recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+-            self.recognitionRequest?.shouldReportPartialResults = partialResults
++        let session = UUID()
++        self.sessionId = session
++        self.speechRecognizer = recognizer
++        self.audioEngine = engine
++        self.recognitionRequest = request
+ 
+-            let inputNode: AVAudioInputNode = self.audioEngine!.inputNode
+-            let format: AVAudioFormat = inputNode.outputFormat(forBus: 0)
++        self.recognitionTask = recognizer.recognitionTask(with: request, resultHandler: { (result, error) in
++            DispatchQueue.main.async {
++                guard self.sessionId == session else { return }
+ 
+-            self.recognitionTask = self.speechRecognizer?.recognitionTask(with: self.recognitionRequest!, resultHandler: { (result, error) in
+-                if result != nil {
++                if let result = result {
+                     let resultArray: NSMutableArray = NSMutableArray()
+                     var counter: Int = 0
+-
+-                    for transcription: SFTranscription in result!.transcriptions {
++                    for transcription: SFTranscription in result.transcriptions {
+                         if maxResults > 0 && counter < maxResults {
+                             resultArray.add(transcription.formattedString)
+                         }
+-                        counter+=1
++                        counter += 1
+                     }
+-
+                     if partialResults {
+                         self.notifyListeners("partialResults", data: ["matches": resultArray])
+                     } else {
+-                        call.resolve([
+-                            "matches": resultArray
+-                        ])
++                        call.resolve(["matches": resultArray])
+                     }
+-
+-                    if result!.isFinal {
+-                        self.audioEngine!.stop()
+-                        self.audioEngine?.inputNode.removeTap(onBus: 0)
+-                        self.notifyListeners("listeningState", data: ["status": "stopped"])
+-                        self.recognitionTask = nil
+-                        self.recognitionRequest = nil
++                    if result.isFinal {
++                        self.endSession()
++                        return
+                     }
+                 }
+ 
+-                if error != nil {
+-                    self.audioEngine!.stop()
+-                    self.audioEngine?.inputNode.removeTap(onBus: 0)
+-                    self.recognitionRequest = nil
+-                    self.recognitionTask = nil
+-                    self.notifyListeners("listeningState", data: ["status": "stopped"])
+-                    call.reject(error!.localizedDescription)
++                if let error = error {
++                    self.endSession()
++                    if !partialResults {
++                        call.reject(error.localizedDescription)
++                    }
+                 }
+-            })
+-
+-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { (buffer: AVAudioPCMBuffer, _: AVAudioTime) in
+-                self.recognitionRequest?.append(buffer)
+             }
++        })
+ 
+-            self.audioEngine?.prepare()
+-            do {
+-                try self.audioEngine?.start()
+-                self.notifyListeners("listeningState", data: ["status": "started"])
+-                if partialResults {
+-                    call.resolve()
+-                }
+-            } catch {
+-                call.reject(self.messageUnknown)
++        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { (buffer: AVAudioPCMBuffer, _: AVAudioTime) in
++            request.append(buffer)
++        }
++
++        engine.prepare()
++        do {
++            try engine.start()
++            self.notifyListeners("listeningState", data: ["status": "started"])
++            if partialResults {
++                call.resolve()
+             }
++        } catch {
++            self.teardown()
++            call.reject(self.messageUnknown)
++        }
++    }
++
++    // Main queue only. Stops everything belonging to the current session and
++    // forgets it, so any late callback from it is ignored.
++    private func teardown() {
++        self.sessionId = nil
++        if let engine = self.audioEngine {
++            engine.stop()
++            engine.inputNode.removeTap(onBus: 0)
++        }
++        self.recognitionRequest?.endAudio()
++        self.recognitionTask?.cancel()
++        self.audioEngine = nil
++        self.recognitionRequest = nil
++        self.recognitionTask = nil
++    }
++
++    // Main queue only. Ends the current session and tells JS, exactly once.
++    private func endSession() {
++        let wasActive = self.sessionId != nil
++        self.teardown()
++        if wasActive {
++            self.notifyListeners("listeningState", data: ["status": "stopped"])
+         }
+     }
+ 
+     @objc func stop(_ call: CAPPluginCall) {
+-        DispatchQueue.global(qos: DispatchQoS.QoSClass.default).async {
+-            if let engine = self.audioEngine, engine.isRunning {
+-                engine.stop()
+-                self.recognitionRequest?.endAudio()
+-                self.notifyListeners("listeningState", data: ["status": "stopped"])
+-            }
++        DispatchQueue.main.async {
++            self.endSession()
+             call.resolve()
+         }
+     }
+ 
+     @objc func isListening(_ call: CAPPluginCall) {
+-        let isListening = self.audioEngine?.isRunning ?? false
+-        call.resolve([
+-            "listening": isListening
+-        ])
++        DispatchQueue.main.async {
++            call.resolve([
++                "listening": self.audioEngine?.isRunning ?? false
++            ])
++        }
+     }
+ 
+     @objc func getSupportedLanguages(_ call: CAPPluginCall) {

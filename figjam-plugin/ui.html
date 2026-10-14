@@ -102,7 +102,7 @@
 
   <div class="listenRow">
     <input id="listenToggle" type="checkbox" checked />
-    <label for="listenToggle">Listen for Generate Steps requests from the app</label>
+    <label for="listenToggle">Listen for requests from the app</label>
   </div>
   <div id="jobStatus"></div>
 
@@ -123,6 +123,8 @@
   const APP_ORIGIN = 'http://localhost:3000';
   let activeJobId = null;
   let jobHadError = false;
+  // Board contents read for a 'read-agent-flow' job, sent back with 'done'.
+  let pendingResult = undefined;
 
   function appendLog(message) {
     logEl.textContent += (logEl.textContent ? '\n' : '') + message;
@@ -188,7 +190,19 @@
       if (!data.job) return;
       activeJobId = data.job.id;
       jobHadError = false;
-      if (data.job.kind === 'apply-edits') {
+      if (data.job.kind === 'draw-agent-flow' || data.job.kind === 'read-agent-flow') {
+        const drawing = data.job.kind === 'draw-agent-flow';
+        setJobStatus(drawing ? 'Job received — drawing the flow…' : 'Job received — reading the board…');
+        await reportJob(activeJobId, {
+          status: 'running',
+          message: drawing ? 'Picked up by the plugin — drawing the flow…' : 'Picked up by the plugin — reading the board…',
+        });
+        logEl.textContent = '';
+        runBtn.disabled = true;
+        runBtn.textContent = 'Working…';
+        pendingResult = undefined;
+        parent.postMessage({ pluginMessage: { type: data.job.kind, payload: data.job.payload } }, '*');
+      } else if (data.job.kind === 'apply-edits') {
         setJobStatus('Job received — writing edits…');
         await reportJob(activeJobId, { status: 'running', message: 'Picked up by the plugin — writing edits…' });
         logEl.textContent = '';
@@ -305,13 +319,17 @@
         if (/^Error:/.test(msg.message)) jobHadError = true;
         reportJob(activeJobId, { message: msg.message });
       }
+    } else if (msg.type === 'agent-read-result') {
+      pendingResult = msg.tables;
     } else if (msg.type === 'done') {
       runBtn.disabled = false;
       runBtn.textContent = 'Grow & populate';
       if (activeJobId) {
         const id = activeJobId;
         activeJobId = null;
-        reportJob(id, { status: jobHadError ? 'error' : 'done' });
+        const result = pendingResult;
+        pendingResult = undefined;
+        reportJob(id, result === undefined ? { status: jobHadError ? 'error' : 'done' } : { status: jobHadError ? 'error' : 'done', result: result });
         setJobStatus(listenToggleEl.checked ? 'Waiting for a job…' : '');
       }
     } else if (msg.type === 'generate') {

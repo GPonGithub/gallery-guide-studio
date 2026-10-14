@@ -20,12 +20,16 @@
  */
 
 export type FigmaJobStatus = 'pending' | 'running' | 'done' | 'error';
-export type FigmaJobKind = 'generate' | 'apply-edits';
+// 'draw-agent-flow' / 'read-agent-flow' belong to the v4 goal-agent studio:
+// draw a flow's cards on the board, or read every card back as rows.
+export type FigmaJobKind = 'generate' | 'apply-edits' | 'draw-agent-flow' | 'read-agent-flow';
 
 export type FigmaJob = {
   id: string;
   kind: FigmaJobKind;
   payload?: unknown;
+  /** What the plugin sends back, for jobs that read from the board. */
+  result?: unknown;
   status: FigmaJobStatus;
   log: string[];
   createdAt: number;
@@ -34,6 +38,14 @@ export type FigmaJob = {
 const JOB_MAX_AGE_MS = 30 * 60 * 1000;
 
 const jobs = new Map<string, FigmaJob>();
+
+// When the plugin last asked for work — it polls every ~4s while its panel
+// is open, so this doubles as a "is the plugin running?" signal for the app.
+let lastPluginPollAt: number | null = null;
+
+export function pluginLastSeen(): number | null {
+  return lastPluginPollAt;
+}
 
 function pruneOldJobs() {
   const cutoff = Date.now() - JOB_MAX_AGE_MS;
@@ -52,6 +64,7 @@ export function createJob(kind: FigmaJobKind = 'generate', payload?: unknown): F
 // Oldest pending job overall, flipped to 'running' as part of the same call
 // so two concurrent polls can never both claim it.
 export function claimNextJob(): FigmaJob | null {
+  lastPluginPollAt = Date.now();
   pruneOldJobs();
   const candidates = [...jobs.values()]
     .filter((j) => j.status === 'pending')
@@ -62,10 +75,14 @@ export function claimNextJob(): FigmaJob | null {
   return job;
 }
 
-export function updateJob(id: string, patch: { status?: FigmaJobStatus; message?: string }): FigmaJob | null {
+export function updateJob(
+  id: string,
+  patch: { status?: FigmaJobStatus; message?: string; result?: unknown },
+): FigmaJob | null {
   const job = jobs.get(id);
   if (!job) return null;
   if (patch.status) job.status = patch.status;
+  if (patch.result !== undefined) job.result = patch.result;
   if (patch.message) job.log.push(patch.message);
   return job;
 }

@@ -1,3 +1,5 @@
+> **Newest work is on branch `v4-goal-agent` — read [HANDOFF_V4_GOAL_AGENT.md](HANDOFF_V4_GOAL_AGENT.md) first.** This file covers the older v3 step-table app.
+
 # v3 session handoff — step-engine rebuild, night 1
 
 Picking this up tomorrow: read this file first, then the full technical

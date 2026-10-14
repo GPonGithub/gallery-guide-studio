@@ -1,3 +1,5 @@
+> **Newest work is on branch `v4-goal-agent` — read [HANDOFF_V4_GOAL_AGENT.md](HANDOFF_V4_GOAL_AGENT.md) first.** This file covers the older v3 step-table app.
+
 # v3 session handoff — FigJam plugin + live-sync toolchain
 
 **Update #4 — Phone testing shipped and working; hands-free voice built

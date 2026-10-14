@@ -13,6 +13,7 @@ import { PhoneTestingModal } from '@/components/PhoneTestingModal';
 import { defaultState, loadState, saveState } from '@/lib/storage';
 import type { PlaybookStep, StepOption, StudioState } from '@/lib/types';
 import { buttonOutline, buttonPrimary } from '@/lib/styles';
+import { getStartBox } from '@/lib/startBox';
 
 function makeStepId() {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -52,6 +53,13 @@ export default function Home() {
       </div>
     );
   }
+
+  // Until a playbook is picked (or after the picked one is gone, e.g. once
+  // Detect Blue Buttons replaces the boxes), chat starts where the
+  // conversation itself starts — see startBox.ts.
+  const chatBoxId = state.boxes.some((b) => b.id === state.activeBoxId)
+    ? state.activeBoxId
+    : (getStartBox(state.boxes)?.id ?? null);
 
   const editingBoxIndex = state.boxes.findIndex((b) => b.id === editingBoxId);
   const editingBox = editingBoxIndex >= 0 ? state.boxes[editingBoxIndex] : null;
@@ -233,7 +241,9 @@ export default function Home() {
         <div className="min-h-[420px] min-w-0 border-2 border-ink bg-paper p-4">
           <ChatPanel
             boxes={state.boxes}
-            activeBoxId={state.activeBoxId}
+            activeBoxId={chatBoxId}
+            smartJumps={state.smartJumps}
+            onSmartJumpsChange={(smartJumps) => setState((s) => ({ ...s, smartJumps }))}
             activeStepIndex={state.activeStepIndex}
             variables={state.variables}
             masterPlaybook={state.masterPlaybook}
@@ -306,6 +316,8 @@ export default function Home() {
           activeBoxId={state.activeBoxId}
           activeStepIndex={state.activeStepIndex}
           designerInitials={state.designerInitials}
+          smartJumps={state.smartJumps}
+          anthropicApiKey={state.anthropicApiKey}
           onClose={() => setFlowSnapshotOpen(false)}
         />
       )}
@@ -317,6 +329,8 @@ export default function Home() {
           voiceId={state.voiceId}
           voiceSettings={state.voiceSettings}
           voicePresets={state.voicePresets}
+          smartJumps={state.smartJumps}
+          anthropicApiKey={state.anthropicApiKey}
           onClose={() => setPhoneTestingOpen(false)}
         />
       )}

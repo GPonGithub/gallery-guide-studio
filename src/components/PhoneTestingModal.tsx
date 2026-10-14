@@ -12,6 +12,8 @@ type Props = {
   voiceId: string;
   voiceSettings: VoiceSettings;
   voicePresets: (VoiceSettings | null)[];
+  smartJumps: boolean;
+  anthropicApiKey: string;
   onClose: () => void;
 };
 
@@ -20,12 +22,22 @@ type Props = {
 // nothing here touches the main editor/canvas/chat components or the
 // StudioState they already rely on. Closing this modal (or never opening
 // it) leaves the rest of the app exactly as it was.
-export function PhoneTestingModal({ boxes, masterPlaybook, voiceId, voiceSettings, voicePresets, onClose }: Props) {
+export function PhoneTestingModal({
+  boxes,
+  masterPlaybook,
+  voiceId,
+  voiceSettings,
+  voicePresets,
+  smartJumps,
+  anthropicApiKey,
+  onClose,
+}: Props) {
   const [copied, setCopied] = useState(false);
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
   const [qrError, setQrError] = useState<string | null>(null);
+  const [sendState, setSendState] = useState<'idle' | 'sending' | 'sent' | 'error' | 'not-local'>('idle');
 
-  const encoded = encodePhonePayload({ boxes, masterPlaybook, voiceId, voiceSettings, voicePresets });
+  const encoded = encodePhonePayload({ boxes, masterPlaybook, voiceId, voiceSettings, voicePresets, smartJumps });
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
   const link = `${origin}/phone#${encoded}`;
   const isLocalhost = typeof window !== 'undefined' && window.location.hostname === 'localhost';
@@ -56,6 +68,37 @@ export function PhoneTestingModal({ boxes, masterPlaybook, voiceId, voiceSetting
     };
   }, [link]);
 
+  // The iPhone app always opens the same fixed URL, so instead of a link it
+  // fetches whatever was last sent here (see /api/phone-flow).
+  const sendToApp = async () => {
+    setSendState('sending');
+    try {
+      const res = await fetch('/api/phone-flow', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ boxes, masterPlaybook, voiceId, voiceSettings, voicePresets, smartJumps }),
+      });
+      if (!res.ok) {
+        setSendState(res.status === 403 ? 'not-local' : 'error');
+        return;
+      }
+      // Work out any smart jumps now, on this computer's key, so the phone
+      // never waits on it mid-conversation — the server caches the result
+      // for the phone's own requests. Best-effort: the phone still works
+      // out anything missing itself.
+      if (smartJumps && anthropicApiKey.trim()) {
+        await fetch('/api/flow-plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ boxes, anthropicApiKey }),
+        }).catch(() => {});
+      }
+      setSendState('sent');
+    } catch {
+      setSendState('error');
+    }
+  };
+
   const copyLink = async () => {
     try {
       await navigator.clipboard.writeText(link);
@@ -80,6 +123,38 @@ export function PhoneTestingModal({ boxes, masterPlaybook, voiceId, voiceSetting
           </button>
         </div>
 
+        <div className="flex flex-col gap-2 border-2 border-ink p-3">
+          <p className="font-label text-[11px] uppercase tracking-widest text-ink">iPhone app</p>
+          <p className="font-body text-sm text-ink">
+            Sends the current conversation to the Gallery Guide app on your phone. It picks it up within a few
+            seconds — no link needed.
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={sendToApp}
+              disabled={sendState === 'sending' || boxes.length === 0}
+              title={boxes.length === 0 ? 'Detect blue buttons first — there are no playbooks to send yet' : undefined}
+              className={buttonPrimary}
+            >
+              {sendState === 'sending' ? 'Sending…' : 'Send to iPhone app'}
+            </button>
+            {sendState === 'sent' && (
+              <span className="font-label text-[10px] uppercase tracking-wide text-ink">Sent ✓</span>
+            )}
+            {sendState === 'not-local' && (
+              <span className="font-label text-[10px] uppercase tracking-wide text-ink">
+                Open the app at localhost:3000 on this computer to send
+              </span>
+            )}
+            {sendState === 'error' && (
+              <span className="font-label text-[10px] uppercase tracking-wide text-ink">
+                Couldn&rsquo;t send — is the dev server running?
+              </span>
+            )}
+          </div>
+        </div>
+
+        <p className="font-label text-[11px] uppercase tracking-widest text-ink">Or: Safari link</p>
         <p className="font-body text-sm text-ink">
           Open this link on your phone to test the conversation there — a stripped-down chat-only view with your
           current playbooks, no editing canvas. It&rsquo;s a one-time snapshot of what&rsquo;s currently built, not

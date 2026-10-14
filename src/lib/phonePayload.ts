@@ -15,6 +15,8 @@ export type PhonePayload = {
   voiceId: string;
   voiceSettings: VoiceSettings;
   voicePresets: (VoiceSettings | null)[];
+  /** Missing (older links/sends) means on — the default. */
+  smartJumps?: boolean;
 };
 
 // Plain base64 can contain +, /, = — fine inside a URL fragment technically,

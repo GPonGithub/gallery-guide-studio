@@ -14,7 +14,7 @@
 /coverage
 
 # next.js
-/.next/
+/.next
 /out/
 
 # production
@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# phone app flow handoff (local dev data)
+/.data/
+
+# kept out of iCloud sync (see .next symlink)
+/.next.nosync/
