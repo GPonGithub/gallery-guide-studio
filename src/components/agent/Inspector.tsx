@@ -3,6 +3,7 @@
 import { findStage } from '@/lib/agent/flow';
 import type { AgentEvent, AgentFlow, SessionState } from '@/lib/agent/types';
 import { fieldLabel } from '@/lib/styles';
+import { cueStatusLabel } from './CueMonitor';
 
 export type TurnLog = { turn: number; userText: string | null; events: AgentEvent[]; timings: string[] };
 
@@ -33,7 +34,7 @@ function EventLine({ event }: { event: AgentEvent }) {
           <span className="font-label">{event.name}</span>{' '}
           <span className="text-muted-ink">
             ({event.trigger}) —{' '}
-            {event.status === 'sent' ? 'sent' : event.status === 'failed' ? 'TouchDesigner didn’t answer' : event.status === 'pending' ? 'sending…' : 'shown only (no address set)'}
+            {cueStatusLabel(event.status)}
           </span>
         </li>
       );

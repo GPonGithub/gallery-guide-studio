@@ -103,7 +103,7 @@ plus the existing `figma-jobs` queue (extended).
   agent thinks/speaks, auto-restarts, dedupes, won't start the countdown until real speech
   (a final phrase or 3+ words), +2s grace while Chrome thinks you're mid-phrase.
   **Pause before sending** slider (0.2–3s, default 1.0).
-- **Voice panel:** up to 5 named voices (pick from your ElevenLabs account by name, or
+- **Voice panel:** up to 10 named voices (pick from your ElevenLabs account by name, or
   paste an ID), per-voice Test / Test expressive, which one is in use; shared sliders
   (stability, similarity, style, speed, speaker boost); **Check the sliders work** (renders
   6 seeded clips and compares).
@@ -146,7 +146,7 @@ Last measured (before items 2–4): agent turn 1.4–3.4s, full-clip voice 0.9�
   to its saved settings. Voice cards fold (click the name line).
 - **Background music** (`♫ Music` panel): drop an MP3, volume 0–10 (squared), dip 0–10
   (share of volume kept while the agent talks: 1 − dip/10), "Try the dip". Starts on
-  "Agent speaks first" (either one), ease-curve fades via a Web Audio gain node
+  "Agent speaks first", ease-curve fades via a Web Audio gain node
   (`backgroundMusic.ts`), fades out at call end / Restart. The open mic can hear the music
   on speakers — not yet handled.
 - **No stage directions:** `spokenText.ts` filters the reply stream. It removes \*actions\*
@@ -156,6 +156,30 @@ Last measured (before items 2–4): agent turn 1.4–3.4s, full-clip voice 0.9�
   flow/brief/knowledge/board/voices/music differ from the last save; it opens Projects. The
   music file is stored at `.data/agent-music/<projectId>` (`/api/agent/projects/music`). The
   browser's working copy is in IndexedDB (`musicStore.ts`), keyed so it matches the project.
+  The Projects dialog's save button reads red "Not saved" / green "Saved ✓".
+
+### Added later in the second session (commit after 812d533)
+
+- **Regular vs. expressive is a voice setting.** Each voice card's 🔊 Test / ✦ Test
+  expressive also chooses how that voice speaks (the chosen one is filled black); Save
+  settings stores it (`SavedVoice.expressive`, live value `Saved.voiceExpressive`, saved in
+  projects as `ProjectVoice.expressive`). It's read fresh every turn (`withVoiceMode`), so
+  it can change mid-call. The "Agent speaks expressively first" button is gone.
+- **Laughter:** expressive replies use cues ([laughs], [evil laugh]…), never "ha ha".
+  `replaceWrittenLaughter` (spokenText.ts) turns any written laughter into [laughs]
+  (expressive) or drops it (regular). Regular replies get no [cues] at all.
+- Up to **10 voices** (`MAX_VOICES`).
+- **TouchDesigner visibility:** cues stream to the app as they fire (`{type:'cue'}` NDJSON
+  events, each with an `id` and the exact `payload` sent). `CueMonitor.tsx` shows the latest
+  message above the input (kept until the next one); `CueMarker` puts a line in the
+  conversation where each went out (green sent / red no answer / grey sending or no address).
+  Held cues are sent by the app via `/api/agent/cues`, which now takes the payloads.
+- **Send when spoken** (`AgentFlow.tdTiming`, default `'spoken'`; toggle in the TD window):
+  the server holds every cue (`holdCues`) and the app sends it when the reply's voice
+  actually starts playing (`SpeechQueue` `onPlay`). With no voice, it's sent when the reply
+  appears; if the voice fails, when it goes quiet. A failed turn sends nothing. `'decided'`
+  = the old behaviour (server sends at decision time). Moment cues are always sent as soon
+  as they're detected, which is after the reply is written.
 
 ## 4. Verified vs. not verified
 
@@ -201,10 +225,11 @@ and style showed no measurable length change on Flash).
 2. **iPhone app for v4** — the native shell still points at the v3 `/phone` page. Decide
    whether `/agent` (or a talk-only v4 page) replaces it; port OpenMic to the native
    speech plugin path.
-3. **TouchDesigner:** user still owes two decisions from the PDF (BOT-step timing; whether
-   USER steps fire). Classroom topology decides HTTP vs. MQTT (MQTT recommended for
-   shared screens).
-4. Per-project voice (and/or per-voice settings) — offered, not built.
+3. **TouchDesigner:** cue timing is now decided ("when spoken"). Still open: classroom
+   topology (HTTP vs. MQTT; MQTT recommended for shared screens). Caller details (slots) go
+   to TD in every message — worth a privacy note for public installations.
+4. Open mic + background music on speakers: the mic can hear the music. Possible fix: also
+   dip the music while the caller talks.
 5. Optional speed: faster reply model toggle; analysis is now the floor.
 6. Simulated-caller tester + transcript export (from the original v4 spec).
 7. Commit hygiene: decide whether v3 code paths get retired once v4 covers phone testing.

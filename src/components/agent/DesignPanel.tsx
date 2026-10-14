@@ -169,7 +169,7 @@ export function DesignPanel({
       const data = (await res.json()) as { flow: AgentFlow; problems: string[] } | { error: string };
       if ('error' in data) throw new Error(data.error);
       // Keep what isn't part of the design: the TD address and the knowledge base.
-      generated = { ...data.flow, tdUrl: flow.tdUrl, knowledge: flow.knowledge ?? '' };
+      generated = { ...data.flow, tdUrl: flow.tdUrl, tdTiming: flow.tdTiming, knowledge: flow.knowledge ?? '' };
       onFlowLoaded(generated);
       setProblems(data.problems);
       say(`✓ Designed ${generated.stages.length} stages — they're in the editor tabs above.`);
@@ -186,7 +186,11 @@ export function DesignPanel({
     setProblems([]);
     try {
       const tables = (await runPluginJob('read-agent-flow', null, say)) as ReadTable[] | undefined;
-      const { flow: imported, warnings } = boardToFlow(tables ?? [], { tdUrl: flow.tdUrl, knowledge: flow.knowledge ?? '' });
+      const { flow: imported, warnings } = boardToFlow(tables ?? [], {
+        tdUrl: flow.tdUrl,
+        tdTiming: flow.tdTiming,
+        knowledge: flow.knowledge ?? '',
+      });
       if (imported.stages.length === 0) {
         say('✗ No STAGE cards found on that board. Is the plugin open in the right board?');
         return;

@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { DesignPanel } from '@/components/agent/DesignPanel';
 import { MasterEditor, StageEditor } from '@/components/agent/FlowEditor';
 import { OpenMic, type OpenMicStatus } from '@/components/agent/OpenMic';
 import { SpeechQueue } from '@/components/agent/speechQueue';
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
+import { CueMarker, CueMonitor, type SentCue } from '@/components/agent/CueMonitor';
 import { adoptKeylessTrack, clearTrack, loadTrack, saveTrack } from '@/lib/musicStore';
 import type { TurnStreamEvent } from '@/lib/agent/runtime';
 import { MAX_VOICES, VoicePanel, type AccountVoices, type SavedVoice, type VoiceCheck } from '@/components/agent/VoicePanel';
@@ -16,7 +17,7 @@ import { ProjectsMenu, type CurrentProject } from '@/components/agent/ProjectsMe
 import type { AgentProject, ProjectMusic, ProjectVoice } from '@/lib/agent/projectStore';
 import { Inspector, type TurnLog } from '@/components/agent/Inspector';
 import { blankStage, emptyFlow, initialState, sampleFlow, sortStages, startStage } from '@/lib/agent/flow';
-import type { AgentEvent, AgentFlow, ChatTurn, CueStatus, SessionState, Stage, TurnResponse } from '@/lib/agent/types';
+import type { AgentEvent, AgentFlow, ChatTurn, CueEvent, CueStatus, SessionState, Stage, TurnResponse } from '@/lib/agent/types';
 import { buttonIcon, buttonOutline, buttonPrimary, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
 
 // v4 prototype: define a goal-driven agent by typing stage cards (no
@@ -44,10 +45,12 @@ type Saved = {
   savedSnapshot: string;
   /** Open mic: seconds of quiet before what was said is sent. */
   pauseSeconds: number;
-  /** Up to five saved ElevenLabs voices (empty ID = the default voice). */
+  /** Up to ten saved ElevenLabs voices (empty ID = the default voice). */
   voices: SavedVoice[];
   /** Index into `voices` of the one the agent speaks with. */
   activeVoice: number;
+  /** The voice in use speaks expressively (performs [cues]) — like the sliders, saved per voice. */
+  voiceExpressive: boolean;
   /** Background music volume, 0–10. (The file itself lives in IndexedDB — see musicStore.) */
   musicVolume: number;
   /** How far the music dips while the agent talks, 0–10 (10 = silent). */
@@ -63,7 +66,12 @@ const withoutCues = (text: string) => text.replace(/\[[^\]\n]{1,40}\]\s*/g, '').
 // tell whether anything (flow, brief, knowledge, board, voices, music) changed.
 type ProjectContent = Pick<AgentProject, 'flow' | 'brief' | 'boardUrl'> & { voice: ProjectVoice; music: ProjectMusic | null };
 
-const voiceOf = (s: Saved): ProjectVoice => ({ voices: s.voices, activeVoice: s.activeVoice, voiceSettings: s.voiceSettings });
+const voiceOf = (s: Saved): ProjectVoice => ({
+  voices: s.voices,
+  activeVoice: s.activeVoice,
+  voiceSettings: s.voiceSettings,
+  expressive: s.voiceExpressive,
+});
 const musicOf = (s: Saved): ProjectMusic | null =>
   s.musicTrack ? { ...s.musicTrack, volume: s.musicVolume, dip: s.musicDip } : null;
 const contentOf = (s: Saved): ProjectContent => ({ flow: s.flow, brief: s.brief, boardUrl: s.boardUrl, voice: voiceOf(s), music: musicOf(s) });
@@ -102,6 +110,7 @@ function loadSaved(): Saved {
     pauseSeconds: 1.0,
     voices: [],
     activeVoice: 0,
+    voiceExpressive: false,
     musicVolume: 5,
     musicDip: 5,
     musicTrack: null,
@@ -151,6 +160,9 @@ export default function AgentStudioPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [voiceOn, setVoiceOn] = useState(true);
+  // Every TouchDesigner cue of this conversation, as it went out (see CueMonitor).
+  const [cueLog, setCueLog] = useState<SentCue[]>([]);
+  const cueStatusRef = useRef(new Map<string, CueStatus>());
   const [openMicOn, setOpenMicOn] = useState(false);
   const [openMicStatus, setOpenMicStatus] = useState<OpenMicStatus>('off');
   // A reply being worked out early, during the open mic's pause (see startEarlyTurn).
@@ -335,6 +347,7 @@ export default function AgentStudioPage() {
   const restart = (code = startAt) => {
     stopAudio();
     musicRef.current?.stop();
+    setCueLog([]);
     setSession(initialState(flow, code || undefined));
     setMessages([]);
     setLog([]);
@@ -349,6 +362,7 @@ export default function AgentStudioPage() {
     setStartAt('');
     stopAudio();
     musicRef.current?.stop();
+    setCueLog([]);
     setSession(initialState(next));
     setMessages([]);
     setLog([]);
@@ -410,6 +424,7 @@ export default function AgentStudioPage() {
               voices: voice.voices,
               activeVoice: voice.activeVoice,
               voiceSettings: voice.voiceSettings,
+              voiceExpressive: voice.expressive ?? false,
               voiceId: voice.voices[voice.activeVoice]?.voiceId ?? '',
             }),
             // Only a project that has music saved with it plays any.
@@ -497,7 +512,7 @@ export default function AgentStudioPage() {
   // "Moment" cues are judged against the reply, so they're checked after it
   // is already on screen and being spoken — never holding the reply back.
   // Whatever fires is added to the latest turn in the inspector.
-  const checkMoments = async (state: SessionState, userText: string | null, reply: string) => {
+  const checkMoments = async (state: SessionState, userText: string | null, reply: string, afterMessage: number) => {
     const stage = flow.stages.find((s) => s.code === state.stageCode);
     const hasMoments = [...(stage?.cues ?? []), ...flow.globalCues].some((c) => c.on === 'moment' && c.when?.trim());
     if (!hasMoments) return;
@@ -509,6 +524,7 @@ export default function AgentStudioPage() {
       });
       const data = (await res.json()) as { events: AgentEvent[] } | { error: string };
       if ('error' in data || data.events.length === 0) return;
+      for (const event of data.events) if (event.type === 'cue') noteCue(event, afterMessage);
       setLog((l) =>
         l.length === 0 ? l : [...l.slice(0, -1), { ...l[l.length - 1], events: [...l[l.length - 1].events, ...data.events] }],
       );
@@ -523,8 +539,10 @@ export default function AgentStudioPage() {
   // started early can collect sentences silently and be voiced only once
   // it's actually used.
   // `takeTicket` hands over audio already being made for a sentence, if any.
+  // `listenCues` does the same for TouchDesigner cues (and their status updates).
   type TurnStream = {
     listen: (onSentence: (sentence: string) => void) => void;
+    listenCues: (onCue: (cue: CueEvent) => void) => void;
     takeTicket: (sentence: string) => Promise<string | null> | undefined;
     done: Promise<TurnResponse>;
   };
@@ -558,7 +576,11 @@ export default function AgentStudioPage() {
   ): TurnStream => {
     const sentences: string[] = [];
     // Set later by listen(), from outside this function.
-    const hub: { listener: ((sentence: string) => void) | null } = { listener: null };
+    const hub: { listener: ((sentence: string) => void) | null; cueListener: ((cue: CueEvent) => void) | null } = {
+      listener: null,
+      cueListener: null,
+    };
+    const cues: CueEvent[] = [];
     // A head start for the voice: the first sentence's audio starts being
     // made as soon as the server has written it (a draft, or the first real
     // sentence of a turn still waiting for the pause to end) — not when it's
@@ -573,7 +595,15 @@ export default function AgentStudioPage() {
       const res = await fetch('/api/agent/turn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ flow, state, history, userText, anthropicApiKey: saved.anthropicApiKey, holdCues: options.holdCues }),
+        body: JSON.stringify({
+          flow,
+          state,
+          history,
+          userText,
+          anthropicApiKey: saved.anthropicApiKey,
+          // "When spoken" cues are held by the server and sent by the app as the reply is heard.
+          holdCues: options.holdCues || cuesWhenSpoken,
+        }),
         signal: options.signal,
       });
       if (!res.body) throw new Error('No reply from the app server.');
@@ -595,6 +625,9 @@ export default function AgentStudioPage() {
             if (sentences.length === 0) headStart(event.text);
             sentences.push(event.text);
             hub.listener?.(event.text);
+          } else if (event.type === 'cue') {
+            cues.push(event.cue);
+            hub.cueListener?.(event.cue);
           } else if (event.type === 'error') {
             throw new Error(event.message);
           } else {
@@ -611,6 +644,10 @@ export default function AgentStudioPage() {
         tickets.delete(sentence);
         return ticket;
       },
+      listenCues: (onCue) => {
+        for (const cue of cues) onCue(cue);
+        hub.cueListener = onCue;
+      },
       listen: (onSentence) => {
         for (const sentence of sentences) onSentence(sentence);
         hub.listener = onSentence;
@@ -619,11 +656,16 @@ export default function AgentStudioPage() {
   };
 
   // Speaks one reply sentence by sentence, each requested as soon as it's written.
-  const newSpeechQueue = (expressive: boolean) =>
+  // `hooks`: told when the voice actually starts playing, and when it goes quiet.
+  const newSpeechQueue = (expressive: boolean, hooks: { onPlay?: () => void; onQuiet?: () => void } = {}) =>
     new SpeechQueue({
       expressive,
       playbackRate: () => voiceRef.current.settings.speed,
-      onSpeakingChange: setSpeaking,
+      onSpeakingChange: (speakingNow) => {
+        setSpeaking(speakingNow);
+        if (!speakingNow) hooks.onQuiet?.();
+      },
+      onPlay: hooks.onPlay,
       onError: setError,
       requestTicket: (text, previousText) => requestTicket(text, previousText, expressive),
       requestClip: async (text, previousText) => {
@@ -650,12 +692,18 @@ export default function AgentStudioPage() {
   // whole pause); if they keep talking, it's thrown away. TouchDesigner cues
   // are held back until the turn is actually used.
   const turnBasis = `${session.sessionId}:${messages.length}`;
+  // TouchDesigner cues go out as the reply that goes with them is heard (the
+  // default), or the moment the agent decides (see AgentFlow.tdTiming).
+  const cuesWhenSpoken = (flow.tdTiming ?? 'spoken') === 'spoken';
+  // Regular or expressive comes from the voice in use (Voice panel), read
+  // fresh for every turn — so switching it mid-call applies to the next reply.
+  const withVoiceMode = (state: SessionState): SessionState => ({ ...state, expressive: saved.voiceExpressive });
   const startEarlyTurn = (text: string) => {
     if (busy || session.ended || !saved.anthropicApiKey.trim()) return;
     if (earlyTurnRef.current?.text === text && earlyTurnRef.current.basis === turnBasis) return;
     earlyTurnRef.current?.controller.abort();
     const controller = new AbortController();
-    const stream = startTurnStream(session, messages, text, { holdCues: true, signal: controller.signal });
+    const stream = startTurnStream(withVoiceMode(session), messages, text, { holdCues: true, signal: controller.signal });
     stream.done.catch(() => {}); // an abandoned early turn is expected to fail
     earlyTurnRef.current = { text, basis: turnBasis, controller, stream };
   };
@@ -667,47 +715,48 @@ export default function AgentStudioPage() {
     return undefined;
   };
 
-  // Cues of an early turn were held back — send them now that it's being used.
-  const sendHeldCues = async (data: TurnResponse, turnNumber: number) => {
-    const held = data.events.filter((e) => e.type === 'cue' && e.status === 'pending');
-    if (held.length === 0) return;
+  // A cue went out (or its status changed): show it in the TouchDesigner
+  // window and the conversation, and keep the inspector's copy up to date.
+  const noteCue = (cue: CueEvent, afterMessage: number) => {
+    cueStatusRef.current.set(cue.id, cue.status);
+    setCueLog((list) => {
+      const i = list.findIndex((c) => c.id === cue.id);
+      if (i < 0) return [...list, { ...cue, at: Date.now(), afterMessage }];
+      const next = [...list];
+      next[i] = { ...next[i], status: cue.status };
+      return next;
+    });
+    setLog((l) =>
+      l.map((entry) =>
+        entry.events.some((e) => e.type === 'cue' && e.id === cue.id)
+          ? { ...entry, events: entry.events.map((e) => (e.type === 'cue' && e.id === cue.id ? { ...e, status: cue.status } : e)) }
+          : entry,
+      ),
+    );
+  };
+
+  // A turn worked out early held its cues back (nothing may fire for a turn
+  // that might be thrown away). Now it's being used, send each one straight
+  // away — with the message it would have sent when it fired.
+  const sendHeldCue = async (cue: CueEvent, afterMessage: number) => {
+    noteCue({ ...cue, status: 'sending' }, afterMessage);
+    let status: CueStatus = 'failed';
     try {
       const res = await fetch('/api/agent/cues', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          flow,
-          state: data.state,
-          cues: held.map((e) => (e.type === 'cue' ? { name: e.name, trigger: e.trigger } : null)),
-        }),
+        body: JSON.stringify({ flow, payloads: [cue.payload] }),
       });
-      const { statuses } = (await res.json()) as { statuses: CueStatus[] };
-      let i = 0;
-      setLog((l) =>
-        l.map((entry) =>
-          entry.turn !== turnNumber
-            ? entry
-            : {
-                ...entry,
-                events: entry.events.map((e) =>
-                  e.type === 'cue' && e.status === 'pending' ? { ...e, status: statuses[i++] ?? 'failed' } : e,
-                ),
-              },
-        ),
-      );
+      status = ((await res.json()) as { statuses: CueStatus[] }).statuses[0] ?? 'failed';
     } catch {
       // A cue that can't be delivered never interrupts the conversation.
     }
+    noteCue({ ...cue, status }, afterMessage);
   };
 
-  const sendTurn = async (
-    userText: string | null,
-    opening?: { expressive: boolean },
-    early?: TurnStream,
-  ) => {
+  const sendTurn = async (userText: string | null, early?: TurnStream) => {
     if (busy || session.ended) return;
-    // An expressive conversation is chosen by how it's opened, then kept for every turn.
-    const state = opening ? { ...session, expressive: opening.expressive } : session;
+    const state = withVoiceMode(session);
     if (!saved.anthropicApiKey.trim()) {
       setError('Add your Anthropic API key first (Keys, top right).');
       setKeysOpen(true);
@@ -719,44 +768,77 @@ export default function AgentStudioPage() {
     stopAudio();
     const withCaller: ChatTurn[] = [...history, ...(userText ? [{ role: 'user' as const, text: userText }] : [])];
     setMessages(withCaller);
+    // Cues of this turn go out before its reply (the reply is about the
+    // situation they mark), so that's where they show in the conversation.
+    const cuePosition = withCaller.length;
+    // "When spoken": this turn's cues wait here until its reply is actually
+    // heard — the voice starting, or (voice off) the reply appearing.
+    const gate = { open: !cuesWhenSpoken, waiting: [] as CueEvent[] };
+    const openGate = () => {
+      if (gate.open) return;
+      gate.open = true;
+      for (const cue of gate.waiting.splice(0)) void sendHeldCue(cue, cuePosition);
+    };
     // Each sentence appears in the chat and goes to the voice the moment it's written.
-    const queue = voiceOn && voiceRef.current.apiKey.trim() ? newSpeechQueue(Boolean(state.expressive)) : null;
+    const queue =
+      voiceOn && voiceRef.current.apiKey.trim()
+        ? // If the voice fails and goes quiet without playing, the cues still go.
+          newSpeechQueue(Boolean(state.expressive), { onPlay: openGate, onQuiet: openGate })
+        : null;
     queueRef.current = queue;
     let shown = '';
     let stream: TurnStream | undefined = early;
+    // Held cues (an early turn's, or any "when spoken" cue) are sent by the app.
+    const onCue = (cue: CueEvent) => {
+      if (cue.status !== 'pending') noteCue(cue, cuePosition);
+      else if (gate.open) void sendHeldCue(cue, cuePosition);
+      else gate.waiting.push(cue);
+    };
     const onSentence = (sentence: string) => {
       shown = `${shown} ${sentence}`.trim();
       setMessages([...withCaller, { role: 'assistant', text: shown }]);
       if (withoutCues(sentence)) queue?.add(sentence, stream?.takeTicket(sentence));
+      if (!queue) openGate();
     };
     try {
       let data: TurnResponse | null = null;
       if (early) {
         try {
+          early.listenCues(onCue);
           early.listen(onSentence);
           data = await early.done;
         } catch (err) {
           // An early turn that failed is redone normally — unless it had
-          // already started speaking, which must never repeat.
+          // already started speaking, which must never repeat. Its waiting
+          // cues are dropped; the redone turn brings its own.
           if (shown) throw err;
+          gate.waiting.length = 0;
         }
       }
       if (!data) {
         stream = startTurnStream(state, history, userText);
+        stream.listenCues(onCue);
         stream.listen(onSentence);
         data = await stream.done;
       }
       queue?.finish();
+      // Nothing to say out loud (or no voice): the reply is "heard" now.
+      if (!queue || queue.idle) openGate();
       setMessages([...withCaller, { role: 'assistant', text: data.reply }]);
       setSession(data.state);
-      const turnNumber = log.length + 1;
+      // Cue statuses as last heard (held ones may have been sent since the turn finished).
+      const events = data.events.map((e) =>
+        e.type === 'cue' ? { ...e, status: cueStatusRef.current.get(e.id) ?? e.status } : e,
+      );
       setLog((l) => [
         ...l,
-        { turn: turnNumber, userText, events: data.events, timings: early ? ['started during your pause', ...data.timings] : data.timings },
+        { turn: l.length + 1, userText, events, timings: early ? ['started during your pause', ...data.timings] : data.timings },
       ]);
-      void sendHeldCues(data, turnNumber);
-      void checkMoments(data.state, userText, data.reply);
+      void checkMoments(data.state, userText, data.reply, cuePosition + 1);
     } catch (err) {
+      // A failed turn sends nothing.
+      gate.open = true;
+      gate.waiting.length = 0;
       queue?.cancel();
       setMessages(history);
       if (userText) setInput(userText);
@@ -766,12 +848,11 @@ export default function AgentStudioPage() {
     }
   };
 
-  // "Agent speaks first" (normal or expressive): the music starts in the same
-  // click — browsers only let sound start from one — while the agent's
-  // opening line is being written.
-  const openCall = (expressive: boolean) => {
+  // "Agent speaks first": the music starts in the same click — browsers only
+  // let sound start from one — while the agent's opening line is being written.
+  const openCall = () => {
     if (saved.anthropicApiKey.trim()) musicRef.current?.start();
-    void sendTurn(null, { expressive });
+    void sendTurn(null);
   };
 
   const submit = () => {
@@ -980,10 +1061,10 @@ export default function AgentStudioPage() {
             <button onClick={() => restart()} disabled={busy} className={buttonOutline}>
               Restart
             </button>
-            {session.expressive && (
+            {saved.voiceExpressive && (
               <span
                 className="border-2 border-ink px-2 py-1 font-label text-[10px] uppercase tracking-widest text-ink"
-                title="The agent adds performance cues and an expressive ElevenLabs model (v4 Turbo) speaks them. Restart to go back to the normal voice."
+                title="The voice in use is set to expressive (Voice panel): the agent adds performance cues — [laughs], [whispers]… — and ElevenLabs' expressive model performs them."
               >
                 ✦ Expressive voice
               </span>
@@ -1046,15 +1127,19 @@ export default function AgentStudioPage() {
               voices={saved.voices}
               activeVoice={saved.activeVoice}
               onSettingsChange={(voiceSettings) => setSaved({ ...saved, voiceSettings })}
+              expressive={saved.voiceExpressive}
+              onExpressiveChange={(voiceExpressive) => setSaved({ ...saved, voiceExpressive })}
               onVoicesChange={(voices, activeVoice) => {
-                // Switching to a voice with saved settings moves the sliders to them.
-                const switchedTo = activeVoice !== saved.activeVoice ? voices[activeVoice]?.settings : undefined;
+                // Switching to a voice with saved settings moves the sliders (and
+                // regular/expressive) to them.
+                const switchedTo = activeVoice !== saved.activeVoice ? voices[activeVoice] : undefined;
                 setSaved({
                   ...saved,
                   voices,
                   activeVoice,
                   voiceId: voices[activeVoice]?.voiceId ?? '',
-                  voiceSettings: switchedTo ? { ...switchedTo } : saved.voiceSettings,
+                  voiceSettings: switchedTo?.settings ? { ...switchedTo.settings } : saved.voiceSettings,
+                  voiceExpressive: switchedTo?.settings ? Boolean(switchedTo.expressive) : saved.voiceExpressive,
                 });
               }}
               onTest={(voiceId, settings) =>
@@ -1110,31 +1195,40 @@ export default function AgentStudioPage() {
                   Let the agent open the call, or just type (or speak) to start.
                 </p>
                 <div className="flex flex-wrap justify-center gap-2">
-                  <button onClick={() => openCall(false)} disabled={!firstStage} className={buttonPrimary}>
-                    Agent speaks first
-                  </button>
                   <button
-                    onClick={() => openCall(true)}
+                    onClick={openCall}
                     disabled={!firstStage}
-                    className={buttonOutline}
-                    title="The agent performs its lines — [warmly], [laughs softly], [sighs]… — using ElevenLabs' expressive v4 Turbo model. A little slower to start speaking than the normal voice."
+                    className={buttonPrimary}
+                    title={`Speaks with ${saved.voices[saved.activeVoice]?.name.trim() || 'the voice in use'} (${saved.voiceExpressive ? 'expressive' : 'regular'}) — change it in the Voice panel`}
                   >
-                    ✦ Agent speaks expressively first
+                    Agent speaks first
                   </button>
                 </div>
               </div>
             )}
             {messages.map((m, i) => (
-              <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div
-                  className={`max-w-[80%] px-3 py-2 font-body text-sm ${
-                    m.role === 'user' ? 'bg-ink text-paper' : 'border-2 border-ink bg-paper text-ink'
-                  }`}
-                >
-                  {m.role === 'assistant' ? withoutCues(m.text) : m.text}
+              <Fragment key={i}>
+                {cueLog
+                  .filter((c) => c.afterMessage === i)
+                  .map((c) => (
+                    <CueMarker key={c.id} cue={c} />
+                  ))}
+                <div className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div
+                    className={`max-w-[80%] px-3 py-2 font-body text-sm ${
+                      m.role === 'user' ? 'bg-ink text-paper' : 'border-2 border-ink bg-paper text-ink'
+                    }`}
+                  >
+                    {m.role === 'assistant' ? withoutCues(m.text) : m.text}
+                  </div>
                 </div>
-              </div>
+              </Fragment>
             ))}
+            {cueLog
+              .filter((c) => c.afterMessage >= messages.length)
+              .map((c) => (
+                <CueMarker key={c.id} cue={c} />
+              ))}
             {busy && <p className="font-label text-[11px] uppercase tracking-widest text-muted-ink">Agent is thinking…</p>}
             {session.ended && (
               <p className="text-center font-label text-[11px] uppercase tracking-widest text-muted-ink">
@@ -1144,6 +1238,14 @@ export default function AgentStudioPage() {
             {error && <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-sm text-ink">{error}</p>}
             <div ref={bottomRef} />
           </div>
+
+          <CueMonitor
+            latest={cueLog.at(-1) ?? null}
+            count={cueLog.length}
+            tdUrl={flow.tdUrl}
+            timing={flow.tdTiming ?? 'spoken'}
+            onTimingChange={(tdTiming) => setFlow({ ...flow, tdTiming })}
+          />
 
           {openMicOn && (
             <div className="flex items-center gap-2 border-t-2 border-ink px-3 pt-2 font-label text-[10px] uppercase tracking-widest text-muted-ink">
@@ -1191,7 +1293,7 @@ export default function AgentStudioPage() {
               onTranscript={setInput}
               onUtterance={(text) => {
                 setInput('');
-                void sendTurn(text, undefined, takeEarlyTurn(text));
+                void sendTurn(text, takeEarlyTurn(text));
               }}
               onPhraseFinal={startEarlyTurn}
               onStatus={setOpenMicStatus}

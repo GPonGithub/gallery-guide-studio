@@ -77,6 +77,13 @@ export type AgentFlow = {
   /** Where cues are POSTed. Blank = cues are only shown in the inspector. */
   tdUrl: string;
   /**
+   * When a cue goes to TouchDesigner: 'spoken' (the default) holds it until
+   * the agent's voice starts saying the reply it belongs to; 'decided' sends
+   * it the moment the agent decides (new stage, information collected) —
+   * up to a second or so before that reply is heard.
+   */
+  tdTiming?: 'spoken' | 'decided';
+  /**
    * Facts the agent can draw on — doctors, opening hours, prices, menus…
    * Written by the student (never generated), kept separate from the
    * conversation design, and preserved when a flow is generated or
@@ -103,15 +110,28 @@ export type SessionState = {
   expressive?: boolean;
 };
 
-// 'pending' = held back while the turn wasn't confirmed yet (see TurnRequest.holdCues).
-export type CueStatus = 'sent' | 'failed' | 'logged' | 'pending';
+// 'pending' = held back while the turn wasn't confirmed yet (see TurnRequest.holdCues);
+// 'sending' = on its way to TouchDesigner; 'logged' = no TouchDesigner address set.
+export type CueStatus = 'sent' | 'failed' | 'logged' | 'pending' | 'sending';
+
+/** The message a cue sends to TouchDesigner (as JSON, POSTed to the flow's TD address). */
+export type CuePayload = {
+  cue: string;
+  trigger: string;
+  stage: string;
+  sessionId: string;
+  slots: Record<string, string>;
+};
+
+/** One cue as it fires — `id` ties together the updates for it (sending → sent). */
+export type CueEvent = { type: 'cue'; id: string; name: string; trigger: string; status: CueStatus; payload: CuePayload };
 
 /** What happened in a turn — drives the inspector. */
 export type AgentEvent =
   | { type: 'slot'; name: string; value: string }
   | { type: 'stage'; from: string; to: string; reason: string }
   | { type: 'complete'; stage: string }
-  | { type: 'cue'; name: string; trigger: string; status: CueStatus }
+  | CueEvent
   | { type: 'offTopic'; streak: number }
   | { type: 'end'; reason: string }
   | { type: 'note'; text: string }

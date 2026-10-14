@@ -17,6 +17,8 @@ export type SpeechQueueOptions = {
   playbackRate: () => number;
   expressive: boolean;
   onSpeakingChange: (speaking: boolean) => void;
+  /** The voice has actually started playing a sentence (audio coming out, not just requested). */
+  onPlay?: () => void;
   onError: (message: string) => void;
 };
 
@@ -117,6 +119,7 @@ export class SpeechQueue {
       if (src.startsWith('blob:')) URL.revokeObjectURL(src);
       void this.playNext();
     };
+    audio.onplaying = () => this.options.onPlay?.();
     audio.onerror = () => fail(`error code ${audio.error?.code ?? '?'}${audio.error?.message ? `: ${audio.error.message}` : ''}`);
     audio.play().catch((err: unknown) => fail(err instanceof Error ? err.message : 'could not start'));
   }
@@ -137,6 +140,11 @@ export class SpeechQueue {
       this.options.onError(`Voice failed: ${err instanceof Error ? err.message : 'unknown error'}`);
       void this.playNext();
     }
+  }
+
+  /** Nothing playing or waiting to play (e.g. a reply with nothing to say). */
+  get idle(): boolean {
+    return !this.active;
   }
 
   get expressive(): boolean {

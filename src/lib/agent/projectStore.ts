@@ -16,6 +16,8 @@ export type ProjectVoice = {
   voices: SavedVoice[];
   activeVoice: number;
   voiceSettings: VoiceSettings | null;
+  /** The voice in use speaks with ElevenLabs' expressive model (missing = regular). */
+  expressive?: boolean;
 };
 
 /** The music's file is stored separately (see musicFile); `key` changes whenever a new file is dropped in. */

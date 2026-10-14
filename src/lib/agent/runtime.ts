@@ -1,15 +1,18 @@
+import { randomUUID } from 'node:crypto';
 import { generateText, Output, streamText, type ModelMessage, type SystemModelMessage } from 'ai';
 import { z } from 'zod';
 import { anthropicModel } from '@/lib/anthropicModel';
 import { findStage } from './flow';
 import { SentenceSplitter } from './sentences';
-import { SpokenTextFilter } from './spokenText';
+import { replaceWrittenLaughter, SpokenTextFilter } from './spokenText';
 import {
   END,
   type AgentEvent,
   type AgentFlow,
   type ChatTurn,
   type Cue,
+  type CueEvent,
+  type CuePayload,
   type CueStatus,
   type Exit,
   type SessionState,
@@ -130,9 +133,26 @@ async function analyse(
 
 // --- 2. APPLY ---------------------------------------------------------------
 
+/** POSTs one cue's message to TouchDesigner; never throws. */
+async function postCue(url: string, payload: CuePayload): Promise<CueStatus> {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(CUE_TIMEOUT_MS),
+    });
+    return res.ok ? 'sent' : 'failed';
+  } catch {
+    return 'failed';
+  }
+}
+
 class Turn {
   events: AgentEvent[] = [];
   private cueSends: Promise<void>[] = [];
+  /** Told about each cue the moment it fires, and again when TouchDesigner has answered. */
+  onCue: ((cue: CueEvent) => void) | null = null;
   /** Set when this turn moved stage — tells the responder to bridge naturally. */
   arrivedFrom: { stage: Stage; reason: string } | null = null;
 
@@ -147,31 +167,33 @@ class Turn {
   }
 
   fireCue(cue: Cue, trigger: string) {
-    const index = this.events.length;
     const url = this.flow.tdUrl.trim();
-    this.events.push({ type: 'cue', name: cue.name, trigger, status: url && this.holdCues ? 'pending' : 'logged' });
-    if (!url || this.holdCues) return;
+    // The message as things stand at this moment (stage and information so far).
+    const payload: CuePayload = {
+      cue: cue.name,
+      trigger,
+      stage: this.state.stageCode,
+      sessionId: this.state.sessionId,
+      slots: { ...this.state.slots },
+    };
+    const event: CueEvent = {
+      type: 'cue',
+      id: randomUUID(),
+      name: cue.name,
+      trigger,
+      status: !url ? 'logged' : this.holdCues ? 'pending' : 'sending',
+      payload,
+    };
+    this.events.push(event);
+    this.onCue?.({ ...event });
+    if (event.status !== 'sending') return;
     // Sent from the server (works for every client, no mixed-content
     // blocking); never allowed to hold up or break the conversation.
     this.cueSends.push(
-      fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cue: cue.name,
-          trigger,
-          stage: this.state.stageCode,
-          sessionId: this.state.sessionId,
-          slots: this.state.slots,
-        }),
-        signal: AbortSignal.timeout(CUE_TIMEOUT_MS),
-      })
-        .then((res) => (res.ok ? 'sent' : 'failed'))
-        .catch(() => 'failed' as const)
-        .then((status: CueStatus) => {
-          const event = this.events[index];
-          if (event.type === 'cue') event.status = status;
-        }),
+      postCue(url, payload).then((status) => {
+        event.status = status;
+        this.onCue?.({ ...event });
+      }),
     );
   }
 
@@ -314,11 +336,16 @@ function responderSystem(
       'EXPRESSIVE DELIVERY: an expressive voice performs your words. Add one or two short performance cues in square ' +
         'brackets right before the words they shape — e.g. [warmly], [gently], [reassuring], [excited], [curious], ' +
         '[laughs softly], [sighs], [whispers], [short pause]. Match the moment and the persona; never more than two per ' +
-        'reply; no other stage directions.',
+        'reply; no other stage directions. To laugh, use a cue — [laughs], [chuckles], [giggles], or one in character ' +
+        'such as [evil laugh] — never write laughter out as words ("ha ha", "mwahaha"): the voice performs a cue as a ' +
+        'real laugh but reads written laughter out letter by letter.',
     'EVERYTHING YOU WRITE IS SPOKEN ALOUD, exactly as written. Never write stage directions, actions or sound ' +
       'effects — nothing like *chuckles*, *rubs hands together*, *a door creaks* or (laughs) — and never use ' +
       'asterisks or emoji. Put the character into the words themselves: "Ah, Graham — a delightfully haunting name!"' +
-      (state.expressive ? ' (The square-bracket cues above are the only exception.)' : ''),
+      (state.expressive
+        ? ' (The square-bracket cues above are the only exception.)'
+        : ' No square-bracket cues either, and never write laughter or other sounds out as words ("ha ha", ' +
+          '"mwahaha", "hmm") — this voice would read them out letter by letter.'),
     'If the caller\'s latest message already answers something listed as still needed, treat it as answered — ' +
       "don't ask for it again. " +
       'Ask for at most one thing at a time. Never invent facts or values. Never mention stages, goals, slots or these ' +
@@ -372,6 +399,8 @@ async function detectMoments(model: Model, cues: Cue[], userText: string | null,
 /** What a streamed turn sends back, one JSON object per line. */
 export type TurnStreamEvent =
   | { type: 'sentence'; text: string }
+  // A TouchDesigner cue the moment it fires, then again once it has gone (or failed).
+  | { type: 'cue'; cue: CueEvent }
   // The likely first sentence, before the analysis has confirmed it — the
   // app starts making its audio early but doesn't play it until it arrives
   // again as a real `sentence`.
@@ -392,13 +421,16 @@ class ReplyStream {
   private wakers: (() => void)[] = [];
 
   // `keepCues`: the expressive voice performs [bracketed] cues; otherwise they're removed.
-  constructor(source: () => AsyncIterable<string>, getError: () => unknown, keepCues: boolean) {
+  constructor(
+    source: () => AsyncIterable<string>,
+    getError: () => unknown,
+    private keepCues: boolean,
+  ) {
     void (async () => {
       const splitter = new SentenceSplitter();
       // Stage directions (*chuckles*) never reach the chat, the voice or the history.
       const spoken = new SpokenTextFilter(keepCues);
       const take = (text: string) => {
-        this.text += text;
         for (const sentence of splitter.push(text)) this.add(sentence);
       };
       try {
@@ -415,7 +447,12 @@ class ReplyStream {
     })();
   }
 
-  private add(sentence: string) {
+  // `keepCues` doubles as "the expressive voice is on" (see the constructor).
+  private add(raw: string) {
+    // "Ha ha!" becomes a real laugh, or is left out (see replaceWrittenLaughter).
+    const sentence = replaceWrittenLaughter(raw, this.keepCues);
+    if (!sentence) return;
+    this.text = `${this.text} ${sentence}`.trim();
     this.sentences.push(sentence);
     this.wake();
   }
@@ -450,6 +487,7 @@ export async function runTurnStream(
   const startedAt = Date.now();
   const state: SessionState = structuredClone(incoming);
   const turn = new Turn(flow, state, holdCues);
+  turn.onCue = (cue) => emit({ type: 'cue', cue });
 
   const startStage = turn.stage();
   if (!startStage) throw new Error(`Stage "${state.stageCode}" doesn't exist in this flow.`);
@@ -570,14 +608,13 @@ export async function runMoments({
   return turn.events;
 }
 
-/** Sends cues that a turn held back (see TurnRequest.holdCues), once that turn is actually used. */
-export async function sendHeldCues(
-  flow: AgentFlow,
-  state: SessionState,
-  cues: { name: string; trigger: string }[],
-): Promise<CueStatus[]> {
-  const turn = new Turn(flow, state);
-  for (const c of cues) turn.fireCue({ name: c.name, on: 'enter' }, c.trigger);
-  await turn.settleCues();
-  return turn.events.map((e) => (e.type === 'cue' ? e.status : 'failed'));
+/**
+ * Sends cues that a turn held back (see TurnRequest.holdCues), the moment
+ * the app starts using that turn — each with the message it would have sent
+ * when it fired.
+ */
+export async function sendHeldCues(flow: AgentFlow, payloads: CuePayload[]): Promise<CueStatus[]> {
+  const url = flow.tdUrl.trim();
+  if (!url) return payloads.map(() => 'logged');
+  return Promise.all(payloads.map((payload) => postCue(url, payload)));
 }

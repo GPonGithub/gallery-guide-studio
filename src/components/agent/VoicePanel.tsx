@@ -6,18 +6,22 @@ import type { VoiceSettings } from '@/lib/types';
 import { buttonOutline, fieldInput, fieldLabel } from '@/lib/styles';
 
 // The ElevenLabs voice controls, in a panel that pops open from the chat
-// toolbar: up to five saved voices (each testable with the normal and the
+// toolbar: up to ten saved voices (each testable with the normal and the
 // expressive model), which one the agent uses, and the settings sliders.
 // Each voice can keep its own settings ("Save settings"); choosing a voice
 // moves the sliders to what was saved for it. Changes apply to the very
 // next thing the agent says.
 
-export const MAX_VOICES = 5;
+export const MAX_VOICES = 10;
 /** ElevenLabs' public "Rachel" voice — what an empty voice ID falls back to. */
 const DEFAULT_VOICE_NAME = 'Rachel (ElevenLabs default)';
 
-/** `settings`: the slider positions saved for this voice, if any. */
-export type SavedVoice = { name: string; voiceId: string; settings?: VoiceSettings };
+/**
+ * `settings`: the slider positions saved for this voice, if any.
+ * `expressive`: saved with them — the voice speaks with ElevenLabs'
+ * expressive model, performing [laughs], [whispers]… (missing = regular).
+ */
+export type SavedVoice = { name: string; voiceId: string; settings?: VoiceSettings; expressive?: boolean };
 
 /** A voice in the user's ElevenLabs account (see /api/tts/voices). */
 export type AccountVoice = { voiceId: string; name: string; description: string };
@@ -44,11 +48,17 @@ export type VoiceCheck =
 const smallButton =
   'border-2 border-ink bg-paper px-2 py-1 font-label text-[10px] uppercase tracking-wide text-ink transition-colors duration-100 ' +
   'hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:border-hair disabled:text-muted-ink disabled:hover:bg-paper';
+// The Test button for the way a voice is set to speak (regular or expressive).
+const smallButtonChosen =
+  'border-2 border-ink bg-ink px-2 py-1 font-label text-[10px] uppercase tracking-wide text-paper transition-colors duration-100 ' +
+  'hover:bg-paper hover:text-ink disabled:cursor-not-allowed disabled:opacity-60';
 
 export function VoicePanel({
   settings,
   voices,
   activeVoice,
+  expressive,
+  onExpressiveChange,
   onSettingsChange,
   onVoicesChange,
   onTest,
@@ -60,6 +70,9 @@ export function VoicePanel({
   voices: SavedVoice[];
   /** Index into `voices` of the voice the agent speaks with. */
   activeVoice: number;
+  /** Whether the voice in use speaks expressively right now (like `settings`, live until saved). */
+  expressive: boolean;
+  onExpressiveChange: (expressive: boolean) => void;
   onSettingsChange: (settings: VoiceSettings) => void;
   onVoicesChange: (voices: SavedVoice[], activeVoice: number) => void;
   /** Speaks a sample line in this voice with the normal model; resolves when it starts (or fails). */
@@ -132,13 +145,24 @@ export function VoicePanel({
     // Keep the same voice selected if it survives; otherwise fall back to the first.
     const nextActive = index === activeVoice ? 0 : index < activeVoice ? activeVoice - 1 : activeVoice;
     onVoicesChange(next, Math.min(nextActive, Math.max(0, next.length - 1)));
+    setModeChoice({});
     // Voices after the removed one move up a place; keep them unfolded as they were.
     setUnfolded((current) => new Set([...current].filter((n) => n !== index).map((n) => (n > index ? n - 1 : n))));
   };
 
-  // Keeps the sliders as they are now for this voice.
+  // Regular or expressive, as last tested, for voices other than the one in
+  // use (the one in use changes straight away, through onExpressiveChange).
+  const [modeChoice, setModeChoice] = useState<Record<number, boolean>>({});
+  const modeFor = (index: number) =>
+    index === activeVoice ? expressive : (modeChoice[index] ?? Boolean(voices[index]?.expressive));
+  const chooseMode = (index: number, mode: boolean) => {
+    if (index === activeVoice) onExpressiveChange(mode);
+    else setModeChoice((current) => ({ ...current, [index]: mode }));
+  };
+
+  // Keeps the sliders, and regular/expressive, as they are now for this voice.
   const saveSettings = (index: number) => {
-    updateVoice(index, { settings: { ...settings } });
+    updateVoice(index, { settings: { ...settings }, expressive: modeFor(index) });
     setJustSaved(index);
     setTimeout(() => setJustSaved((current) => (current === index ? null : current)), 1500);
   };
@@ -158,7 +182,8 @@ export function VoicePanel({
   return (
     <div ref={wrapperRef} className="relative">
       <button onClick={() => setOpen((o) => !o)} className={buttonOutline} aria-expanded={open} title="Voices and voice settings">
-        Voice: {active?.name.trim() || `Voice ${activeVoice + 1}`} {open ? '▴' : '▾'}
+        Voice: {active?.name.trim() || `Voice ${activeVoice + 1}`}
+        {expressive ? ' ✦' : ''} {open ? '▴' : '▾'}
       </button>
       {/* Narrow screens: a full-width panel pinned under the header, so it can't open
           off the edge. Wider screens: dropped down from the button. */}
@@ -171,7 +196,11 @@ export function VoicePanel({
             </p>
             {voices.map((voice, i) => {
               const selected = i === activeVoice;
-              const unsaved = selected && voice.settings !== undefined && !sameSettings(voice.settings, settings);
+              const unsaved =
+                selected &&
+                voice.settings !== undefined &&
+                (!sameSettings(voice.settings, settings) || Boolean(voice.expressive) !== expressive);
+              const mode = modeFor(i);
               const open = unfolded.has(i);
               const label = voice.name.trim() || `Voice ${i + 1}`;
               return (
@@ -194,6 +223,11 @@ export function VoicePanel({
                     >
                       <span className="w-3 shrink-0 text-[10px] text-muted-ink">{open ? '▾' : '▸'}</span>
                       <span className="truncate">{label}</span>
+                      {mode && (
+                        <span className="shrink-0 text-[11px] text-ink" title="Speaks expressively">
+                          ✦
+                        </span>
+                      )}
                       {unsaved && (
                         <span
                           className="shrink-0 font-label text-[9px] uppercase tracking-widest text-[#b45309]"
@@ -259,16 +293,26 @@ export function VoicePanel({
                       )}
                       <div className="flex flex-wrap gap-1.5">
                         <button
-                          onClick={() => runTest(`${i}-normal`, () => onTest(voice.voiceId, settingsFor(i)))}
+                          onClick={() => {
+                            chooseMode(i, false);
+                            void runTest(`${i}-normal`, () => onTest(voice.voiceId, settingsFor(i)));
+                          }}
                           disabled={testing !== null}
-                          className={smallButton}
+                          className={mode ? smallButton : smallButtonChosen}
+                          aria-pressed={!mode}
+                          title="Hear the regular voice — and set this voice to speak that way"
                         >
                           {testing === `${i}-normal` ? 'Playing…' : '🔊 Test'}
                         </button>
                         <button
-                          onClick={() => runTest(`${i}-expressive`, () => onTestExpressive(voice.voiceId, settingsFor(i)))}
+                          onClick={() => {
+                            chooseMode(i, true);
+                            void runTest(`${i}-expressive`, () => onTestExpressive(voice.voiceId, settingsFor(i)));
+                          }}
                           disabled={testing !== null}
-                          className={smallButton}
+                          className={mode ? smallButtonChosen : smallButton}
+                          aria-pressed={mode}
+                          title="Hear the expressive voice — it performs [laughs], [whispers]… — and set this voice to speak that way"
                         >
                           {testing === `${i}-expressive` ? 'Playing…' : '✦ Test expressive'}
                         </button>
@@ -277,8 +321,8 @@ export function VoicePanel({
                           className={smallButton}
                           title={
                             selected
-                              ? 'Keep the sliders as they are now for this voice'
-                              : 'Save the sliders as they are now to this voice (they currently show the voice in use)'
+                              ? 'Keep the sliders, and regular or expressive, as they are now for this voice'
+                              : 'Save the sliders as they are now (they show the voice in use), and regular or expressive, to this voice'
                           }
                         >
                           {justSaved === i ? 'Saved ✓' : 'Save settings'}
@@ -289,9 +333,13 @@ export function VoicePanel({
                           </button>
                         )}
                       </div>
+                      <span className="font-body text-[11px] text-muted-ink">
+                        Speaks {mode ? 'expressively — performs [laughs], [whispers]…' : 'with the regular voice'}. Test either
+                        one to choose.
+                      </span>
                       <span className={`font-body text-[11px] ${unsaved ? 'text-[#b45309]' : 'text-muted-ink'}`}>
                         {voice.settings
-                          ? `Saved: ${describeSettings(voice.settings)}${unsaved ? ' · sliders changed since — not saved' : ''}`
+                          ? `Saved: ${voice.expressive ? 'expressive' : 'regular'} · ${describeSettings(voice.settings)}${unsaved ? ' · changed since — not saved' : ''}`
                           : selected
                             ? 'No saved settings yet — uses the sliders below.'
                             : 'No saved settings yet — uses the sliders when chosen.'}

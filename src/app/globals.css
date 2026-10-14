@@ -57,3 +57,17 @@ h2,
 h3 {
   font-family: var(--font-display);
 }
+
+/* A TouchDesigner message just went out (CueMonitor): a brief yellow flash. */
+@keyframes cue-flash {
+  from {
+    background-color: #fff6cc;
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.cue-flash {
+  animation: cue-flash 1.6s ease-out;
+}

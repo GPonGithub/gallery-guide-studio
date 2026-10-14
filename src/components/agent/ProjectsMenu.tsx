@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { AgentProject, ProjectMusic, ProjectVoice } from '@/lib/agent/projectStore';
 import type { AgentFlow } from '@/lib/agent/types';
-import { buttonOutline, buttonPrimary, fieldInput, fieldLabel } from '@/lib/styles';
+import { buttonOutline, buttonPrimary, buttonSaved, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
 
 // Save the current flow (with its brief, FigJam board, voices and background
 // music) under a name, and reopen any saved project later — including
@@ -126,6 +126,9 @@ export function ProjectsMenu({
     }
   };
 
+  // "Not saved" (red) until this is on disk as it stands, name included; then "Saved" (green).
+  const unsaved = !current.id || current.dirty || name.trim() !== current.name;
+
   const remove = async (project: AgentProject) => {
     if (!window.confirm(`Delete the project "${project.name}"? This can't be undone. (Its FigJam board is not affected.)`)) return;
     await fetch(`/api/agent/projects?id=${encodeURIComponent(project.id)}`, { method: 'DELETE' });
@@ -158,8 +161,13 @@ export function ProjectsMenu({
               placeholder="Project name"
               className={`min-w-[220px] flex-1 ${fieldInput}`}
             />
-            <button onClick={() => save(false)} disabled={saving} className={buttonPrimary}>
-              {current.id ? 'Save' : 'Save project'}
+            <button
+              onClick={() => save(false)}
+              disabled={saving}
+              className={unsaved ? buttonUnsaved : buttonSaved}
+              title={unsaved ? 'Save the project' : 'Everything is saved — click to save again'}
+            >
+              {saving ? 'Saving…' : unsaved ? 'Not saved' : 'Saved ✓'}
             </button>
             {current.id && (
               <button onClick={() => save(true)} disabled={saving} className={buttonOutline} title="Keep the original and save this as a separate project">

@@ -88,3 +88,21 @@ export class SpokenTextFilter {
     return out;
   }
 }
+
+// "Ha ha!", "Hahaha", "Mwahaha", "mwa-ha-ha", "Heh heh", "Hee hee" — laughter written out as words.
+const WRITTEN_LAUGHTER = /\b(?:mw?a[-\s]?)?(?:ha|heh|hee)(?:[-\s,]*(?:ha|heh|hee)){1,}h?\b[!.,…]*\s*/gi;
+
+/**
+ * Laughter written out as words is read aloud letter by letter. With the
+ * expressive voice it becomes a [laughs] cue (performed as a real laugh);
+ * with the regular voice, which can't laugh, it's left out. Works on whole
+ * sentences, so "Ha" and "ha!" arriving in separate pieces are still caught.
+ */
+export function replaceWrittenLaughter(sentence: string, expressive: boolean): string {
+  return sentence
+    .replace(WRITTEN_LAUGHTER, expressive ? '[laughs] ' : '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+    // "Hahaha, splendid choice." → "Splendid choice." (after any leading cues)
+    .replace(/^((?:\[[^\]]*\]\s*)*)([a-z])/, (_match, cues: string, letter: string) => cues + letter.toUpperCase());
+}

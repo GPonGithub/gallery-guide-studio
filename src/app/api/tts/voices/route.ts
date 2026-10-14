@@ -19,7 +19,7 @@ async function fetchVoices(apiKey: string): Promise<ElevenVoice[]> {
   const headers = { 'xi-api-key': apiKey };
   const all: ElevenVoice[] = [];
   let token: string | null = null;
-  // v2 is paginated; stop after a few pages — far more than five slots need.
+  // v2 is paginated; stop after a few pages — far more than ten slots need.
   for (let page = 0; page < 5; page++) {
     const url = new URL('https://api.elevenlabs.io/v2/voices');
     url.searchParams.set('page_size', '100');

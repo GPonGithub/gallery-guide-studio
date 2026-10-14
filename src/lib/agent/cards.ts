@@ -220,7 +220,7 @@ function parseList<T>(cell: string, parse: (line: string) => T | null, what: str
 
 export function boardToFlow(
   tables: ReadTable[],
-  keep: { tdUrl?: string; knowledge?: string } = {},
+  keep: { tdUrl?: string; tdTiming?: AgentFlow['tdTiming']; knowledge?: string } = {},
 ): { flow: AgentFlow; warnings: string[] } {
   const warnings: string[] = [];
   // The knowledge base isn't on the board — keep the app's copy.
@@ -232,6 +232,7 @@ export function boardToFlow(
     globalCues: [],
     stages: [],
     tdUrl: keep.tdUrl ?? '',
+    tdTiming: keep.tdTiming,
     knowledge: keep.knowledge ?? '',
   };
   let sawMaster = false;
