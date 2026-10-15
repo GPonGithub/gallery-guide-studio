@@ -23,9 +23,11 @@
   --color-background: var(--color-paper);
   --color-foreground: var(--color-ink);
 
-  --font-display: var(--font-playfair-display), Georgia, serif;
-  --font-body: var(--font-source-serif), Georgia, serif;
-  --font-label: var(--font-jetbrains-mono), monospace;
+  /* One typeface everywhere: Montserrat (loaded in layout.tsx), with the
+     system's own sans-serif if it can't be loaded. */
+  --font-display: var(--font-montserrat), ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-montserrat), ui-sans-serif, system-ui, sans-serif;
+  --font-label: var(--font-montserrat), ui-sans-serif, system-ui, sans-serif;
 }
 
 body {

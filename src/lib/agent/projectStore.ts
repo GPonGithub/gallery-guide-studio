@@ -28,11 +28,15 @@ export type AgentProject = {
   name: string;
   flow: AgentFlow;
   brief: string;
+  /** The description as it was when the flow was last generated from it (null = never). */
+  generatedBrief?: string | null;
   boardUrl: string;
   /** Missing on projects saved before voices were part of a project. */
   voice?: ProjectVoice;
   /** null/missing = no background music. */
   music?: ProjectMusic | null;
+  /** Position in the Scenes list (0 = first), set by dragging; missing = not placed yet. */
+  order?: number;
   updatedAt: number;
 };
 

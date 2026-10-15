@@ -10,9 +10,25 @@ import type { AgentProject } from './projectStore';
  * (music included) to back it up, hand it in, or move it to another computer.
  */
 
+/** In the order shown in the Scenes list (arranged by dragging); any not yet placed come last, newest first. */
 export async function listProjects(): Promise<AgentProject[]> {
   const projects = await run<AgentProject[]>('projects', 'readonly', (store) => store.getAll());
-  return projects.sort((a, b) => b.updatedAt - a.updatedAt);
+  const placed = (p: AgentProject) => p.order ?? Number.POSITIVE_INFINITY;
+  return projects.sort((a, b) => placed(a) - placed(b) || b.updatedAt - a.updatedAt);
+}
+
+/** The position after the last scene — where a new one goes. */
+async function nextOrder(): Promise<number> {
+  const projects = await listProjects();
+  return projects.length === 0 ? 0 : Math.max(...projects.map((p, i) => p.order ?? i)) + 1;
+}
+
+/** Saves a new order for the Scenes list (ids, first to last). Nothing else about the scenes changes. */
+export async function saveOrder(ids: string[]): Promise<void> {
+  for (const [order, id] of ids.entries()) {
+    const project = await getProject(id);
+    if (project && project.order !== order) await putProject({ ...project, order });
+  }
 }
 
 export async function getProject(id: string): Promise<AgentProject | null> {
@@ -48,7 +64,14 @@ export type ProjectToSave = Omit<AgentProject, 'id' | 'updatedAt'> & {
 
 export async function saveProject(input: ProjectToSave): Promise<AgentProject> {
   const { musicBlob, copyMusicFrom, ...content } = input;
-  const project: AgentProject = { ...content, id: input.id ?? crypto.randomUUID(), updatedAt: Date.now() };
+  const existing = input.id ? await getProject(input.id) : null;
+  const project: AgentProject = {
+    ...content,
+    id: input.id ?? crypto.randomUUID(),
+    // Saving keeps a scene where it is in the list; a new one goes at the end.
+    order: existing?.order ?? (await nextOrder()),
+    updatedAt: Date.now(),
+  };
   if (project.music) {
     const blob = (await musicBlob()) ?? (copyMusicFrom ? await getProjectMusic(copyMusicFrom) : null);
     // Never quietly save a project whose music file didn't go with it.
@@ -111,14 +134,21 @@ export async function importProject(file: File, replace: (existing: AgentProject
   try {
     data = JSON.parse(await file.text()) as ProjectFile;
   } catch {
-    throw new Error(`“${file.name}” isn’t a project file.`);
+    throw new Error(`“${file.name}” isn’t a scene file.`);
   }
-  if (data?.format !== FORMAT || !data.project?.flow) throw new Error(`“${file.name}” isn’t a Goal Agent project file.`);
+  if (data?.format !== FORMAT || !data.project?.flow) throw new Error(`“${file.name}” isn’t a Goal Agent scene file.`);
   const existing = await getProject(data.project.id);
-  const project: AgentProject =
-    existing && !replace(existing)
-      ? { ...data.project, id: crypto.randomUUID(), name: `${data.project.name} (imported)`, updatedAt: Date.now() }
-      : data.project;
+  const replacing = existing !== null && replace(existing);
+  const project: AgentProject = replacing
+    ? { ...data.project, order: existing.order }
+    : {
+        ...data.project,
+        id: existing ? crypto.randomUUID() : data.project.id,
+        name: existing ? `${data.project.name} (imported)` : data.project.name,
+        // An imported scene goes at the end of the list.
+        order: await nextOrder(),
+        updatedAt: existing ? Date.now() : data.project.updatedAt,
+      };
   if (data.music && project.music) {
     const bytes = Uint8Array.from(atob(data.music.base64), (c) => c.charCodeAt(0));
     await putProjectMusic(project.id, new Blob([bytes], { type: data.music.type }));

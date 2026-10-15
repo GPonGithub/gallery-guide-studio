@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_VOICE_SETTINGS } from '@/lib/storage';
 import type { VoiceSettings } from '@/lib/types';
 import { buttonOutline, fieldInput, fieldLabel } from '@/lib/styles';
+import { DropdownArrow } from './DropdownArrow';
 
 // The ElevenLabs voice controls, in a panel that pops open from the chat
 // toolbar: up to ten saved voices (each testable with the normal and the
@@ -59,6 +60,10 @@ export function VoicePanel({
   activeVoice,
   expressive,
   onExpressiveChange,
+  spokenReplies,
+  onSpokenRepliesChange,
+  pauseSeconds,
+  onPauseSecondsChange,
   onSettingsChange,
   onVoicesChange,
   onTest,
@@ -73,6 +78,12 @@ export function VoicePanel({
   /** Whether the voice in use speaks expressively right now (like `settings`, live until saved). */
   expressive: boolean;
   onExpressiveChange: (expressive: boolean) => void;
+  /** "Spoken replies": whether the agent's replies are voiced at all. */
+  spokenReplies: boolean;
+  onSpokenRepliesChange: (on: boolean) => void;
+  /** Open mic: seconds of quiet before what was said is sent. */
+  pauseSeconds: number;
+  onPauseSecondsChange: (seconds: number) => void;
   onSettingsChange: (settings: VoiceSettings) => void;
   onVoicesChange: (voices: SavedVoice[], activeVoice: number) => void;
   /** Speaks a sample line in this voice with the normal model; resolves when it starts (or fails). */
@@ -181,15 +192,53 @@ export function VoicePanel({
 
   return (
     <div ref={wrapperRef} className="relative">
-      <button onClick={() => setOpen((o) => !o)} className={buttonOutline} aria-expanded={open} title="Voices and voice settings">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`inline-flex h-10 items-center gap-2 ${buttonOutline}`}
+        aria-expanded={open}
+        title="Voices and voice settings"
+      >
         Voice: {active?.name.trim() || `Voice ${activeVoice + 1}`}
-        {expressive ? ' ✦' : ''} {open ? '▴' : '▾'}
+        {expressive ? ' ✦' : ''}
+        <DropdownArrow open={open} />
       </button>
       {/* Narrow screens: a full-width panel pinned under the header, so it can't open
           off the edge. Wider screens: dropped down from the button. */}
       {open && (
         <div
           className="fixed inset-x-4 top-24 z-40 flex max-h-[78vh] flex-col gap-4 overflow-y-auto border-2 border-ink bg-paper p-4 shadow-[6px_6px_0_0_rgba(0,0,0,0.15)] sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-[380px]">
+          {/* First: whether the agent speaks at all, and how long the open mic waits. */}
+          <section className="flex flex-col gap-3 border-b-2 border-ink pb-3">
+            <label className="flex items-center gap-2 font-label text-[11px] uppercase tracking-widest text-ink">
+              <input
+                type="checkbox"
+                checked={spokenReplies}
+                onChange={(e) => onSpokenRepliesChange(e.target.checked)}
+                className="accent-ink"
+              />
+              Spoken replies
+              <span className="normal-case tracking-normal text-muted-ink">— the agent says its replies out loud</span>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="flex items-baseline justify-between font-label text-[11px] uppercase tracking-widest text-ink">
+                Pause before sending
+                <span className="tabular-nums normal-case">{pauseSeconds.toFixed(1)}s</span>
+              </span>
+              <input
+                type="range"
+                min={0.2}
+                max={3}
+                step={0.2}
+                value={pauseSeconds}
+                onChange={(e) => onPauseSecondsChange(Number(e.target.value))}
+                className="w-full cursor-pointer accent-[#18a0fb]"
+              />
+              <span className="font-body text-xs leading-snug text-muted-ink">
+                Open mic (blue): how long you need to be quiet before what you said is sent.
+              </span>
+            </label>
+          </section>
+
           <section className="flex flex-col gap-2">
             <p className={fieldLabel}>
               Voices ({voices.length} of {MAX_VOICES}) · the agent uses the selected one

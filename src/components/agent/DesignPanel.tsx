@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { boardToFlow, flowToBoard, type ReadTable } from '@/lib/agent/cards';
 import type { AgentFlow } from '@/lib/agent/types';
 import { validateFlow } from '@/lib/agent/validate';
-import { buttonOutline, buttonPrimary, fieldInput, fieldLabel } from '@/lib/styles';
+import { buttonDone, buttonOutline, buttonPrimary, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
+import { CollapsiblePanel } from './CollapsiblePanel';
 
 // Brief → flow (Claude) → FigJam board (drawn by the plugin) → edit there →
 // import back → test in the chat. Figma's web API can't draw on a board,
@@ -86,6 +87,8 @@ const BRIEF_PLACEHOLDER =
 export function DesignPanel({
   flow,
   brief,
+  generatedBrief,
+  onGenerated,
   boardUrl,
   anthropicApiKey,
   onBriefChange,
@@ -96,6 +99,10 @@ export function DesignPanel({
 }: {
   flow: AgentFlow;
   brief: string;
+  /** The description the current flow was generated from (null = never generated). */
+  generatedBrief: string | null;
+  /** A flow was generated from `brief` (as it was when generation started). */
+  onGenerated: (brief: string) => void;
   boardUrl: string;
   anthropicApiKey: string;
   onBriefChange: (brief: string) => void;
@@ -150,12 +157,17 @@ export function DesignPanel({
     }
   };
 
+  // The flow is up to date with the description when it was last generated from exactly this text.
+  const upToDate = busy !== 'generate' && generatedBrief !== null && brief.trim() !== '' && brief.trim() === generatedBrief.trim();
+
   const generate = async () => {
     if (!anthropicApiKey.trim()) {
       onNeedKey();
       return;
     }
     if (!replaceOk()) return;
+    // The description as sent — if it's edited while this runs, the button goes back to red.
+    const usedBrief = brief;
     setBusy('generate');
     setActivity(['Designing the flow from your brief — this takes about a minute…']);
     setProblems([]);
@@ -171,6 +183,7 @@ export function DesignPanel({
       // Keep what isn't part of the design: the TD address and the knowledge base.
       generated = { ...data.flow, tdUrl: flow.tdUrl, tdTiming: flow.tdTiming, knowledge: flow.knowledge ?? '' };
       onFlowLoaded(generated);
+      onGenerated(usedBrief);
       setProblems(data.problems);
       say(`✓ Designed ${generated.stages.length} stages — they're in the editor tabs above.`);
     } catch (err) {
@@ -210,51 +223,8 @@ export function DesignPanel({
   };
 
   return (
-    <div className="flex flex-col gap-5">
-      <section className="flex flex-col gap-2">
-        <p className={fieldLabel}>1 · Describe the conversation</p>
-        <p className="font-body text-xs italic text-muted-ink">
-          Who the agent is, who it talks to, and what should be achieved, in plain English. Claude turns it into stages
-          with goals.
-        </p>
-        <textarea
-          value={brief}
-          onChange={(e) => onBriefChange(e.target.value)}
-          placeholder={BRIEF_PLACEHOLDER}
-          className={`min-h-[160px] w-full resize-y leading-snug ${studentField}`}
-        />
-        <label className="flex items-center gap-1.5 font-label text-[10px] uppercase tracking-wide text-muted-ink">
-          <input
-            type="checkbox"
-            checked={drawAfterGenerate}
-            onChange={(e) => setDrawAfterGenerate(e.target.checked)}
-            className="accent-ink"
-          />
-          Draw it on my FigJam board afterwards
-        </label>
-        <button onClick={generate} disabled={busy !== null || !brief.trim()} className={`self-start ${buttonPrimary}`}>
-          {busy === 'generate' ? 'Designing…' : 'Generate flow'}
-        </button>
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <p className={fieldLabel}>Knowledge base · facts the bot can use</p>
-        <p className="font-body text-xs italic text-muted-ink">
-          Everything the bot should know but not invent: names, times, prices, options. It answers questions and
-          offers choices from this, and says when something isn&rsquo;t covered. Drawn on the board as a KNOWLEDGE card;
-          importing a board with one replaces this (without one, this is kept). Generating a flow never changes it.
-        </p>
-        <textarea
-          value={flow.knowledge ?? ''}
-          onChange={(e) => onKnowledgeChange(e.target.value)}
-          placeholder={KNOWLEDGE_PLACEHOLDER}
-          className={`min-h-[200px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
-        />
-        <KnowledgeSize text={flow.knowledge ?? ''} />
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <p className={fieldLabel}>2 · FigJam board</p>
+    <div className="flex flex-col">
+      <CollapsiblePanel title="1 · FigJam board">
         <input
           value={boardUrl}
           onChange={(e) => onBoardUrlChange(e.target.value.trim())}
@@ -305,20 +275,74 @@ export function DesignPanel({
             <li>The app must be running at localhost:3000 on the same computer.</li>
           </ol>
         </details>
-      </section>
+      </CollapsiblePanel>
 
-      <section className="flex flex-col gap-2">
-        <p className={fieldLabel}>3 · Bring your edits back</p>
+      <CollapsiblePanel title="2 · Describe the conversation">
+        <p className="font-body text-xs italic text-muted-ink">
+          Who the agent is, who it talks to, and what should be achieved, in plain English. Claude turns it into stages
+          with goals.
+        </p>
+        <textarea
+          value={brief}
+          onChange={(e) => onBriefChange(e.target.value)}
+          placeholder={BRIEF_PLACEHOLDER}
+          className={`min-h-[160px] w-full resize-y leading-snug ${studentField}`}
+        />
+        <label className="flex items-center gap-1.5 font-label text-[10px] uppercase tracking-wide text-muted-ink">
+          <input
+            type="checkbox"
+            checked={drawAfterGenerate}
+            onChange={(e) => setDrawAfterGenerate(e.target.checked)}
+            className="accent-ink"
+          />
+          Draw it on my FigJam board afterwards
+        </label>
+        {/* Red until the flow comes from the description as it reads now; green once it does. */}
+        <button
+          onClick={() => {
+            if (upToDate && !window.confirm('This description has already been generated. Generate a new version of the flow from it anyway?')) return;
+            void generate();
+          }}
+          disabled={busy !== null || !brief.trim()}
+          aria-disabled={upToDate || undefined}
+          className={`self-start disabled:cursor-not-allowed disabled:opacity-60 ${upToDate ? buttonDone : buttonUnsaved}`}
+          title={
+            upToDate
+              ? 'The flow was generated from this description. Edit the description to generate again.'
+              : 'Design the conversation flow from this description'
+          }
+        >
+          {busy === 'generate' ? 'Generating…' : upToDate ? 'Conversation Generated' : 'Generate New Conversation'}
+        </button>
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="3 · Knowledge base — facts the bot can use">
+        <p className="font-body text-xs italic text-muted-ink">
+          Everything the bot should know but not invent: names, times, prices, options. It answers questions and
+          offers choices from this, and says when something isn&rsquo;t covered. Drawn on the board as a KNOWLEDGE card;
+          importing a board with one replaces this (without one, this is kept). Generating a flow never changes it.
+        </p>
+        <textarea
+          value={flow.knowledge ?? ''}
+          onChange={(e) => onKnowledgeChange(e.target.value)}
+          placeholder={KNOWLEDGE_PLACEHOLDER}
+          className={`min-h-[200px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
+        />
+        <KnowledgeSize text={flow.knowledge ?? ''} />
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="4 · Bring your edits back">
         <p className="font-body text-xs italic text-muted-ink">
           After editing the cards in FigJam, import them. The board replaces the flow in the app.
         </p>
         <button onClick={importBoard} disabled={busy !== null} className={`self-start ${buttonPrimary}`}>
           {busy === 'import' ? 'Importing…' : 'Import from FigJam'}
         </button>
-      </section>
+      </CollapsiblePanel>
 
+      {/* Progress and problems stay outside the panels, so they're seen even with every panel folded. */}
       {(activity.length > 0 || problems.length > 0) && (
-        <section className="flex flex-col gap-2 border-t-2 border-ink pt-3">
+        <section className="mt-3 flex flex-col gap-2 border-t-2 border-ink pt-3">
           {activity.length > 0 && (
             <ul className="flex flex-col gap-1 font-body text-[13px] leading-snug text-ink">
               {activity.map((line, i) => (

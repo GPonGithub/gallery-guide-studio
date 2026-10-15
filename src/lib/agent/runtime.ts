@@ -62,14 +62,33 @@ function exitLabel(flow: AgentFlow, exit: Exit): string {
 
 // --- 1. ANALYSE ------------------------------------------------------------
 
-const analysisSchema = z.object({
-  slots: z.array(z.object({ name: z.string(), value: z.string() })),
-  exit: z.object({ id: z.string(), reason: z.string() }).nullable(),
-  goalMet: z.boolean(),
-  offTopic: z.boolean(),
-  note: z.string(),
-});
-type Analysis = z.infer<typeof analysisSchema>;
+// What the analysis proposes. `exit.id` is S1, S2… (this stage's exits) or
+// G1, G2… (global ones), as numbered in the prompt.
+export type Analysis = {
+  slots: { name: string; value: string }[];
+  exit: { id: string } | null;
+  goalMet: boolean;
+  offTopic: boolean;
+};
+
+/**
+ * The analysis answers in a few short plain lines rather than JSON — e.g.
+ * "SET patient_name = Graham" / "EXIT S2" / "GOAL MET" — because every word
+ * it writes is time the caller spends waiting. Unknown lines are ignored.
+ */
+export function parseAnalysis(text: string): Analysis {
+  const analysis: Analysis = { slots: [], exit: null, goalMet: false, offTopic: false };
+  for (const raw of text.split('\n')) {
+    const line = raw.trim().replace(/^[-*•]\s*/, '');
+    const set = /^SET\s+([\w.-]+)\s*[=:]\s*(.+)$/i.exec(line);
+    const exit = /^EXIT\s+([SG]\d+)\b/i.exec(line);
+    if (set) analysis.slots.push({ name: set[1], value: set[2].trim().replace(/^["']|["']$/g, '') });
+    else if (exit) analysis.exit ??= { id: exit[1].toUpperCase() };
+    else if (/^GOAL\s+MET\b/i.test(line)) analysis.goalMet = true;
+    else if (/^OFF[\s-]?TOPIC\b/i.test(line)) analysis.offTopic = true;
+  }
+  return analysis;
+}
 
 async function analyse(
   model: Model,
@@ -95,22 +114,23 @@ async function analyse(
     ...flow.globalExits.map((e, i) => `G${i + 1}: → ${exitLabel(flow, e)} — when ${e.when}`),
   ].join('\n');
 
-  const { output } = await generateText({
+  const { text } = await generateText({
     model,
     abortSignal,
     providerOptions: NO_THINKING,
-    output: Output.object({ schema: analysisSchema }),
+    temperature: 0,
     system:
       "You track the state of a voice conversation for a goal-driven agent. You do NOT reply to the caller. " +
-      "Read the caller's latest message in context and report:\n" +
-      '- slots: any listed information the caller has now given (exact slot names; short plain values, e.g. "Tuesday", ' +
-      '"Dr Smith", "no"). Include info for later stages too if they volunteer it. Only values they actually said or ' +
-      'clearly confirmed — never guesses. A vague answer ("whenever", "not sure") is NOT a value.\n' +
-      '- exit: the id of an exit whose condition the caller\'s message clearly matches, with a short reason — or null. ' +
-      'Exits marked "once the goal is met" are taken automatically; don\'t pick those.\n' +
-      "- goalMet: true only if this stage's goal is now achieved (include anything the agent must confirm).\n" +
-      "- offTopic: true if the latest message has nothing to do with this stage's goal and matches no exit.\n" +
-      '- note: what the caller is doing, in at most 12 words.',
+      "From the caller's latest message, in context, write only the lines below that apply — nothing else:\n" +
+      'SET <name> = <value>   for each listed piece of information the caller has now given (exact name; short plain ' +
+      'value, e.g. Tuesday, Dr Smith, no). Include information for later stages if they volunteer it. Only what they ' +
+      'actually said or clearly confirmed, never guesses; a vague answer ("whenever", "not sure") is not a value.\n' +
+      "EXIT <id>              if their message clearly matches an exit's condition (never one marked \"once the goal " +
+      'is met" — those happen automatically).\n' +
+      "GOAL MET               only if this stage's goal is now fully achieved (including anything the agent must " +
+      'confirm).\n' +
+      "OFF TOPIC              if the message has nothing to do with this stage's goal and matches no exit.\n" +
+      'If none apply, write NONE.',
     prompt: [
       `CURRENT STAGE ${stage.code}: ${stage.name}`,
       `GOAL: ${stage.goal}`,
@@ -126,9 +146,9 @@ async function analyse(
     ]
       .filter(Boolean)
       .join('\n\n'),
-    maxOutputTokens: 350,
+    maxOutputTokens: 150,
   });
-  return output;
+  return parseAnalysis(text);
 }
 
 // --- 2. APPLY ---------------------------------------------------------------
@@ -234,7 +254,6 @@ class Turn {
   apply(analysis: Analysis) {
     const stage = this.stage();
     if (!stage) return;
-    if (analysis.note) this.events.push({ type: 'note', text: analysis.note });
 
     const declared = new Set(this.flow.stages.flatMap((s) => s.collect.map((c) => c.name)));
     for (const { name, value } of analysis.slots) {
@@ -256,7 +275,8 @@ class Turn {
       const list = match?.[1].toUpperCase() === 'G' ? this.flow.globalExits : stage.exits;
       const exit = match ? list[Number(match[2]) - 1] : undefined;
       if (exit && !exit.onComplete) {
-        this.moveTo(exit, analysis.exit.reason);
+        // The exit's own condition says why ("caller wants to see a specialist").
+        this.moveTo(exit, exit.when.trim() || 'the caller asked');
         return;
       }
       this.events.push({ type: 'rejected', text: `Ignored exit "${analysis.exit.id}" — not a valid exit here.` });

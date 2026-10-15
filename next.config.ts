@@ -13,8 +13,9 @@ const nextConfig: NextConfig = {
     '*.ngrok-free.app',
     '*.ngrok-free.dev',
   ],
-  // The default bottom-left spot covers the phone app's Restart button.
-  devIndicators: { position: 'top-left' },
+  // Next.js's own "N" development badge (never shown on a hosted copy).
+  // Bottom-left keeps it clear of the studio's title and header buttons.
+  devIndicators: { position: 'bottom-left' },
 };
 
 export default nextConfig;

@@ -6,7 +6,7 @@
  * layout) rather than forking these.
  */
 
-const labelText = 'font-label text-[11px] font-medium uppercase tracking-widest';
+const labelText = 'font-label text-[11px] font-normal uppercase tracking-widest';
 
 export const buttonPrimary =
   `border-2 border-ink bg-ink px-4 py-2 ${labelText} text-paper transition-colors duration-100 ` +
@@ -18,16 +18,22 @@ export const buttonOutline =
   'hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:border-hair disabled:text-muted-ink disabled:hover:bg-paper disabled:hover:text-muted-ink ' +
   'focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-[3px]';
 
-// The header Save button while there are unsaved changes: grey, with "Not
-// saved" in red — a deliberate break from monochrome so it can't be missed.
+// The save-status buttons: solid red "Not Saved" while there are unsaved
+// changes, solid green "Saved" once everything is — a deliberate break from
+// monochrome so the state is obvious at a glance.
 export const buttonUnsaved =
-  `border-2 border-[#9ca3af] bg-[#e5e7eb] px-4 py-2 ${labelText} text-[#b91c1c] transition-colors duration-100 ` +
-  'hover:bg-[#d1d5db] focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-[3px]';
+  `border-2 border-[#b91c1c] bg-[#b91c1c] px-4 py-2 text-center ${labelText} text-white transition-colors duration-150 ` +
+  'hover:border-[#991b1b] hover:bg-[#991b1b] focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-[3px]';
 
-// Its partner once everything is saved: "Saved" in green.
+// Done, nothing to do: solid green like buttonSaved, but without the hover
+// that would make it look like something to click.
+export const buttonDone =
+  `border-2 border-[#15803d] bg-[#15803d] px-4 py-2 text-center ${labelText} text-white cursor-default ` +
+  'focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-[3px]';
+
 export const buttonSaved =
-  `border-2 border-ink bg-paper px-4 py-2 ${labelText} text-[#15803d] transition-colors duration-100 ` +
-  'hover:bg-[#f0fdf4] focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-[3px]';
+  `border-2 border-[#15803d] bg-[#15803d] px-4 py-2 text-center ${labelText} text-white transition-colors duration-150 ` +
+  'hover:border-[#166534] hover:bg-[#166534] focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-[3px]';
 
 // The one deliberate break from the otherwise-strict monochrome system —
 // reserved for destructive actions (e.g. "Reset from Figma"), never used

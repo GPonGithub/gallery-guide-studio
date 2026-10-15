@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { buttonOutline, fieldLabel } from '@/lib/styles';
 import { dipToShare } from './backgroundMusic';
+import { DropdownArrow } from './DropdownArrow';
 
 // The background music controls, in a panel that pops open from the chat
 // toolbar like the Voice panel: drop in an MP3, set its volume, and set how
@@ -75,8 +76,14 @@ export function MusicPanel({
 
   return (
     <div ref={wrapperRef} className="relative">
-      <button onClick={() => setOpen((o) => !o)} className={buttonOutline} aria-expanded={open} title="Background music">
-        ♫ Music{playing ? ' ▶' : ''} {open ? '▴' : '▾'}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`inline-flex h-10 items-center gap-2 ${buttonOutline}`}
+        aria-expanded={open}
+        title="Background music"
+      >
+        ♫ Music{playing ? ' ▶' : ''}
+        <DropdownArrow open={open} />
       </button>
       {open && (
         <div className="fixed inset-x-4 top-24 z-40 flex max-h-[78vh] flex-col gap-4 overflow-y-auto border-2 border-ink bg-paper p-4 shadow-[6px_6px_0_0_rgba(0,0,0,0.15)] sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-[340px]">

@@ -2,16 +2,18 @@
 
 /**
  * Speaks a reply sentence by sentence as it's being written. Each sentence's
- * audio is requested the moment the sentence arrives (so sentence 2 is being
+ * audio is requested (and starts streaming in) the moment the sentence arrives (so sentence 2 is being
  * made while sentence 1 plays) and they play strictly in order, back to back.
  * The queue counts as "speaking" from the first sentence until the last one
  * has finished — so the open mic stays deaf for the whole reply, including
  * the short gaps between sentences.
  */
 
+import type { StreamedClip } from './streamedAudio';
+
 export type SpeechQueueOptions = {
-  /** Fetches a one-time playback ticket for a sentence (see /api/tts/stream). */
-  requestTicket: (text: string, previousText: string) => Promise<string>;
+  /** Starts a sentence's audio streaming in (see streamedAudio.ts and /api/tts/stream). */
+  requestAudio: (text: string, previousText: string) => Promise<StreamedClip>;
   /** Safety net: the whole clip for a sentence, fetched in one go, if streaming it failed. */
   requestClip: (text: string, previousText: string) => Promise<Blob>;
   playbackRate: () => number;
@@ -23,7 +25,7 @@ export type SpeechQueueOptions = {
 };
 
 export class SpeechQueue {
-  private tickets: { text: string; previous: string; ticket: Promise<string | null> }[] = [];
+  private clips: { text: string; previous: string; clip: Promise<StreamedClip | null> }[] = [];
   private spokenSoFar = '';
   private playing: HTMLAudioElement | null = null;
   private finished = false;
@@ -36,21 +38,21 @@ export class SpeechQueue {
   constructor(private options: SpeechQueueOptions) {}
 
   /**
-   * Adds the next sentence of the reply. `headStart` is a ticket for audio
-   * already being made for it (asked for before the sentence was confirmed);
-   * if that didn't work out, it's simply asked for again here.
+   * Adds the next sentence of the reply. `headStart` is audio already being
+   * made for it (asked for before the sentence was confirmed); if that
+   * didn't work out, it's simply asked for again here.
    */
-  add(sentence: string, headStart?: Promise<string | null>) {
+  add(sentence: string, headStart?: Promise<StreamedClip | null>) {
     if (this.cancelled) return;
     const previous = this.spokenSoFar;
     this.spokenSoFar = `${this.spokenSoFar} ${sentence}`.trim();
-    const ticket = (headStart ?? Promise.resolve(null))
-      .then((early) => early ?? this.options.requestTicket(sentence, previous))
+    const clip = (headStart ?? Promise.resolve(null))
+      .then((early) => early ?? this.options.requestAudio(sentence, previous))
       .catch((err: unknown) => {
         this.options.onError(`Voice failed: ${err instanceof Error ? err.message : 'unknown error'}`);
         return null;
       });
-    this.tickets.push({ text: sentence, previous, ticket });
+    this.clips.push({ text: sentence, previous, clip });
     if (!this.active) {
       this.active = true;
       this.options.onSpeakingChange(true);
@@ -70,7 +72,8 @@ export class SpeechQueue {
   /** Stops speaking immediately and drops anything still waiting. */
   cancel() {
     this.cancelled = true;
-    this.tickets = [];
+    for (const item of this.clips) void item.clip.then((clip) => clip?.release());
+    this.clips = [];
     this.playing?.pause();
     this.playing = null;
     if (this.active) this.goQuiet();
@@ -84,7 +87,7 @@ export class SpeechQueue {
 
   private async playNext(): Promise<void> {
     if (this.cancelled) return;
-    const next = this.tickets.shift();
+    const next = this.clips.shift();
     if (!next) {
       this.playing = null;
       if (this.finished) this.goQuiet();
@@ -92,14 +95,18 @@ export class SpeechQueue {
       else this.waiting = true;
       return;
     }
-    const ticket = await next.ticket;
-    if (this.cancelled) return;
-    if (!ticket) return this.playNext();
-    this.play(`/api/tts/stream?ticket=${encodeURIComponent(ticket)}`, () => this.playFallback(next));
+    const clip = await next.clip;
+    if (this.cancelled) {
+      clip?.release();
+      return;
+    }
+    if (!clip) return this.playNext();
+    this.play(clip.src, clip.release, () => this.playFallback(next));
   }
 
   // Plays one source; `onFail` runs instead of moving on if it can't play.
-  private play(src: string, onFail: (detail: string) => void) {
+  // `release` frees the source once it's done with, either way.
+  private play(src: string, release: () => void, onFail: (detail: string) => void) {
     const audio = new Audio(src);
     this.playing = audio;
     if (this.options.expressive) {
@@ -111,12 +118,13 @@ export class SpeechQueue {
     const fail = (detail: string) => {
       if (settled || this.cancelled) return;
       settled = true;
+      release();
       onFail(detail);
     };
     audio.onended = () => {
       if (settled) return;
       settled = true;
-      if (src.startsWith('blob:')) URL.revokeObjectURL(src);
+      release();
       void this.playNext();
     };
     audio.onplaying = () => this.options.onPlay?.();
@@ -131,8 +139,7 @@ export class SpeechQueue {
       const blob = await this.options.requestClip(item.text, item.previous);
       if (this.cancelled) return;
       const url = URL.createObjectURL(blob);
-      this.play(url, (detail) => {
-        URL.revokeObjectURL(url);
+      this.play(url, () => URL.revokeObjectURL(url), (detail) => {
         this.options.onError(`Voice playback stopped unexpectedly (${detail}) — try again, or check the voice in the Voice panel.`);
         void this.playNext();
       });

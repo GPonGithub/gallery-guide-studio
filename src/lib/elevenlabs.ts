@@ -1,7 +1,7 @@
 /**
  * Shared ElevenLabs text-to-speech call, used by /api/tts (plays a whole
- * response) and /api/tts/stream (hands the browser a ticket so audio can
- * start playing as it arrives).
+ * response) and /api/tts/stream (streams it back so the browser can start
+ * playing as it arrives).
  */
 
 export const DEFAULT_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';

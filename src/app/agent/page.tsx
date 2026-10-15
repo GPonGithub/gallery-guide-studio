@@ -5,8 +5,10 @@ import { DesignPanel } from '@/components/agent/DesignPanel';
 import { MasterEditor, StageEditor } from '@/components/agent/FlowEditor';
 import { OpenMic, type OpenMicStatus, type UtteranceTiming } from '@/components/agent/OpenMic';
 import { SpeechQueue } from '@/components/agent/speechQueue';
+import { startStreamedClip, type StreamedClip } from '@/components/agent/streamedAudio';
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
+import { DropdownArrow } from '@/components/agent/DropdownArrow';
 import { CueMarker, CueMonitor, type SentCue } from '@/components/agent/CueMonitor';
 import { adoptKeylessTrack, clearTrack, loadTrack, saveTrack } from '@/lib/musicStore';
 import { getProjectMusic, moveServerProjectsHere } from '@/lib/agent/localProjects';
@@ -19,7 +21,7 @@ import type { AgentProject, ProjectMusic, ProjectVoice } from '@/lib/agent/proje
 import { Inspector, type TurnLog } from '@/components/agent/Inspector';
 import { blankStage, emptyFlow, initialState, sampleFlow, sortStages, startStage } from '@/lib/agent/flow';
 import type { AgentEvent, AgentFlow, ChatTurn, CueEvent, CueStatus, SessionState, Stage, TurnResponse } from '@/lib/agent/types';
-import { buttonIcon, buttonOutline, buttonPrimary, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
+import { buttonIcon, buttonOutline, buttonPrimary, buttonSaved, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
 
 // v4 prototype: define a goal-driven agent by typing stage cards (no
 // image, no FigJam yet) and test it in the same page — chat in the
@@ -37,6 +39,8 @@ type Saved = {
   voiceSettings: VoiceSettings | null;
   /** The plain-English description the flow was generated from. */
   brief: string;
+  /** `brief` as it was when the flow was last generated (null = never) — it's up to date when they match. */
+  generatedBrief: string | null;
   /** The FigJam board the flow is drawn on and imported from. */
   boardUrl: string;
   /** The saved project this work belongs to (null = not saved yet). */
@@ -59,6 +63,9 @@ type Saved = {
   /** The open project's music (its file is in IndexedDB — see musicStore), or none. */
   musicTrack: { name: string; key: string } | null;
 };
+
+// Restart is the conversation's main reset, so its outline is twice as heavy as other buttons'.
+const restartButton = buttonOutline.replace('border-2 ', 'border-4 ');
 
 // Performance cues ([warmly], [laughs softly]…) are for the voice, not the reader.
 const withoutCues = (text: string) => text.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
@@ -104,9 +111,10 @@ function loadSaved(): Saved {
     voiceId: '',
     voiceSettings: null,
     brief: '',
+    generatedBrief: null,
     boardUrl: '',
     projectId: null,
-    projectName: 'Untitled project',
+    projectName: 'Untitled scene',
     savedSnapshot: '',
     pauseSeconds: 1.0,
     voices: [],
@@ -118,7 +126,10 @@ function loadSaved(): Saved {
   };
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    const saved = raw ? { ...fallback, ...(JSON.parse(raw) as Partial<Saved>) } : fallback;
+    const stored = raw ? (JSON.parse(raw) as Partial<Saved>) : null;
+    const saved = stored ? { ...fallback, ...stored } : fallback;
+    // From before generation was tracked: assume the open flow came from the description as it stands.
+    if (stored && !('generatedBrief' in stored)) saved.generatedBrief = saved.brief || null;
     // First visit: borrow the keys and voice already set up in the step-table studio.
     if (!saved.anthropicApiKey || !saved.elevenLabsApiKey || !saved.voiceId) {
       const legacy = JSON.parse(window.localStorage.getItem(LEGACY_STUDIO_KEY) ?? '{}') as Partial<{
@@ -377,6 +388,7 @@ export default function AgentStudioPage() {
     dirty,
     flow,
     brief: saved.brief,
+    generatedBrief: saved.generatedBrief,
     boardUrl: saved.boardUrl,
     voice: voiceOf(saved),
     music: musicOf(saved),
@@ -420,6 +432,8 @@ export default function AgentStudioPage() {
         ? {
             ...s,
             brief: project.brief,
+            // Scenes saved before generation was tracked: assume their flow came from their description.
+            generatedBrief: project.generatedBrief !== undefined ? project.generatedBrief : project.brief || null,
             boardUrl: project.boardUrl,
             ...(voice && {
               voices: voice.voices,
@@ -438,24 +452,27 @@ export default function AgentStudioPage() {
     setProjectsOpen(false);
   };
 
-  const newProject = (kind: 'blank' | 'example') => {
-    if (!okToLeave()) return;
-    const next = kind === 'example' ? sampleFlow() : { ...emptyFlow, stages: [blankStage('1')] };
+  // A fresh, unsaved scene. The Scenes dialog stays open to name and save it;
+  // returns false if the user chose to keep their unsaved work instead.
+  const newProject = () => {
+    if (!okToLeave()) return false;
+    const next = { ...emptyFlow, stages: [blankStage('1')] };
     loadFlow(next, 'design');
     setSaved((s) =>
       s
         ? {
             ...s,
             brief: '',
+            generatedBrief: null,
             boardUrl: '',
             projectId: null,
-            projectName: kind === 'example' ? 'UCSF front desk (example)' : 'Untitled project',
+            projectName: 'Untitled scene',
             savedSnapshot: '',
             musicTrack: null,
           }
         : s,
     );
-    setProjectsOpen(false);
+    return true;
   };
 
   // `always` = play even with Spoken replies off (the voice panel's Test button).
@@ -472,24 +489,23 @@ export default function AgentStudioPage() {
       return;
     }
     try {
-      // Get a one-time ticket for the voice, then let the <audio> element
-      // play it as it streams in — speech starts with the first audio
+      // Played as it streams in — speech starts with the first audio
       // ElevenLabs sends, instead of after the whole clip has downloaded.
-      const res = await fetch('/api/tts/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text,
-          voiceId: voiceId ?? voiceRef.current.voiceId,
-          apiKey: voiceRef.current.apiKey,
-          voiceSettings,
-          expressive,
+      const clip = await startStreamedClip(() =>
+        fetch('/api/tts/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text,
+            voiceId: voiceId ?? voiceRef.current.voiceId,
+            apiKey: voiceRef.current.apiKey,
+            voiceSettings,
+            expressive,
+          }),
         }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const { ticket } = (await res.json()) as { ticket: string };
+      );
       stopAudio();
-      const audio = new Audio(`/api/tts/stream?ticket=${encodeURIComponent(ticket)}`);
+      const audio = new Audio(clip.src);
       audioRef.current = audio;
       audioExpressiveRef.current = expressive;
       // The expressive models have no speed setting, so apply the Speed
@@ -499,8 +515,12 @@ export default function AgentStudioPage() {
         audio.preservesPitch = true;
       }
       audio.onplay = () => setSpeaking(true);
-      audio.onended = () => setSpeaking(false);
+      audio.onended = () => {
+        clip.release();
+        setSpeaking(false);
+      };
       audio.onerror = () => {
+        clip.release();
         setSpeaking(false);
         setError('Voice playback stopped unexpectedly — try again, or check the voice in the Voice panel.');
       };
@@ -539,35 +559,34 @@ export default function AgentStudioPage() {
   // sentence received so far and each new one as it arrives — so a turn
   // started early can collect sentences silently and be voiced only once
   // it's actually used.
-  // `takeTicket` hands over audio already being made for a sentence, if any.
+  // `takeAudio` hands over audio already being made for a sentence, if any.
   // `listenCues` does the same for TouchDesigner cues (and their status updates).
   type TurnStream = {
     listen: (onSentence: (sentence: string) => void) => void;
     listenCues: (onCue: (cue: CueEvent) => void) => void;
-    takeTicket: (sentence: string) => Promise<string | null> | undefined;
+    takeAudio: (sentence: string) => Promise<StreamedClip | null> | undefined;
     done: Promise<TurnResponse>;
   };
 
-  // Asks the server to start making one sentence's audio; returns a one-time
-  // ticket for playing it (see /api/tts/stream). Settings are read now, so a
-  // slider moved while the agent was thinking still applies.
-  const requestTicket = async (text: string, previousText: string, expressive: boolean) => {
-    const res = await fetch('/api/tts/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text,
-        voiceId: voiceRef.current.voiceId,
-        apiKey: voiceRef.current.apiKey,
-        voiceSettings: voiceRef.current.settings,
-        expressive,
-        // Keeps the normal voice's delivery continuous across sentences.
-        previousText: expressive ? undefined : previousText,
+  // Starts one sentence's audio streaming in (see streamedAudio.ts).
+  // Settings are read now, so a slider moved while the agent was thinking
+  // still applies.
+  const requestAudio = (text: string, previousText: string, expressive: boolean) =>
+    startStreamedClip(() =>
+      fetch('/api/tts/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          voiceId: voiceRef.current.voiceId,
+          apiKey: voiceRef.current.apiKey,
+          voiceSettings: voiceRef.current.settings,
+          expressive,
+          // Keeps the normal voice's delivery continuous across sentences.
+          previousText: expressive ? undefined : previousText,
+        }),
       }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    return ((await res.json()) as { ticket: string }).ticket;
-  };
+    );
 
   const startTurnStream = (
     state: SessionState,
@@ -587,10 +606,10 @@ export default function AgentStudioPage() {
     // sentence of a turn still waiting for the pause to end) — not when it's
     // finally played. A draft the analysis rejects is simply never played.
     const voiceReady = voiceOn && voiceRef.current.apiKey.trim() !== '';
-    const tickets = new Map<string, Promise<string | null>>();
+    const headStarts = new Map<string, Promise<StreamedClip | null>>();
     const headStart = (text: string) => {
-      if (!voiceReady || tickets.size > 0 || !withoutCues(text)) return;
-      tickets.set(text, requestTicket(text, '', Boolean(state.expressive)).catch(() => null));
+      if (!voiceReady || headStarts.size > 0 || !withoutCues(text)) return;
+      headStarts.set(text, requestAudio(text, '', Boolean(state.expressive)).catch(() => null));
     };
     const done = (async (): Promise<TurnResponse> => {
       const res = await fetch('/api/agent/turn', {
@@ -640,10 +659,10 @@ export default function AgentStudioPage() {
     })();
     return {
       done,
-      takeTicket: (sentence) => {
-        const ticket = tickets.get(sentence);
-        tickets.delete(sentence);
-        return ticket;
+      takeAudio: (sentence) => {
+        const clip = headStarts.get(sentence);
+        headStarts.delete(sentence);
+        return clip;
       },
       listenCues: (onCue) => {
         for (const cue of cues) onCue(cue);
@@ -668,7 +687,7 @@ export default function AgentStudioPage() {
       },
       onPlay: hooks.onPlay,
       onError: setError,
-      requestTicket: (text, previousText) => requestTicket(text, previousText, expressive),
+      requestAudio: (text, previousText) => requestAudio(text, previousText, expressive),
       requestClip: async (text, previousText) => {
         const res = await fetch('/api/tts', {
           method: 'POST',
@@ -848,7 +867,7 @@ export default function AgentStudioPage() {
       clock.text ??= performance.now();
       shown = `${shown} ${sentence}`.trim();
       setMessages([...withCaller, { role: 'assistant', text: shown }]);
-      if (withoutCues(sentence)) queue?.add(sentence, stream?.takeTicket(sentence));
+      if (withoutCues(sentence)) queue?.add(sentence, stream?.takeAudio(sentence));
       if (!queue) openGate();
     };
     try {
@@ -984,16 +1003,16 @@ export default function AgentStudioPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setProjectsOpen(true)} className={buttonOutline}>
-            Projects
+            Scenes
           </button>
-          {/* Opens Projects to save. Grey with red "Not saved" while anything (flow, brief,
-              knowledge base, voices, music) has changed since the last save. */}
+          {/* Opens Scenes to save. Red "Not Saved" while anything (flow, brief,
+              knowledge base, voices, music) has changed since the last save; green "Saved" otherwise. */}
           <button
             onClick={() => setProjectsOpen(true)}
-            className={dirty ? buttonUnsaved : buttonOutline}
-            title={dirty ? 'There are unsaved changes — click to save the project' : 'Everything is saved'}
+            className={`min-w-[8.5rem] ${dirty ? buttonUnsaved : buttonSaved}`}
+            title={dirty ? 'There are unsaved changes — click to save the scene' : 'Everything is saved'}
           >
-            {dirty ? 'Not saved' : 'Saved ✓'}
+            {dirty ? 'Not Saved' : 'Saved'}
           </button>
           <button onClick={() => setKeysOpen((o) => !o)} className={buttonOutline}>
             Keys
@@ -1063,8 +1082,8 @@ export default function AgentStudioPage() {
             </button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            <p className="mb-3 font-display text-lg text-ink">
-              {selectedStage ? `${selectedStage.code} · ${selectedStage.name}` : selected === 'design' ? 'Design with FigJam' : 'Master card'}
+            <p className="mb-1 font-display text-lg text-ink">
+              {selectedStage ? `${selectedStage.code} · ${selectedStage.name}` : selected === 'design' ? 'Design Process' : 'Master card'}
             </p>
             {/* Always mounted (just hidden) so a draw/import in progress — and its
                 messages — survive switching to another tab. */}
@@ -1072,6 +1091,8 @@ export default function AgentStudioPage() {
               <DesignPanel
                 flow={flow}
                 brief={saved.brief}
+                generatedBrief={saved.generatedBrief}
+                onGenerated={(used) => setSaved((s) => (s ? { ...s, generatedBrief: used } : s))}
                 boardUrl={saved.boardUrl}
                 anthropicApiKey={saved.anthropicApiKey}
                 onBriefChange={(brief) => setSaved({ ...saved, brief })}
@@ -1100,151 +1121,144 @@ export default function AgentStudioPage() {
 
         {/* Conversation */}
         <section className="flex min-h-[520px] flex-col border-b-2 border-ink lg:min-h-0 lg:border-b-0 lg:border-r-2">
-          <div className="flex flex-wrap items-center gap-2 border-b-2 border-ink p-2">
-            <span className={fieldLabel}>Start at</span>
-            <select
-              value={startAt}
-              onChange={(e) => {
-                setStartAt(e.target.value);
-                restart(e.target.value);
-              }}
-              className="border-2 border-ink bg-paper px-2 py-1 font-label text-[12px]"
-            >
-              <option value="">{firstStage ? `${firstStage.code} ${firstStage.name} (first)` : '—'}</option>
-              {orderedStages.slice(1).map((s) => (
-                <option key={s.id} value={s.code}>
-                  {s.code} {s.name}
-                </option>
-              ))}
-            </select>
-            <button onClick={() => restart()} disabled={busy} className={buttonOutline}>
-              Restart
-            </button>
-            {saved.voiceExpressive && (
-              <span
-                className="border-2 border-ink px-2 py-1 font-label text-[10px] uppercase tracking-widest text-ink"
-                title="The voice in use is set to expressive (Voice panel): the agent adds performance cues — [laughs], [whispers]… — and ElevenLabs' expressive model performs them."
+          {/* Two rows of controls, every one 40px tall: the conversation itself on
+              top, its sound below — with room on each row for more later. */}
+          <div className="flex flex-col gap-2 border-b-2 border-ink px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={() => restart()} disabled={busy} className={`h-10 ${restartButton}`}>
+                Restart
+              </button>
+              <span className={`ml-2 ${fieldLabel}`}>Start at</span>
+              <select
+                value={startAt}
+                onChange={(e) => {
+                  setStartAt(e.target.value);
+                  restart(e.target.value);
+                }}
+                className="h-10 cursor-pointer appearance-none bg-transparent pl-2 pr-7 font-label text-[12px] text-ink hover:bg-muted/60"
               >
-                ✦ Expressive voice
-              </span>
-            )}
-            <label
-              className="ml-auto flex items-center gap-2 font-label text-[11px] uppercase tracking-widest text-muted-ink"
-              title="Open mic (blue): how long you need to be quiet before what you said is sent"
-            >
-              Pause before sending
-              <input
-                type="range"
-                min={0.2}
-                max={3}
-                step={0.2}
-                value={saved.pauseSeconds}
-                onChange={(e) => setSaved({ ...saved, pauseSeconds: Number(e.target.value) })}
-                className="w-28 accent-[#18a0fb]"
+                <option value="">{firstStage ? `${firstStage.code} ${firstStage.name} (first)` : '—'}</option>
+                {orderedStages.slice(1).map((s) => (
+                  <option key={s.id} value={s.code}>
+                    {s.code} {s.name}
+                  </option>
+                ))}
+              </select>
+              {/* The browser's own arrow is hidden; this solid one replaces it. */}
+              <DropdownArrow className="pointer-events-none -ml-6 mr-2 text-ink" />
+              {saved.voiceExpressive && (
+                <span
+                  className="flex h-10 items-center px-2 font-label text-[10px] uppercase tracking-widest text-ink"
+                  title="The voice in use is set to expressive (Voice panel): the agent adds performance cues — [laughs], [whispers]… — and ElevenLabs' expressive model performs them."
+                >
+                  ✦ Expressive voice
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="ml-auto" />
+              <MusicPanel
+                trackName={saved.musicTrack?.name ?? null}
+                playing={musicPlaying}
+                volume={saved.musicVolume}
+                dip={saved.musicDip}
+                onFile={async (file) => {
+                  const key = crypto.randomUUID();
+                  const kept = await saveTrack({ name: file.name, key, blob: file });
+                  musicRef.current?.setTrack(file);
+                  loadedMusicKey.current = key;
+                  musicFileRef.current = { key, blob: file };
+                  setSaved((s) => (s ? { ...s, musicTrack: { name: file.name, key } } : s));
+                  return kept ? null : 'Playing it now — save the scene to keep it (this browser’s storage is blocked).';
+                }}
+                onRemove={() => {
+                  musicRef.current?.setTrack(null);
+                  loadedMusicKey.current = null;
+                  musicFileRef.current = null;
+                  setSaved((s) => (s ? { ...s, musicTrack: null } : s));
+                  void clearTrack();
+                }}
+                onPreview={() => (musicPlaying ? musicRef.current?.stop() : musicRef.current?.start())}
+                onTryDip={() => {
+                  if (tryingDipRef.current) clearTimeout(tryingDipRef.current);
+                  musicRef.current?.duck(true);
+                  tryingDipRef.current = setTimeout(() => {
+                    tryingDipRef.current = null;
+                    musicRef.current?.duck(speakingRef.current);
+                  }, 3000);
+                }}
+                onVolumeChange={(musicVolume) => setSaved({ ...saved, musicVolume })}
+                onDipChange={(musicDip) => setSaved({ ...saved, musicDip })}
               />
-              <span className="w-8 tabular-nums normal-case text-ink">{saved.pauseSeconds.toFixed(1)}s</span>
-            </label>
-            <label className="flex items-center gap-1.5 font-label text-[11px] uppercase tracking-widest text-muted-ink">
-              <input type="checkbox" checked={voiceOn} onChange={(e) => setVoiceOn(e.target.checked)} className="accent-ink" />
-              Spoken replies
-            </label>
-            <MusicPanel
-              trackName={saved.musicTrack?.name ?? null}
-              playing={musicPlaying}
-              volume={saved.musicVolume}
-              dip={saved.musicDip}
-              onFile={async (file) => {
-                const key = crypto.randomUUID();
-                const kept = await saveTrack({ name: file.name, key, blob: file });
-                musicRef.current?.setTrack(file);
-                loadedMusicKey.current = key;
-                musicFileRef.current = { key, blob: file };
-                setSaved((s) => (s ? { ...s, musicTrack: { name: file.name, key } } : s));
-                return kept ? null : 'Playing it now — save the project to keep it (this browser’s storage is blocked).';
-              }}
-              onRemove={() => {
-                musicRef.current?.setTrack(null);
-                loadedMusicKey.current = null;
-                musicFileRef.current = null;
-                setSaved((s) => (s ? { ...s, musicTrack: null } : s));
-                void clearTrack();
-              }}
-              onPreview={() => (musicPlaying ? musicRef.current?.stop() : musicRef.current?.start())}
-              onTryDip={() => {
-                if (tryingDipRef.current) clearTimeout(tryingDipRef.current);
-                musicRef.current?.duck(true);
-                tryingDipRef.current = setTimeout(() => {
-                  tryingDipRef.current = null;
-                  musicRef.current?.duck(speakingRef.current);
-                }, 3000);
-              }}
-              onVolumeChange={(musicVolume) => setSaved({ ...saved, musicVolume })}
-              onDipChange={(musicDip) => setSaved({ ...saved, musicDip })}
-            />
-            <VoicePanel
-              settings={saved.voiceSettings ?? DEFAULT_VOICE_SETTINGS}
-              voices={saved.voices}
-              activeVoice={saved.activeVoice}
-              onSettingsChange={(voiceSettings) => setSaved({ ...saved, voiceSettings })}
-              expressive={saved.voiceExpressive}
-              onExpressiveChange={(voiceExpressive) => setSaved({ ...saved, voiceExpressive })}
-              onVoicesChange={(voices, activeVoice) => {
-                // Switching to a voice with saved settings moves the sliders (and
-                // regular/expressive) to them.
-                const switchedTo = activeVoice !== saved.activeVoice ? voices[activeVoice] : undefined;
-                setSaved({
-                  ...saved,
-                  voices,
-                  activeVoice,
-                  voiceId: voices[activeVoice]?.voiceId ?? '',
-                  voiceSettings: switchedTo?.settings ? { ...switchedTo.settings } : saved.voiceSettings,
-                  voiceExpressive: switchedTo?.settings ? Boolean(switchedTo.expressive) : saved.voiceExpressive,
-                });
-              }}
-              onTest={(voiceId, settings) =>
-                speak('Hi there, this is how I sound with these settings. Does that work for you?', true, false, voiceId, settings)
-              }
-              onTestExpressive={(voiceId, settings) =>
-                speak(
-                  '[warmly] Hi there, this is my expressive voice. [laughs softly] I can sound pretty excited... ' +
-                    '[whispers] or keep things quiet. [curious] So, how does this sound to you?',
-                  true,
-                  true,
-                  voiceId,
-                  settings,
-                )
-              }
-              loadAccountVoices={async (): Promise<AccountVoices> => {
-                if (!saved.elevenLabsApiKey.trim()) return { error: 'Add your ElevenLabs API key (Keys, top right) to pick voices by name.' };
-                try {
-                  const res = await fetch('/api/tts/voices', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ apiKey: saved.elevenLabsApiKey }),
+              <VoicePanel
+                settings={saved.voiceSettings ?? DEFAULT_VOICE_SETTINGS}
+                voices={saved.voices}
+                activeVoice={saved.activeVoice}
+                onSettingsChange={(voiceSettings) => setSaved({ ...saved, voiceSettings })}
+                expressive={saved.voiceExpressive}
+                onExpressiveChange={(voiceExpressive) => setSaved({ ...saved, voiceExpressive })}
+                spokenReplies={voiceOn}
+                onSpokenRepliesChange={setVoiceOn}
+                pauseSeconds={saved.pauseSeconds}
+                onPauseSecondsChange={(pauseSeconds) => setSaved({ ...saved, pauseSeconds })}
+                onVoicesChange={(voices, activeVoice) => {
+                  // Switching to a voice with saved settings moves the sliders (and
+                  // regular/expressive) to them.
+                  const switchedTo = activeVoice !== saved.activeVoice ? voices[activeVoice] : undefined;
+                  setSaved({
+                    ...saved,
+                    voices,
+                    activeVoice,
+                    voiceId: voices[activeVoice]?.voiceId ?? '',
+                    voiceSettings: switchedTo?.settings ? { ...switchedTo.settings } : saved.voiceSettings,
+                    voiceExpressive: switchedTo?.settings ? Boolean(switchedTo.expressive) : saved.voiceExpressive,
                   });
-                  return (await res.json()) as AccountVoices;
-                } catch {
-                  return { error: 'Couldn’t reach the app server.' };
+                }}
+                onTest={(voiceId, settings) =>
+                  speak('Hi there, this is how I sound with these settings. Does that work for you?', true, false, voiceId, settings)
                 }
-              }}
-              onCheck={async (): Promise<VoiceCheck> => {
-                if (!saved.elevenLabsApiKey.trim()) return { error: 'Add your ElevenLabs API key first (Keys, top right).' };
-                try {
-                  const res = await fetch('/api/tts/check', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      apiKey: saved.elevenLabsApiKey,
-                      voiceId: saved.voices[saved.activeVoice]?.voiceId ?? '',
-                      voiceSettings: saved.voiceSettings ?? DEFAULT_VOICE_SETTINGS,
-                    }),
-                  });
-                  return (await res.json()) as VoiceCheck;
-                } catch {
-                  return { error: 'Couldn’t reach the app server.' };
+                onTestExpressive={(voiceId, settings) =>
+                  speak(
+                    '[warmly] Hi there, this is my expressive voice. [laughs softly] I can sound pretty excited... ' +
+                      '[whispers] or keep things quiet. [curious] So, how does this sound to you?',
+                    true,
+                    true,
+                    voiceId,
+                    settings,
+                  )
                 }
-              }}
-            />
+                loadAccountVoices={async (): Promise<AccountVoices> => {
+                  if (!saved.elevenLabsApiKey.trim()) return { error: 'Add your ElevenLabs API key (Keys, top right) to pick voices by name.' };
+                  try {
+                    const res = await fetch('/api/tts/voices', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ apiKey: saved.elevenLabsApiKey }),
+                    });
+                    return (await res.json()) as AccountVoices;
+                  } catch {
+                    return { error: 'Couldn’t reach the app server.' };
+                  }
+                }}
+                onCheck={async (): Promise<VoiceCheck> => {
+                  if (!saved.elevenLabsApiKey.trim()) return { error: 'Add your ElevenLabs API key first (Keys, top right).' };
+                  try {
+                    const res = await fetch('/api/tts/check', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        apiKey: saved.elevenLabsApiKey,
+                        voiceId: saved.voices[saved.activeVoice]?.voiceId ?? '',
+                        voiceSettings: saved.voiceSettings ?? DEFAULT_VOICE_SETTINGS,
+                      }),
+                    });
+                    return (await res.json()) as VoiceCheck;
+                  } catch {
+                    return { error: 'Couldn’t reach the app server.' };
+                  }
+                }}
+              />
+            </div>
           </div>
 
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">

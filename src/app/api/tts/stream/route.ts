@@ -1,12 +1,13 @@
 import { DEFAULT_VOICE_ID, synthesize } from '@/lib/elevenlabs';
-import { issueTicket, redeemTicket } from '@/lib/ttsTickets';
 import { serverKey } from '@/lib/serverKeys';
 
 export const maxDuration = 30;
 
-// Step 1: start the ElevenLabs stream now (so problems like a bad key or
-// voice ID come back as a readable error straight away) and hand back a
-// one-time ticket for it.
+// One sentence of the agent's voice, streamed back as ElevenLabs makes it —
+// the browser plays it as it arrives (see streamedAudio.ts). A problem like a
+// bad key or voice ID comes back straight away as an error with a message.
+// Everything happens in this one request, so it works the same on a hosted
+// copy, where consecutive requests can be answered by different servers.
 export async function POST(req: Request) {
   const body = (await req.json()) as {
     text?: string;
@@ -18,7 +19,7 @@ export async function POST(req: Request) {
     previousText?: string;
   };
   const v = body.voiceSettings ?? {};
-  const audio = await synthesize(
+  return synthesize(
     body.text ?? null,
     body.voiceId?.trim() || DEFAULT_VOICE_ID,
     body.apiKey?.trim() || serverKey('ELEVENLABS_API_KEY'),
@@ -26,15 +27,4 @@ export async function POST(req: Request) {
     body.expressive === true,
     body.previousText?.slice(-1000),
   );
-  if (!audio.ok) return new Response(await audio.text(), { status: audio.status });
-  return Response.json({ ticket: issueTicket(audio) });
-}
-
-// Step 2: the <audio> element plays this URL, receiving the audio as
-// ElevenLabs produces it.
-export function GET(req: Request) {
-  const id = new URL(req.url).searchParams.get('ticket') ?? '';
-  const audio = redeemTicket(id);
-  if (!audio) return new Response('This voice ticket has expired or was already used.', { status: 404 });
-  return audio;
 }
