@@ -36,6 +36,8 @@ const MID_PHRASE_GRACE_MS = 2000;
 
 export type OpenMicStatus = 'off' | 'listening' | 'hearing' | 'paused' | 'starting';
 
+export type UtteranceTiming = { lastHeardAt: number; confirmedAt: number | null };
+
 export function OpenMic({
   on,
   paused,
@@ -54,8 +56,12 @@ export function OpenMic({
   onToggle: (on: boolean) => void;
   /** Live words as they're heard, for the input box. */
   onTranscript: (text: string) => void;
-  /** A finished utterance, after the pause. */
-  onUtterance: (text: string) => void;
+  /**
+   * A finished utterance, after the pause. `timing` (performance.now() times)
+   * says when the last words were heard and when Chrome confirmed the phrase
+   * — for measuring how long the caller waits for a reply.
+   */
+  onUtterance: (text: string, timing: UtteranceTiming) => void;
   /**
    * Chrome has just confirmed a complete phrase — the pause timer is now
    * running. The app can start working on a reply early; if the caller
@@ -68,6 +74,7 @@ export function OpenMic({
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const transcriptRef = useRef('');
+  const timingRef = useRef<UtteranceTiming>({ lastHeardAt: 0, confirmedAt: null });
   // Nothing counts down until real speech has been heard in this listening session.
   const heardSpeechRef = useRef(false);
   const lastSentRef = useRef<{ text: string; at: number }>({ text: '', at: 0 });
@@ -137,11 +144,16 @@ export function OpenMic({
       }
       if (!heardSpeechRef.current) return;
       latest.current.onStatus('hearing');
+      const now = performance.now();
 
       // Chrome marks a phrase final once it judges you've stopped; until
       // then you're probably mid-sentence, so give extra room. Re-read the
       // slider every time, so a change applies to the very next pause.
       const midPhrase = !results[results.length - 1]?.isFinal;
+      // A final result repeats words already heard, so it doesn't move "last heard".
+      timingRef.current = midPhrase
+        ? { lastHeardAt: now, confirmedAt: null }
+        : { lastHeardAt: timingRef.current.lastHeardAt || now, confirmedAt: now };
       if (!midPhrase) latest.current.onPhraseFinal?.(text);
       const waitMs = Math.round(latest.current.pauseSeconds * 1000) + (midPhrase ? MID_PHRASE_GRACE_MS : 0);
       silenceTimerRef.current = setTimeout(() => {
@@ -153,7 +165,9 @@ export function OpenMic({
         const { text: lastText, at } = lastSentRef.current;
         if (said === lastText && Date.now() - at < DEDUPE_WINDOW_MS) return;
         lastSentRef.current = { text: said, at: Date.now() };
-        latest.current.onUtterance(said);
+        const timing = timingRef.current;
+        timingRef.current = { lastHeardAt: 0, confirmedAt: null };
+        latest.current.onUtterance(said, timing);
       }, waitMs);
     };
 

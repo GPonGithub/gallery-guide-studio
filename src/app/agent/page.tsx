@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { DesignPanel } from '@/components/agent/DesignPanel';
 import { MasterEditor, StageEditor } from '@/components/agent/FlowEditor';
-import { OpenMic, type OpenMicStatus } from '@/components/agent/OpenMic';
+import { OpenMic, type OpenMicStatus, type UtteranceTiming } from '@/components/agent/OpenMic';
 import { SpeechQueue } from '@/components/agent/speechQueue';
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
@@ -754,8 +754,48 @@ export default function AgentStudioPage() {
     noteCue({ ...cue, status }, afterMessage);
   };
 
-  const sendTurn = async (userText: string | null, early?: TurnStream) => {
+  // `heard`: when the open mic last heard the caller (for the wait measurement).
+  const sendTurn = async (userText: string | null, early?: TurnStream, heard?: UtteranceTiming) => {
     if (busy || session.ended) return;
+    // How long the caller waits: from their last word (or the click) to the
+    // reply's first words on screen and the voice starting. Shown in the
+    // inspector and logged by the app server.
+    const clock = {
+      origin: heard?.lastHeardAt || performance.now(),
+      confirmed: heard?.confirmedAt ?? null,
+      sent: performance.now(),
+      text: null as number | null,
+      voice: null as number | null,
+      server: null as string[] | null,
+      reported: false,
+    };
+    const since = (t: number) => `${((t - clock.origin) / 1000).toFixed(1)}s`;
+    const waitLine = () =>
+      `${heard ? 'after your last word:' : 'after the click:'} ` +
+      [
+        clock.confirmed !== null && `Chrome confirmed ${since(clock.confirmed)}`,
+        heard && `sent ${since(clock.sent)}`,
+        clock.text !== null && `first words ${since(clock.text)}`,
+        clock.voice !== null ? `voice heard ${since(clock.voice)}` : 'no voice',
+      ]
+        .filter(Boolean)
+        .join(' · ');
+    const postWait = (line: string) =>
+      void fetch('/api/agent/timing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wait: line, server: clock.server, early: Boolean(early) }),
+      }).catch(() => {});
+    // The voice started after the turn was logged: add the wait to that entry now.
+    let loggedTurn: number | null = null;
+    const reportWait = () => {
+      if (clock.reported || !clock.server) return; // not done yet — the done step reports it
+      clock.reported = true;
+      const line = waitLine();
+      const turn = loggedTurn;
+      setLog((l) => l.map((entry) => (entry.turn === turn ? { ...entry, timings: [line, ...entry.timings] } : entry)));
+      postWait(line);
+    };
     const state = withVoiceMode(session);
     if (!saved.anthropicApiKey.trim()) {
       setError('Add your Anthropic API key first (Keys, top right).');
@@ -783,7 +823,16 @@ export default function AgentStudioPage() {
     const queue =
       voiceOn && voiceRef.current.apiKey.trim()
         ? // If the voice fails and goes quiet without playing, the cues still go.
-          newSpeechQueue(Boolean(state.expressive), { onPlay: openGate, onQuiet: openGate })
+          newSpeechQueue(Boolean(state.expressive), {
+            onPlay: () => {
+              if (clock.voice === null) {
+                clock.voice = performance.now();
+                reportWait();
+              }
+              openGate();
+            },
+            onQuiet: openGate,
+          })
         : null;
     queueRef.current = queue;
     let shown = '';
@@ -795,6 +844,7 @@ export default function AgentStudioPage() {
       else gate.waiting.push(cue);
     };
     const onSentence = (sentence: string) => {
+      clock.text ??= performance.now();
       shown = `${shown} ${sentence}`.trim();
       setMessages([...withCaller, { role: 'assistant', text: shown }]);
       if (withoutCues(sentence)) queue?.add(sentence, stream?.takeTicket(sentence));
@@ -830,10 +880,18 @@ export default function AgentStudioPage() {
       const events = data.events.map((e) =>
         e.type === 'cue' ? { ...e, status: cueStatusRef.current.get(e.id) ?? e.status } : e,
       );
-      setLog((l) => [
-        ...l,
-        { turn: l.length + 1, userText, events, timings: early ? ['started during your pause', ...data.timings] : data.timings },
-      ]);
+      clock.server = data.timings;
+      // Normally the voice has started by now; if not, the wait is filled in when it does.
+      const voiceDone = clock.voice !== null || !queue || queue.idle;
+      setLog((l) => {
+        loggedTurn = l.length + 1;
+        const timings = [...(voiceDone ? [waitLine()] : []), ...(early ? ['started during your pause'] : []), ...data.timings];
+        return [...l, { turn: loggedTurn, userText, events, timings }];
+      });
+      if (voiceDone) {
+        clock.reported = true;
+        postWait(waitLine());
+      }
       void checkMoments(data.state, userText, data.reply, cuePosition + 1);
     } catch (err) {
       // A failed turn sends nothing.
@@ -1291,9 +1349,9 @@ export default function AgentStudioPage() {
                 if (on) setError(null);
               }}
               onTranscript={setInput}
-              onUtterance={(text) => {
+              onUtterance={(text, timing) => {
                 setInput('');
-                void sendTurn(text, takeEarlyTurn(text));
+                void sendTurn(text, takeEarlyTurn(text), timing);
               }}
               onPhraseFinal={startEarlyTurn}
               onStatus={setOpenMicStatus}
