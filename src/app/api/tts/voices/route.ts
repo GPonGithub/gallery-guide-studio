@@ -1,3 +1,5 @@
+import { serverKey } from '@/lib/serverKeys';
+
 export const maxDuration = 30;
 
 /**
@@ -42,7 +44,7 @@ async function fetchVoices(apiKey: string): Promise<ElevenVoice[]> {
 
 export async function POST(req: Request) {
   const { apiKey } = (await req.json()) as { apiKey?: string };
-  const key = apiKey?.trim() || process.env.ELEVENLABS_API_KEY;
+  const key = apiKey?.trim() || serverKey('ELEVENLABS_API_KEY');
   if (!key) return Response.json({ error: 'Add your ElevenLabs API key first (Keys, top right).' }, { status: 400 });
   try {
     const voices: AccountVoice[] = (await fetchVoices(key))

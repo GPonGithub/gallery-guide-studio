@@ -3,39 +3,19 @@
 /**
  * The working copy of the open project's music file, kept in this browser
  * (IndexedDB — an MP3 is far too big for localStorage) so it survives a
- * reload before the project is saved. Saving the project stores the file
- * with the project on this computer (see /api/agent/projects/music). If
- * browser storage is blocked, the file is fetched from the project instead.
+ * reload before the project is saved. Saving the project stores a copy
+ * with the project (see localProjects.ts).
  */
 
-const DB_NAME = 'goal-agent-studio';
+import { openDb, run as runIn } from './browserDb';
+
 const STORE = 'music';
 const KEY = 'background';
 
 /** `key` identifies this particular file (a new one is made for every file dropped in). */
 export type StoredTrack = { name: string; key: string; blob: Blob };
 
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function run<T>(mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest): Promise<T> {
-  const db = await openDb();
-  try {
-    return await new Promise<T>((resolve, reject) => {
-      const request = work(db.transaction(STORE, mode).objectStore(STORE));
-      request.onsuccess = () => resolve(request.result as T);
-      request.onerror = () => reject(request.error);
-    });
-  } finally {
-    db.close();
-  }
-}
+const run = <T,>(mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest) => runIn<T>(STORE, mode, work);
 
 export async function loadTrack(): Promise<StoredTrack | null> {
   try {

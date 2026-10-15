@@ -1,4 +1,5 @@
 import { copyMusic, getProject, readMusic, writeMusic } from '@/lib/agent/projectStore';
+import { isHosted } from '@/lib/serverKeys';
 
 export const maxDuration = 60;
 
@@ -7,8 +8,9 @@ export const maxDuration = 60;
 // Like the rest of projects, only for the computer running the app.
 const MAX_BYTES = 50 * 1024 * 1024;
 
+// (Also off on a hosted copy: there, projects live in each student's browser.)
 function fromTunnel(req: Request) {
-  return req.headers.has('cf-connecting-ip');
+  return isHosted || req.headers.has('cf-connecting-ip');
 }
 const forbidden = () => Response.json({ error: 'Projects are only available on the computer running the app.' }, { status: 403 });
 

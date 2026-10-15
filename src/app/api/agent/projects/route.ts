@@ -1,10 +1,12 @@
 import { deleteProject, listProjects, saveProject, type AgentProject } from '@/lib/agent/projectStore';
+import { isHosted } from '@/lib/serverKeys';
 
 // Projects are for the computer running the app only. The Cloudflare tunnel
 // used for phone testing is public, and every request it relays carries
 // cf-connecting-ip — a direct localhost request never does.
+// (Also off on a hosted copy: there, projects live in each student's browser.)
 function fromTunnel(req: Request) {
-  return req.headers.has('cf-connecting-ip');
+  return isHosted || req.headers.has('cf-connecting-ip');
 }
 const forbidden = () => Response.json({ error: 'Projects are only available on the computer running the app.' }, { status: 403 });
 

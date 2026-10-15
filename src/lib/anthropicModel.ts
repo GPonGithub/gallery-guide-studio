@@ -1,11 +1,13 @@
-import { anthropic, createAnthropic } from '@ai-sdk/anthropic';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { serverKey } from './serverKeys';
 
 /**
  * Prefers a key the student entered in the API keys panel (sent with the
- * request) over ANTHROPIC_API_KEY in .env.local, which stays as a fallback.
+ * request). Running locally, ANTHROPIC_API_KEY in .env.local is a fallback;
+ * a hosted copy never uses a server key (see serverKeys.ts).
  */
 export function anthropicModel(clientApiKey: string | undefined, modelId = 'claude-sonnet-5') {
-  const key = clientApiKey?.trim();
-  const provider = key ? createAnthropic({ apiKey: key }) : anthropic;
-  return provider(modelId);
+  const apiKey = clientApiKey?.trim() || serverKey('ANTHROPIC_API_KEY');
+  if (!apiKey) throw new Error('Add your Anthropic API key first (Keys, top right).');
+  return createAnthropic({ apiKey })(modelId);
 }

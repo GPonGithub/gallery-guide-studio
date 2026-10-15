@@ -1,5 +1,6 @@
 import { DEFAULT_VOICE_ID, synthesize } from '@/lib/elevenlabs';
 import { issueTicket, redeemTicket } from '@/lib/ttsTickets';
+import { serverKey } from '@/lib/serverKeys';
 
 export const maxDuration = 30;
 
@@ -20,7 +21,7 @@ export async function POST(req: Request) {
   const audio = await synthesize(
     body.text ?? null,
     body.voiceId?.trim() || DEFAULT_VOICE_ID,
-    body.apiKey?.trim() || process.env.ELEVENLABS_API_KEY,
+    body.apiKey?.trim() || serverKey('ELEVENLABS_API_KEY'),
     { stability: v.stability, similarity_boost: v.similarityBoost, style: v.style, speed: v.speed, use_speaker_boost: v.useSpeakerBoost },
     body.expressive === true,
     body.previousText?.slice(-1000),

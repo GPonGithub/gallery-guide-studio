@@ -9,6 +9,7 @@ import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
 import { CueMarker, CueMonitor, type SentCue } from '@/components/agent/CueMonitor';
 import { adoptKeylessTrack, clearTrack, loadTrack, saveTrack } from '@/lib/musicStore';
+import { getProjectMusic, moveServerProjectsHere } from '@/lib/agent/localProjects';
 import type { TurnStreamEvent } from '@/lib/agent/runtime';
 import { MAX_VOICES, VoicePanel, type AccountVoices, type SavedVoice, type VoiceCheck } from '@/components/agent/VoicePanel';
 import { DEFAULT_VOICE_SETTINGS } from '@/lib/storage';
@@ -245,11 +246,9 @@ export default function AgentStudioPage() {
         void saveTrack({ name, key: musicKey, blob });
       }
       if (!blob && projectId) {
-        const res = await fetch(`/api/agent/projects/music?id=${encodeURIComponent(projectId)}`, { cache: 'no-store' });
-        if (res.ok) {
-          blob = await res.blob();
-          void saveTrack({ name, key: musicKey, blob });
-        }
+        await moveServerProjectsHere(); // first visit: the project may still be on the old server store
+        blob = await getProjectMusic(projectId).catch(() => null);
+        if (blob) void saveTrack({ name, key: musicKey, blob });
       }
       if (loadedMusicKey.current !== musicKey) return; // switched again meanwhile
       if (blob) {
@@ -279,6 +278,8 @@ export default function AgentStudioPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
     setSaved(loaded);
     setSession(initialState(loaded.flow));
+    // First visit with projects in the browser: copy any from the old server store.
+    void moveServerProjectsHere();
     setSelected('design');
   }, []);
 

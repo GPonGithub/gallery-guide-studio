@@ -1,4 +1,5 @@
 import { DEFAULT_VOICE_ID, synthesize } from '@/lib/elevenlabs';
+import { serverKey } from '@/lib/serverKeys';
 
 export const maxDuration = 30;
 
@@ -6,7 +7,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const text = url.searchParams.get('text');
   const voiceId = url.searchParams.get('voiceId')?.trim() || DEFAULT_VOICE_ID;
-  const apiKey = url.searchParams.get('apiKey')?.trim() || process.env.ELEVENLABS_API_KEY;
+  const apiKey = url.searchParams.get('apiKey')?.trim() || serverKey('ELEVENLABS_API_KEY');
 
   // https://elevenlabs.io/docs/api-reference/text-to-speech/convert — all optional,
   // each falls back to ElevenLabs' own default when the query param is absent.
@@ -36,7 +37,7 @@ export async function POST(req: Request) {
     expressive?: boolean;
   };
   const v = body.voiceSettings ?? {};
-  return synthesize(body.text ?? null, body.voiceId?.trim() || DEFAULT_VOICE_ID, body.apiKey?.trim() || process.env.ELEVENLABS_API_KEY, {
+  return synthesize(body.text ?? null, body.voiceId?.trim() || DEFAULT_VOICE_ID, body.apiKey?.trim() || serverKey('ELEVENLABS_API_KEY'), {
     stability: v.stability,
     similarity_boost: v.similarityBoost,
     style: v.style,

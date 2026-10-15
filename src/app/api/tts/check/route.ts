@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { serverKey } from '@/lib/serverKeys';
 
 export const maxDuration = 60;
 
@@ -52,7 +53,7 @@ export async function POST(req: Request) {
     voiceId?: string;
     voiceSettings: Settings;
   };
-  const key = apiKey?.trim() || process.env.ELEVENLABS_API_KEY;
+  const key = apiKey?.trim() || serverKey('ELEVENLABS_API_KEY');
   if (!key) return Response.json({ error: 'Add your ElevenLabs API key first.' }, { status: 400 });
   const voice = voiceId?.trim() || DEFAULT_VOICE_ID;
   const base = voiceSettings;
