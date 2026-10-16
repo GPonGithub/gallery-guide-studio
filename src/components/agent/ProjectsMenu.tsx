@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react';
 import {
   deleteProject,
+  exportAllProjects,
   exportProject,
-  importProject,
+  importAllProjects,
   listProjects,
   moveServerProjectsHere,
   saveOrder,
@@ -186,16 +187,40 @@ export function ProjectsMenu({
     );
   };
 
+  // "Export all scenes": one backup file of everything (archived scenes and music included).
+  const [exporting, setExporting] = useState(false);
+  const exportAll = async () => {
+    setExporting(true);
+    setError(null);
+    try {
+      const count = await exportAllProjects();
+      setNotice(`Exported all ${count} scene${count === 1 ? '' : 's'} into one file — keep it somewhere safe, or hand it in.`);
+    } catch {
+      setError('Export failed.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // "Import all scenes": brings a backup back (or a single scene's file).
   const importFile = async (file: File | undefined) => {
     if (!file) return;
     setError(null);
     try {
-      const project = await importProject(file, (existing) =>
-        window.confirm(`"${existing.name}" is already here. Replace it with the one in this file? (Cancel keeps both.)`),
+      const result = await importAllProjects(file, (alreadyHere) =>
+        window.confirm(
+          `${alreadyHere.length === 1 ? `"${alreadyHere[0].name}" is` : `${alreadyHere.length} of these scenes are`} already here. ` +
+            'Replace with the ones in this file? (Cancel keeps both — the copies are marked "imported".)',
+        ),
       );
       await refresh();
       setError(null);
-      setNotice(`Imported "${project.name}" — it's at the end of the list.`);
+      const parts = [
+        result.added && `${result.added} added`,
+        result.replaced && `${result.replaced} replaced`,
+        result.copied && `${result.copied} kept as copies`,
+      ].filter(Boolean);
+      setNotice(`Imported: ${parts.join(', ') || 'nothing new'}. New scenes are at the end of the list.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Import failed.');
     }
@@ -569,11 +594,19 @@ export function ProjectsMenu({
             New blank scene
           </button>
           <button
-            onClick={() => importRef.current?.click()}
+            onClick={() => void exportAll()}
+            disabled={exporting || !(projects?.length || archived.length)}
             className={`ml-auto ${buttonOutline}`}
-            title="Add a scene from a file made with Export"
+            title="Download every scene (archived ones and music included) as one backup file"
           >
-            Import scene file…
+            {exporting ? 'Exporting…' : 'Export all scenes'}
+          </button>
+          <button
+            onClick={() => importRef.current?.click()}
+            className={buttonOutline}
+            title="Bring back scenes from a file made with Export all scenes (a single scene's file works too)"
+          >
+            Import all scenes…
           </button>
           <input
             ref={importRef}
@@ -587,8 +620,8 @@ export function ProjectsMenu({
           />
         </div>
         <p className="font-body text-[11px] leading-snug text-muted-ink">
-          Scenes are saved in this browser, on this computer. Export a scene to keep a copy, hand it in, or move it to
-          another computer.
+          Scenes are saved in this browser, on this computer. Use Export all scenes now and then to keep a backup, hand
+          your work in, or move it to another computer — Import all scenes brings it back.
         </p>
       </div>
       {toDelete && (

@@ -131,37 +131,91 @@ export async function exportProject(project: AgentProject): Promise<void> {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// --- all scenes at once (a backup) ------------------------------------------
+
+const ALL_FORMAT = 'chatbot-designer-scenes';
+
+type AllScenesFile = {
+  format: typeof ALL_FORMAT;
+  version: 1;
+  exportedAt: string;
+  /** In list order; archived ones included (each keeps its `archived` flag). */
+  scenes: Omit<ProjectFile, 'format' | 'version'>[];
+};
+
 /**
- * Adds a project from an exported file. If a project with the same id is
- * already here it's replaced only when `replace` says so; otherwise the
- * import comes in as a copy.
+ * Downloads every scene — archived ones too, each with its music, its place
+ * in the list and its link to a Google Sheet — as one backup file.
  */
-export async function importProject(file: File, replace: (existing: AgentProject) => boolean): Promise<AgentProject> {
-  let data: ProjectFile;
+export async function exportAllProjects(): Promise<number> {
+  const projects = await listProjects();
+  const scenes: AllScenesFile['scenes'] = [];
+  for (const project of projects) {
+    const music = project.music ? await getProjectMusic(project.id) : null;
+    scenes.push({ project, ...(music && { music: { type: music.type || 'audio/mpeg', base64: await blobToBase64(music) } }) });
+  }
+  const file: AllScenesFile = { format: ALL_FORMAT, version: 1, exportedAt: new Date().toISOString(), scenes };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(file)], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `Chatbot Designer scenes ${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return scenes.length;
+}
+
+export type AllScenesImport = { added: number; replaced: number; copied: number };
+
+/**
+ * Brings in a backup made by "Export all scenes" (or a single scene's file).
+ * Scenes already here are asked about once, for the whole file: replace them
+ * (`replace` returns true) or keep both — the copies are marked "(imported)"
+ * and lose their sheet link, so a sheet import can't mix them up with the
+ * originals. New scenes keep the backup's order, after the ones already here.
+ */
+export async function importAllProjects(
+  file: File,
+  replace: (alreadyHere: AgentProject[]) => boolean,
+): Promise<AllScenesImport> {
+  let data: AllScenesFile | ProjectFile;
   try {
-    data = JSON.parse(await file.text()) as ProjectFile;
+    data = JSON.parse(await file.text()) as AllScenesFile | ProjectFile;
   } catch {
-    throw new Error(`“${file.name}” isn’t a scene file.`);
+    throw new Error(`“${file.name}” isn’t a scenes file.`);
   }
-  if (data?.format !== FORMAT || !data.project?.flow) throw new Error(`“${file.name}” isn’t a Chatbot Designer scene file.`);
-  const existing = await getProject(data.project.id);
-  const replacing = existing !== null && replace(existing);
-  const project: AgentProject = replacing
-    ? { ...data.project, order: existing.order }
-    : {
-        ...data.project,
-        id: existing ? crypto.randomUUID() : data.project.id,
-        name: existing ? `${data.project.name} (imported)` : data.project.name,
-        // An imported scene goes at the end of the list.
-        order: await nextOrder(),
-        updatedAt: existing ? Date.now() : data.project.updatedAt,
-      };
-  if (data.music && project.music) {
-    const bytes = Uint8Array.from(atob(data.music.base64), (c) => c.charCodeAt(0));
-    await putProjectMusic(project.id, new Blob([bytes], { type: data.music.type }));
+  const scenes =
+    data?.format === ALL_FORMAT && Array.isArray(data.scenes)
+      ? data.scenes
+      : data?.format === FORMAT && data.project?.flow
+        ? [{ project: data.project, music: data.music }]
+        : null;
+  if (!scenes || scenes.some((s) => !s?.project?.flow)) throw new Error(`“${file.name}” isn’t a Chatbot Designer scenes file.`);
+
+  const here = new Map((await listProjects()).map((p) => [p.id, p]));
+  const clashes = scenes.flatMap((s) => (here.has(s.project.id) ? [here.get(s.project.id)!] : []));
+  const replacing = clashes.length > 0 && replace(clashes);
+  let order = await nextOrder();
+  const result: AllScenesImport = { added: 0, replaced: 0, copied: 0 };
+  for (const { project: incoming, music } of scenes) {
+    const existing = here.get(incoming.id);
+    let project: AgentProject;
+    if (existing && replacing) {
+      project = { ...incoming, order: existing.order };
+      result.replaced++;
+    } else if (existing) {
+      project = { ...incoming, id: crypto.randomUUID(), name: `${incoming.name} (imported)`, sheet: undefined, order: order++, updatedAt: Date.now() };
+      result.copied++;
+    } else {
+      project = { ...incoming, order: order++ };
+      result.added++;
+    }
+    if (music && project.music) {
+      const bytes = Uint8Array.from(atob(music.base64), (c) => c.charCodeAt(0));
+      await putProjectMusic(project.id, new Blob([bytes], { type: music.type }));
+    }
+    await putProject(project);
   }
-  await putProject(project);
-  return project;
+  return result;
 }
 
 // --- one-time move from the old server-side store -----------------------
