@@ -1792,7 +1792,8 @@ export default function AgentStudioPage() {
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+          {/* Very light grey behind the dialogue, so the white chatbot boxes stand out. */}
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted p-4">
             {messages.length === 0 && !busy && (
               <div className="flex flex-col items-center gap-3 py-10 text-center">
                 <p className="font-body text-sm text-muted-ink">
@@ -1820,7 +1821,7 @@ export default function AgentStudioPage() {
                 <div className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <div
                     className={`max-w-[80%] px-3 py-2 font-body text-sm ${
-                      m.role === 'user' ? 'bg-ink text-paper' : 'border-2 border-ink bg-paper text-ink'
+                      m.role === 'user' ? 'bg-muted-ink text-paper' : 'border-2 border-ink bg-paper text-ink'
                     }`}
                   >
                     {m.role === 'assistant' ? withoutCues(m.text) : m.text}
