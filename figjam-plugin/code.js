@@ -605,13 +605,17 @@ figma.ui.onmessage = async (msg) => {
     const initials = (await figma.clientStorage.getAsync('designerInitials')) || '';
     const apiKey = (await figma.clientStorage.getAsync('anthropicApiKey')) || '';
     const listenForJobs = (await figma.clientStorage.getAsync('listenForJobs')) !== false;
-    figma.ui.postMessage({ type: 'settings', initials, apiKey, listenForJobs });
+    const appOrigin = (await figma.clientStorage.getAsync('appOrigin')) || '';
+    const connectionCode = (await figma.clientStorage.getAsync('connectionCode')) || '';
+    figma.ui.postMessage({ type: 'settings', initials, apiKey, listenForJobs, appOrigin, connectionCode });
   } else if (msg.type === 'save-settings') {
     await figma.clientStorage.setAsync('designerInitials', msg.initials || '');
     await figma.clientStorage.setAsync('anthropicApiKey', msg.apiKey || '');
     if (typeof msg.listenForJobs === 'boolean') {
       await figma.clientStorage.setAsync('listenForJobs', msg.listenForJobs);
     }
+    if (typeof msg.appOrigin === 'string') await figma.clientStorage.setAsync('appOrigin', msg.appOrigin);
+    if (typeof msg.connectionCode === 'string') await figma.clientStorage.setAsync('connectionCode', msg.connectionCode);
   } else if (msg.type === 'run') {
     try {
       await run(msg.initials, msg.apiKey);

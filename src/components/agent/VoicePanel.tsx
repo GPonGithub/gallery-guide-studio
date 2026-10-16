@@ -134,6 +134,8 @@ export function VoicePanel({
   useEffect(() => {
     if (!open) return;
     const onPointer = (e: MouseEvent) => {
+      // Clicks in the onboarding tour's card don't count as outside (it may be explaining this panel).
+      if ((e.target as Element).closest?.('[data-tour-ui]')) return;
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
@@ -196,6 +198,7 @@ export function VoicePanel({
         onClick={() => setOpen((o) => !o)}
         className={`inline-flex h-10 items-center gap-2 ${buttonOutline}`}
         aria-expanded={open}
+        data-tour="voice-button"
         title="Voices and voice settings"
       >
         Voice: {active?.name.trim() || `Voice ${activeVoice + 1}`}
@@ -219,7 +222,7 @@ export function VoicePanel({
               Spoken replies
               <span className="normal-case tracking-normal text-muted-ink">— the agent says its replies out loud</span>
             </label>
-            <label className="flex flex-col gap-1">
+            <label className="flex flex-col gap-1" data-tour="voice-pause">
               <span className="flex items-baseline justify-between font-label text-[11px] uppercase tracking-widest text-ink">
                 Pause before sending
                 <span className="tabular-nums normal-case">{pauseSeconds.toFixed(1)}s</span>
@@ -239,7 +242,7 @@ export function VoicePanel({
             </label>
           </section>
 
-          <section className="flex flex-col gap-2">
+          <section className="flex flex-col gap-2" data-tour="voice-list">
             <p className={fieldLabel}>
               Voices ({voices.length} of {MAX_VOICES}) · the agent uses the selected one
             </p>
@@ -267,6 +270,7 @@ export function VoicePanel({
                     <button
                       onClick={() => toggleFold(i)}
                       aria-expanded={open}
+                      data-tour={selected ? 'voice-fold' : undefined}
                       title={open ? 'Fold away this voice’s details' : 'Show this voice’s details'}
                       className="flex min-w-0 flex-1 items-center gap-1.5 text-left font-body text-sm text-ink hover:underline"
                     >
@@ -331,6 +335,7 @@ export function VoicePanel({
                         value={voice.voiceId}
                         onChange={(e) => updateVoice(i, { voiceId: e.target.value.trim() })}
                         placeholder={`Voice ID — empty = ${DEFAULT_VOICE_NAME}`}
+                        data-tour={selected ? 'voice-id' : undefined}
                         className={`w-full font-label text-[11px] ${fieldInput}`}
                       />
                       {voice.voiceId && accountVoices.length > 0 && (
@@ -340,7 +345,7 @@ export function VoicePanel({
                             : 'Not one of your ElevenLabs voices (a Voice Library voice may need adding to My Voices)'}
                         </span>
                       )}
-                      <div className="flex flex-wrap gap-1.5">
+                      <div className="flex flex-wrap gap-1.5" data-tour={selected ? 'voice-tests' : undefined}>
                         <button
                           onClick={() => {
                             chooseMode(i, false);
@@ -368,6 +373,7 @@ export function VoicePanel({
                         <button
                           onClick={() => saveSettings(i)}
                           className={smallButton}
+                          data-tour={selected ? 'voice-save' : undefined}
                           title={
                             selected
                               ? 'Keep the sliders, and regular or expressive, as they are now for this voice'
@@ -423,7 +429,7 @@ export function VoicePanel({
             </button>
           </section>
 
-          <section className="flex flex-col gap-3 border-t-2 border-ink pt-3">
+          <section className="flex flex-col gap-3 border-t-2 border-ink pt-3" data-tour="voice-sliders">
             <div className="flex items-center justify-between">
               <p className={fieldLabel}>Settings · {active?.name.trim() || `Voice ${activeVoice + 1}`}</p>
               <button

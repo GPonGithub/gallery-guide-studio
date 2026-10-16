@@ -1,3 +1,4 @@
+import { isHosted } from '@/lib/serverKeys';
 import { randomUUID } from 'node:crypto';
 import { generateText, Output, streamText, type ModelMessage, type SystemModelMessage } from 'ai';
 import { z } from 'zod';
@@ -191,6 +192,16 @@ async function analyse(
 
 // --- 2. APPLY ---------------------------------------------------------------
 
+/**
+ * Where cues go — never anywhere from a hosted copy: its server can't reach
+ * TouchDesigner on a student's computer anyway, and on a public site it
+ * mustn't send requests to whatever address someone types in. Cues are
+ * still shown in the app, as with no address set.
+ */
+function tdAddress(flow: AgentFlow): string {
+  return isHosted ? '' : flow.tdUrl.trim();
+}
+
 /** POSTs one cue's message to TouchDesigner; never throws. */
 async function postCue(url: string, payload: CuePayload): Promise<CueStatus> {
   try {
@@ -225,7 +236,7 @@ class Turn {
   }
 
   fireCue(cue: Cue, trigger: string) {
-    const url = this.flow.tdUrl.trim();
+    const url = tdAddress(this.flow);
     // The message as things stand at this moment (stage and information so far).
     const payload: CuePayload = {
       cue: cue.name,
@@ -686,7 +697,7 @@ export async function runMoments({
  * when it fired.
  */
 export async function sendHeldCues(flow: AgentFlow, payloads: CuePayload[]): Promise<CueStatus[]> {
-  const url = flow.tdUrl.trim();
+  const url = tdAddress(flow);
   if (!url) return payloads.map(() => 'logged');
   return Promise.all(payloads.map((payload) => postCue(url, payload)));
 }

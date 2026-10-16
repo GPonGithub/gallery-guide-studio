@@ -10,6 +10,9 @@ import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
 import { DropdownArrow } from '@/components/agent/DropdownArrow';
 import { PatientMenu } from '@/components/agent/PatientMenu';
+import { OnboardingTour } from '@/components/agent/OnboardingTour';
+import { useHosting } from '@/lib/agent/hosting';
+import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { CueMarker, CueMonitor, type SentCue } from '@/components/agent/CueMonitor';
@@ -272,6 +275,7 @@ export default function AgentStudioPage() {
   // Every TouchDesigner cue of this conversation, as it went out (see CueMonitor).
   const [cueLog, setCueLog] = useState<SentCue[]>([]);
   const conversations = useRef<ConversationStore>({ threads: {}, lastStart: {} });
+  const hosting = useHosting();
   // Row 7 of the sheet, per scene: how the last write of its saved information went.
   const [sheetSync, setSheetSync] = useState<Record<string, SheetSync>>({});
   const sheetWrites = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -1426,7 +1430,7 @@ export default function AgentStudioPage() {
   const toggleCard = (id: string) => setSelected((current) => (current === id ? 'design' : id));
   const stageArea = (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-1" role="group" aria-label="This scene's stages">
+      <div className="flex flex-wrap items-center gap-1" role="group" aria-label="This scene's stages" data-tour="stages">
         <button onClick={() => toggleCard('master')} aria-pressed={selected === 'master'} className={stageChip(selected === 'master')}>
           Master
         </button>
@@ -1480,20 +1484,30 @@ export default function AgentStudioPage() {
   return (
     <main className="flex min-h-screen flex-col bg-paper lg:h-screen">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-ink px-5 py-3">
-        <div className="min-w-0">
-          <h1 className="font-display text-2xl leading-none tracking-tight text-ink">Chatbot Designer</h1>
-          <p className="mt-1 truncate font-label text-[10px] uppercase tracking-widest text-muted-ink">
-            <span className="text-ink">{saved.projectName}</span>
-            {dirty ? ' · unsaved changes' : ' · saved'}
-            {saved.boardUrl && (
-              <>
-                {' · '}
-                <a href={saved.boardUrl} target="_blank" rel="noopener noreferrer" className="text-ink underline underline-offset-2">
-                  FigJam board ↗
-                </a>
-              </>
+        <div className="flex min-w-0 items-center gap-3">
+          {/* The guided tour of the interface (see onboardingSteps.tsx). */}
+          <OnboardingTour steps={ONBOARDING_STEPS}>
+            {(start) => (
+              <button onClick={start} className={`shrink-0 ${buttonOutline}`} title="A guided tour of Chatbot Designer">
+                Onboard Me
+              </button>
             )}
-          </p>
+          </OnboardingTour>
+          <div className="min-w-0">
+            <h1 className="font-display text-2xl leading-none tracking-tight text-ink">Chatbot Designer</h1>
+            <p className="mt-1 truncate font-label text-[10px] uppercase tracking-widest text-muted-ink">
+              <span className="text-ink">{saved.projectName}</span>
+              {dirty ? ' · unsaved changes' : ' · saved'}
+              {saved.boardUrl && (
+                <>
+                  {' · '}
+                  <a href={saved.boardUrl} target="_blank" rel="noopener noreferrer" className="text-ink underline underline-offset-2">
+                    FigJam board ↗
+                  </a>
+                </>
+              )}
+            </p>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setProjectsOpen(true)} className={buttonOutline}>
@@ -1508,14 +1522,14 @@ export default function AgentStudioPage() {
           >
             {dirty ? 'Not Saved' : 'Saved'}
           </button>
-          <button onClick={() => setKeysOpen((o) => !o)} className={buttonOutline}>
+          <button onClick={() => setKeysOpen((o) => !o)} aria-expanded={keysOpen} data-tour="keys-button" className={buttonOutline}>
             Keys
           </button>
         </div>
       </header>
 
       {keysOpen && (
-        <div className="flex flex-wrap items-end gap-3 border-b-2 border-ink bg-muted px-5 py-3">
+        <div className="flex flex-wrap items-end gap-3 border-b-2 border-ink bg-muted px-5 py-3" data-tour="keys-panel">
           <label className={`flex min-w-[260px] flex-1 flex-col gap-1 ${fieldLabel}`}>
             Anthropic API key
             <input
@@ -1848,6 +1862,7 @@ export default function AgentStudioPage() {
             latest={cueLog.at(-1) ?? null}
             count={cueLog.length}
             tdUrl={flow.tdUrl}
+            hosted={hosting?.hosted ?? false}
             timing={flow.tdTiming ?? 'spoken'}
             onTimingChange={(tdTiming) => setFlow({ ...flow, tdTiming })}
           />

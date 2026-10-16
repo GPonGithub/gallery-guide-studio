@@ -13,6 +13,7 @@ import { buttonBusy, buttonDone, buttonOutline, buttonPrimary, buttonUnsaved, fi
 import { BoardPicker } from './BoardPicker';
 import { CollapsiblePanel } from './CollapsiblePanel';
 import { SheetSaving } from './SheetSaving';
+import { connectionCode, useHosting } from '@/lib/agent/hosting';
 import { Spinner } from './Spinner';
 
 // Sheet → scenes → brief → flow (Claude) → FigJam board (drawn by the
@@ -36,9 +37,11 @@ async function runPluginJob(kind: 'draw-agent-flow' | 'read-agent-flow', payload
   const created = await fetch('/api/figma-jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind, payload }),
+    // The connection code keeps a class's jobs apart on a hosted copy (ignored when running locally).
+    body: JSON.stringify({ kind, payload, code: connectionCode() }),
   });
-  const { id } = (await created.json()) as { id: string };
+  const { id, error } = (await created.json()) as { id?: string; error?: string };
+  if (!id) throw new Error(error ?? 'The job couldn’t be sent to the plugin.');
   const deadline = Date.now() + PLUGIN_TIMEOUT_MS;
   let picked = false;
   let shown = 0;
@@ -296,13 +299,18 @@ export function DesignPanel({
 
   // null = not checked yet; the plugin polls every ~4s while open.
   const [pluginSeenAgo, setPluginSeenAgo] = useState<number | null | undefined>(undefined);
+  const [pluginProblem, setPluginProblem] = useState<string | null>(null);
+  const hosting = useHosting();
   useEffect(() => {
     let cancelled = false;
     const check = async () => {
       try {
-        const res = await fetch('/api/figma-jobs?status=1', { cache: 'no-store' });
-        const data = (await res.json()) as { pluginLastSeenMsAgo: number | null };
-        if (!cancelled) setPluginSeenAgo(data.pluginLastSeenMsAgo);
+        const res = await fetch(`/api/figma-jobs?status=1&code=${encodeURIComponent(connectionCode())}`, { cache: 'no-store' });
+        const data = (await res.json()) as { pluginLastSeenMsAgo: number | null; problem?: string };
+        if (!cancelled) {
+          setPluginSeenAgo(data.pluginLastSeenMsAgo);
+          setPluginProblem(data.problem ?? null);
+        }
       } catch {
         // Next tick will try again.
       }
@@ -315,6 +323,12 @@ export function DesignPanel({
     };
   }, []);
   const pluginListening = typeof pluginSeenAgo === 'number' && pluginSeenAgo < 12_000;
+  // Shown (and typed into the plugin) only on a hosted copy; read after mounting, as it lives in this browser.
+  const [connectionCodeShown, setConnectionCodeShown] = useState('');
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
+    setConnectionCodeShown(connectionCode());
+  }, []);
 
   const say = (line: string) => setActivity((a) => [...a, line]);
   const hasFlow = flow.stages.length > 0;
@@ -513,8 +527,8 @@ export function DesignPanel({
 
   return (
     <div className="flex flex-col">
-      <CollapsiblePanel title="1 · Generate scenes from Google Sheet">
-        <label className={`flex flex-col gap-1 ${fieldLabel}`}>
+      <CollapsiblePanel title="1 · Generate scenes from Google Sheet" tourId="design-1">
+        <label className={`flex flex-col gap-1 ${fieldLabel}`} data-tour="sheet-url">
           Google Sheet URL
           <input
             value={sheetUrl}
@@ -530,6 +544,7 @@ export function DesignPanel({
           aria-busy={busy === 'sheet'}
           aria-disabled={busy === 'sheet' || undefined}
           className={`self-start ${busy === 'sheet' ? buttonBusy : buttonPrimary}`}
+          data-tour="generate-scenes"
           title="Create a scene for every filled-in column — or update the scenes already made from this sheet"
         >
           {busy === 'sheet' && <Spinner />}
@@ -561,9 +576,9 @@ export function DesignPanel({
         )}
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="2 · Describe the conversation">
+      <CollapsiblePanel title="2 · Describe the conversation" tourId="design-2">
         {sheetScenes.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Scenes from the sheet">
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Scenes from the sheet" data-tour="scene-buttons">
             {sheetScenes.map((s) => {
               const selected = s.id === currentSceneId;
               return (
@@ -604,7 +619,7 @@ export function DesignPanel({
           />
           Draw it on my FigJam board afterwards
         </label>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2" data-tour="generate-conversation">
           {/* Red until the flow comes from the description as it reads now; green once it does. */}
           <button
             onClick={() => {
@@ -637,7 +652,7 @@ export function DesignPanel({
         </div>
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="3 · Information this scene can use">
+      <CollapsiblePanel title="3 · Information this scene can use" tourId="design-3">
         <p className="font-body text-xs italic text-muted-ink">
           Facts the bot can rely on but never invent: names, times, prices, options (row 4 of the sheet, after the
           &ldquo;All scenes&rdquo; column&rsquo;s). It answers questions and offers choices from this, and says when
@@ -646,6 +661,7 @@ export function DesignPanel({
         <textarea
           value={flow.knowledge ?? ''}
           onChange={(e) => onKnowledgeChange(e.target.value)}
+          data-tour="can-use"
           placeholder={KNOWLEDGE_PLACEHOLDER}
           className={`min-h-[200px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
         />
@@ -672,7 +688,7 @@ export function DesignPanel({
         />
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="4 · Information saved from the scene">
+      <CollapsiblePanel title="4 · Information saved from the scene" tourId="design-4">
         <p className="font-body text-xs italic text-muted-ink">
           What to pick up during this scene&rsquo;s conversation and keep for the patient&rsquo;s later scenes (row 5 of
           the sheet). It&rsquo;s saved to the patient selected above the chat; scenes numbered after this one can use it.
@@ -680,20 +696,23 @@ export function DesignPanel({
         <textarea
           value={flow.saveInfo ?? ''}
           onChange={(e) => onSaveInfoChange(e.target.value)}
+          data-tour="save-info"
           placeholder="e.g. Their symptoms and how long they've had them. Whether they prefer a morning or afternoon appointment."
           className={`min-h-[120px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
         />
-        <p className={`mt-1 ${fieldLabel}`}>List of Saved Information from This Scene · {memory.savedHere.length}</p>
-        <SavedFromScene
-          items={memory.savedHere}
-          patientName={memory.patientName}
-          sync={sheetSync}
-          sheetColumn={sceneSheet?.column ?? null}
-          connected={isScriptUrl(sheetScriptUrl)}
-        />
+        <div className="flex flex-col gap-2" data-tour="saved-list">
+          <p className={`mt-1 ${fieldLabel}`}>List of Saved Information from This Scene · {memory.savedHere.length}</p>
+          <SavedFromScene
+            items={memory.savedHere}
+            patientName={memory.patientName}
+            sync={sheetSync}
+            sheetColumn={sceneSheet?.column ?? null}
+            connected={isScriptUrl(sheetScriptUrl)}
+          />
+        </div>
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="5 · Information this scene cannot use">
+      <CollapsiblePanel title="5 · Information this scene cannot use" tourId="design-5">
         <p className="font-body text-xs italic text-muted-ink">
           What the bot must not have in this scene (row 6 of the sheet). Anything the patient&rsquo;s earlier scenes
           saved that falls under this is left out of what the bot is given — it never sees it. It&rsquo;s also told not
@@ -702,6 +721,7 @@ export function DesignPanel({
         <textarea
           value={flow.cannotUse ?? ''}
           onChange={(e) => onCannotUseChange(e.target.value)}
+          data-tour="cannot-use"
           placeholder="e.g. Anything about the patient's insurance or payment details."
           className={`min-h-[120px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
         />
@@ -709,9 +729,9 @@ export function DesignPanel({
         <MemoryList items={memory.blocked} empty="Nothing from earlier scenes is being kept out." />
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="6 · FigJam board">
+      <CollapsiblePanel title="6 · FigJam board" tourId="design-6">
         <BoardPicker boardUrl={boardUrl} onBoardUrlChange={onBoardUrlChange} />
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2" data-tour="figjam-actions">
           <button
             onClick={() => window.open(boardUrl, '_blank', 'noopener')}
             disabled={!boardLooksValid}
@@ -754,22 +774,47 @@ export function DesignPanel({
               ? 'FigJam plugin: listening ✓'
               : 'FigJam plugin: not running — drawing and importing need it (see below)'}
         </p>
+        {pluginProblem && <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">{pluginProblem}</p>}
         <details className="font-body text-xs text-ink" open={pluginSeenAgo !== undefined && !pluginListening}>
           <summary className="cursor-pointer font-label text-[10px] uppercase tracking-wide text-muted-ink">
             First time? Set up the plugin
           </summary>
-          <ol className="mt-2 list-decimal space-y-1 pl-5 leading-snug">
-            <li>Open the board in the <b>Figma desktop app</b> (plugins in development don’t run in the browser).</li>
-            <li>
-              Only once: <b>Plugins → Development → Import plugin from manifest…</b> and choose{' '}
-              <code>figjam-plugin/manifest.json</code> in this project.
-            </li>
-            <li>
-              Run <b>Plugins → Development → Gallery Guide Studio — Playbook Builder</b> and leave its panel open with{' '}
-              <b>Listen for requests</b> ticked.
-            </li>
-            <li>The app must be running at localhost:3000 on the same computer.</li>
-          </ol>
+          {hosting?.hosted ? (
+            // A hosted copy: the plugin comes as a download, already pointed at this site.
+            <ol className="mt-2 list-decimal space-y-1 pl-5 leading-snug">
+              <li>
+                <a href="/api/figjam-plugin" download className="underline underline-offset-2">
+                  Download the FigJam plugin
+                </a>{' '}
+                and unzip it.
+              </li>
+              <li>Open the board in the <b>Figma desktop app</b> (plugins in development don’t run in the browser).</li>
+              <li>
+                Only once: <b>Plugins → Development → Import plugin from manifest…</b> and choose <code>manifest.json</code>{' '}
+                in the unzipped folder.
+              </li>
+              <li>
+                Run <b>Plugins → Development → Chatbot Designer — FigJam</b>. In its panel, type this connection
+                code: <b className="font-label tracking-widest">{connectionCodeShown}</b>
+              </li>
+              <li>
+                Leave the panel open with <b>Listen for requests</b> ticked.
+              </li>
+            </ol>
+          ) : (
+            <ol className="mt-2 list-decimal space-y-1 pl-5 leading-snug">
+              <li>Open the board in the <b>Figma desktop app</b> (plugins in development don’t run in the browser).</li>
+              <li>
+                Only once: <b>Plugins → Development → Import plugin from manifest…</b> and choose{' '}
+                <code>figjam-plugin/manifest.json</code> in this project.
+              </li>
+              <li>
+                Run <b>Plugins → Development → Gallery Guide Studio — Playbook Builder</b> and leave its panel open with{' '}
+                <b>Listen for requests</b> ticked.
+              </li>
+              <li>The app must be running at localhost:3000 on the same computer.</li>
+            </ol>
+          )}
         </details>
       </CollapsiblePanel>
 

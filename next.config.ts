@@ -16,6 +16,15 @@ const nextConfig: NextConfig = {
   // Next.js's own "N" development badge (never shown on a hosted copy).
   // Bottom-left keeps it clear of the studio's title and header buttons.
   devIndicators: { position: 'bottom-left' },
+  // The plugin download (/api/figjam-plugin) reads these files at request time.
+  outputFileTracingIncludes: {
+    '/api/figjam-plugin': ['./figjam-plugin/**/*'],
+  },
+  // On a hosted copy the front page is Chatbot Designer itself. (Running
+  // locally, / is still the older playbook studio.)
+  async redirects() {
+    return process.env.VERCEL ? [{ source: '/', destination: '/agent', permanent: false }] : [];
+  },
 };
 
 export default nextConfig;

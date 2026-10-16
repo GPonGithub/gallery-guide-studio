@@ -12,16 +12,19 @@ import { fieldLabel } from '@/lib/styles';
 export function CollapsiblePanel({
   title,
   defaultOpen = false,
+  tourId,
   children,
 }: {
   title: string;
   defaultOpen?: boolean;
+  /** Marks it for the onboarding tour (see OnboardingTour). */
+  tourId?: string;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const bodyId = useId();
   return (
-    <section className="border-b border-hair">
+    <section className="border-b border-hair" data-tour={tourId}>
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}

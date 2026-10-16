@@ -173,7 +173,7 @@ function BoardChooser({
   const selected = valid && pending === boardUrl;
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2" data-tour="choose-board">
       <label className={`flex flex-col gap-1 ${fieldLabel}`}>
         Choose Board
         <span className="relative flex items-center">

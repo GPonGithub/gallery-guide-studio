@@ -59,6 +59,7 @@ export function SheetSaving({
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
+        data-tour="sheet-saving"
         className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-muted/40"
       >
         <span className={`flex items-center gap-2 ${fieldLabel}`}>
@@ -97,7 +98,7 @@ export function SheetSaving({
               {test.message}
             </p>
           )}
-          <details className="font-body text-xs text-ink">
+          <details className="font-body text-xs text-ink" data-tour="sheet-setup">
             <summary className="cursor-pointer font-label text-[10px] uppercase tracking-wide text-muted-ink">
               Set it up (once per sheet)
             </summary>

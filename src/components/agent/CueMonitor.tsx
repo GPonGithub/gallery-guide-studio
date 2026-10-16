@@ -49,7 +49,10 @@ export function CueMonitor({
   tdUrl,
   timing,
   onTimingChange,
+  hosted = false,
 }: {
+  /** A hosted copy never sends cues (see tdAddress in runtime.ts). */
+  hosted?: boolean;
   latest: SentCue | null;
   count: number;
   tdUrl: string;
@@ -63,7 +66,11 @@ export function CueMonitor({
         <span className="bg-ink px-1 text-paper">TD</span>
         <span className="text-ink">TouchDesigner</span>
         <span className="normal-case tracking-normal">
-          {address ? `→ ${address}` : 'no address set (Master card) — cues are shown here but not sent'}
+          {hosted
+            ? 'shown here only — the hosted app can’t reach TouchDesigner; run Chatbot Designer on the TouchDesigner computer to send cues'
+            : address
+              ? `→ ${address}`
+              : 'no address set (Master card) — cues are shown here but not sent'}
         </span>
         <span className="ml-auto flex items-center gap-1">
           {count > 0 && <span className="mr-2">{count} this conversation</span>}

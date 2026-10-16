@@ -104,6 +104,11 @@
     <input id="listenToggle" type="checkbox" checked />
     <label for="listenToggle">Listen for requests from the app</label>
   </div>
+  <label for="appOrigin">App address</label>
+  <input id="appOrigin" type="text" placeholder="http://localhost:3000" autocomplete="off" />
+  <label for="connCode">Connection code</label>
+  <input id="connCode" type="text" placeholder="e.g. K7QM-2XRB" autocomplete="off" />
+  <div class="hint">For the hosted app: the code shown in Chatbot Designer (section 6). Running the app on this computer? Leave the address as http://localhost:3000 and the code empty.</div>
   <div id="jobStatus"></div>
 
   <div id="log"></div>
@@ -116,11 +121,14 @@
   const listenToggleEl = document.getElementById('listenToggle');
   const jobStatusEl = document.getElementById('jobStatus');
 
-  // Fixed dev-server default — the app's manifest network-access entry is a
-  // static allowlist, so this can't be a student-entered setting; running
-  // the app's `npm run dev` on a different port breaks only this remote
-  // trigger, not the button above.
-  const APP_ORIGIN = 'http://localhost:3000';
+  const appOriginEl = document.getElementById('appOrigin');
+  const connCodeEl = document.getElementById('connCode');
+  // Where the app is: this computer's dev server, or a hosted copy (whose
+  // plugin download has its own address written in here). The address must
+  // also be allowed in manifest.json's networkAccess.
+  const DEFAULT_APP_ORIGIN = 'http://localhost:3000';
+  const appOrigin = () => (appOriginEl.value.trim() || DEFAULT_APP_ORIGIN).replace(/\/+$/, '');
+  const codeParam = () => encodeURIComponent(connCodeEl.value.trim());
   let activeJobId = null;
   let jobHadError = false;
   // Board contents read for a 'read-agent-flow' job, sent back with 'done'.
@@ -143,11 +151,15 @@
           initials: initialsEl.value.trim(),
           apiKey: apiKeyEl.value.trim(),
           listenForJobs: listenToggleEl.checked,
+          appOrigin: appOriginEl.value.trim(),
+          connectionCode: connCodeEl.value.trim(),
         },
       },
       '*',
     );
   }
+  appOriginEl.addEventListener('change', saveSettings);
+  connCodeEl.addEventListener('change', saveSettings);
   initialsEl.addEventListener('change', saveSettings);
   apiKeyEl.addEventListener('change', saveSettings);
   listenToggleEl.addEventListener('change', () => {
@@ -160,7 +172,7 @@
   // shouldn't interrupt the actual board generation.
   async function reportJob(id, patch) {
     try {
-      await fetch(`${APP_ORIGIN}/api/figma-jobs/${id}`, {
+      await fetch(`${appOrigin()}/api/figma-jobs/${id}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(patch),
@@ -184,9 +196,11 @@
   async function pollForJob() {
     if (!listenToggleEl.checked || activeJobId || runBtn.disabled) return;
     try {
-      const res = await fetch(`${APP_ORIGIN}/api/figma-jobs?claim=1`);
-      if (!res.ok) return;
-      const data = await res.json();
+      const res = await fetch(`${appOrigin()}/api/figma-jobs?claim=1&code=${codeParam()}`);
+      const data = await res.json().catch(() => ({}));
+      // e.g. a missing or mistyped connection code on the hosted app.
+      if (!res.ok) return setJobStatus(data.error || `The app answered ${res.status}.`);
+      setJobStatus('Waiting for a job…');
       if (!data.job) return;
       activeJobId = data.job.id;
       jobHadError = false;
@@ -312,6 +326,8 @@
       initialsEl.value = msg.initials || '';
       apiKeyEl.value = msg.apiKey || '';
       listenToggleEl.checked = msg.listenForJobs !== false;
+      appOriginEl.value = msg.appOrigin || DEFAULT_APP_ORIGIN;
+      connCodeEl.value = msg.connectionCode || '';
       setJobStatus(listenToggleEl.checked ? 'Waiting for a job…' : '');
     } else if (msg.type === 'log') {
       appendLog(msg.message);

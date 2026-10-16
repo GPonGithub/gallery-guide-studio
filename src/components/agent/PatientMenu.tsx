@@ -35,6 +35,8 @@ export function PatientMenu({
   useEffect(() => {
     if (!open || confirm) return;
     const onPointer = (e: MouseEvent) => {
+      // Clicks in the onboarding tour's card don't count as outside (it may be explaining this panel).
+      if ((e.target as Element).closest?.('[data-tour-ui]')) return;
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);

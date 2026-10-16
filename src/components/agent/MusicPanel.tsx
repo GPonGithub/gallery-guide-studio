@@ -55,6 +55,8 @@ export function MusicPanel({
   useEffect(() => {
     if (!open) return;
     const onPointer = (e: MouseEvent) => {
+      // Clicks in the onboarding tour's card don't count as outside (it may be explaining this panel).
+      if ((e.target as Element).closest?.('[data-tour-ui]')) return;
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
@@ -80,6 +82,7 @@ export function MusicPanel({
         onClick={() => setOpen((o) => !o)}
         className={`inline-flex h-10 items-center gap-2 ${buttonOutline}`}
         aria-expanded={open}
+        data-tour="music-button"
         title="Background music"
       >
         ♫ Music{playing ? ' ▶' : ''}
@@ -90,6 +93,7 @@ export function MusicPanel({
           <section className="flex flex-col gap-2">
             <p className={fieldLabel}>Background music</p>
             <button
+              data-tour="music-drop"
               onClick={() => pickerRef.current?.click()}
               onDragOver={(e) => {
                 e.preventDefault();

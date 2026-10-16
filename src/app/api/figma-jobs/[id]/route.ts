@@ -13,7 +13,7 @@ export function OPTIONS() {
 // Polled by the app (same-origin) to track progress after queuing a job.
 export async function GET(_req: Request, ctx: RouteContext<'/api/figma-jobs/[id]'>) {
   const { id } = await ctx.params;
-  const job = getJob(id);
+  const job = await getJob(id);
   if (!job) return Response.json({ error: 'Job not found' }, { status: 404, headers: CORS_HEADERS });
   return Response.json({ job }, { headers: CORS_HEADERS });
 }
@@ -22,7 +22,7 @@ export async function GET(_req: Request, ctx: RouteContext<'/api/figma-jobs/[id]
 export async function POST(req: Request, ctx: RouteContext<'/api/figma-jobs/[id]'>) {
   const { id } = await ctx.params;
   const { status, message, result } = (await req.json()) as { status?: FigmaJobStatus; message?: string; result?: unknown };
-  const job = updateJob(id, { status, message, result });
+  const job = await updateJob(id, { status, message, result });
   if (!job) return Response.json({ error: 'Job not found' }, { status: 404, headers: CORS_HEADERS });
   return Response.json({ job }, { headers: CORS_HEADERS });
 }
