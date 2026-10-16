@@ -58,14 +58,16 @@ async function ensureSecond(h: TourHelpers, page: SceneDemoPage) {
   const fresh = await h.find('[data-tour="scene-new"]');
   h.show(fresh);
   await h.click(fresh);
-  // New scenes start at the top; the ↓ key on ⋮⋮ moves this one under the first, before saving.
-  await nameAndSave(h, SECOND, async () => {
-    const draft = await h.find('[data-scene-draft]');
-    const handle = handleOf(draft);
-    if (!handle) return;
-    h.show(draft);
-    await h.press(handle, 'ArrowDown');
-  });
+  await nameAndSave(h, SECOND);
+  // New scenes start at the top: drag this one down, under the first (the next stage drags it back up).
+  const second = row(SECOND);
+  const first = row(FIRST);
+  const handle = second && handleOf(second);
+  if (!second || !first || !handle) return;
+  if (second.getBoundingClientRect().top < first.getBoundingClientRect().top) {
+    h.show(second);
+    await h.drag(handle, first, 'below');
+  }
 }
 
 export function sceneDemoActions(page: SceneDemoPage): Record<string, (h: TourHelpers) => Promise<void>> {
@@ -98,6 +100,8 @@ export function sceneDemoActions(page: SceneDemoPage): Record<string, (h: TourHe
     },
     'scenes-archive': async (h) => {
       await ensureSecond(h, page);
+      // Half the usual demo speed: archiving is quick, and easy to miss.
+      h.setPace(2);
       if (!archivedRow(FIRST)) {
         const first = row(FIRST);
         const archive = first?.querySelector<HTMLElement>('[data-scene-archive]');
@@ -106,8 +110,10 @@ export function sceneDemoActions(page: SceneDemoPage): Record<string, (h: TourHe
         await h.click(archive);
       }
       const archived = await h.find('[data-tour="scenes-archived"]');
+      archived.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      await h.wait(600);
       h.show(archived);
-      archived.scrollIntoView({ block: 'nearest' });
+      await h.wait(600);
     },
   };
 }

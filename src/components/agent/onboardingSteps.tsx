@@ -186,8 +186,8 @@ export const ONBOARDING_STEPS: TourStep[] = [
           <b>New blank scene</b> starts a fresh one. Here it&rsquo;s named <b>Test Scene Number 2</b> and saved.
         </p>
         <p>
-          New scenes appear at the top of the list. Before saving, the <b>↓</b> key on its ⋮⋮ handle moves it down one
-          place — the arrow keys are one way to reorder.
+          New scenes appear at the top of the list. Watch it being dragged by its <b>⋮⋮</b> handle to below{' '}
+          <b>Test Scene Number 1</b> — the scene lifts while it&rsquo;s being moved.
         </p>
       </>
     ),
@@ -217,12 +217,30 @@ export const ONBOARDING_STEPS: TourStep[] = [
           but generating scenes from your Google Sheet will never change it.
         </p>
         <p>Use it for a scene you want to keep exactly as it is. Watch <b>Test Scene Number 1</b> being archived.</p>
+        <p className="text-[#b91c1c]">
+          The archive function isn&rsquo;t required when importing scenes from Google Sheets. It&rsquo;s intended for
+          experimenting with scene design within the app.
+        </p>
         <p className="text-xs text-muted-ink">When you click Next, the test scenes are removed and your own work comes back.</p>
       </>
     ),
   },
 
   // --- Design Process ---------------------------------------------------
+  {
+    title: 'Make more room',
+    target: 'resize-border',
+    run: 'resize-border',
+    missing: 'Widen the window to see the Design Process and the chat side by side — the border between them can then be dragged.',
+    body: (
+      <>
+        <p>
+          The border between <b>Design Process</b> and the chat can be dragged. Watch it being pulled wider, then back.
+        </p>
+        <p>Drag it yourself whenever you want more room for either side. Double-click it to go back to the standard width.</p>
+      </>
+    ),
+  },
   {
     title: 'Import your Scenes',
     target: 'sheet-url',

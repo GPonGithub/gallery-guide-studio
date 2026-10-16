@@ -8,13 +8,12 @@ import { SpeechQueue } from '@/components/agent/speechQueue';
 import { startStreamedClip, type StreamedClip } from '@/components/agent/streamedAudio';
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
-import { DropdownArrow } from '@/components/agent/DropdownArrow';
-import { PatientMenu } from '@/components/agent/PatientMenu';
 import { SceneButtons } from '@/components/agent/SceneButtons';
 import { OnboardingTour } from '@/components/agent/OnboardingTour';
 import { useHosting } from '@/lib/agent/hosting';
 import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
+import { LAYOUT_DEMO_ACTIONS } from '@/components/agent/layoutDemo';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { CueMarker, CueMonitor, type SentCue } from '@/components/agent/CueMonitor';
@@ -37,7 +36,6 @@ import {
   clearMemory,
   clearSceneMemory,
   createPatient,
-  deletePatient,
   earlierMemory,
   listPatients,
   saveToMemory,
@@ -96,7 +94,7 @@ type Saved = {
   sheetUrl: string;
   /** The sheet's Apps Script web app, which writes what scenes save into row 7 (see lib/agent/sheetScript.ts). */
   sheetScriptUrl: string;
-  /** The sheet whose scenes get number buttons in "Describe the conversation". */
+  /** The sheet whose scenes get number buttons in "Describe the conversation in each scene". */
   activeSheetId: string | null;
   /** The open scene's link to its sheet column, if it was imported from one. */
   sceneSheet: SheetSource | null;
@@ -472,10 +470,10 @@ export default function AgentStudioPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
     setSaved(loaded);
     setSession(initialState(loaded.flow));
-    // The open scene's conversation, at the starting point it was left on.
+    // The open scene's conversation (always from its first stage — there's no "Start at" any more).
     conversations.current = loadConversations();
     const scene = loaded.projectId ?? 'unsaved';
-    const start = conversations.current.lastStart[scene] ?? '';
+    const start = '';
     const resumed = conversations.current.threads[threadKey(scene, start)];
     if (fitsFlow(resumed, loaded.flow)) {
       setSession(resumed.session);
@@ -511,7 +509,7 @@ export default function AgentStudioPage() {
     bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [messages, busy]);
 
-  // The number buttons in "Describe the conversation": one per scene of the
+  // The number buttons in "Describe the conversation in each scene": one per scene of the
   // sheet in use, in scene-number order. Re-read whenever scenes may have
   // changed (a scene opened or saved, the Scenes dialog closed, an import).
   const activeSheetId = saved?.activeSheetId ?? null;
@@ -536,7 +534,7 @@ export default function AgentStudioPage() {
   // checked once per scene and set of memories, then reused for every turn;
   // if the check can't be done, nothing from earlier scenes is used.
   const activePatient = saved ? (patients.find((p) => p.id === saved.activePatientId) ?? null) : null;
-  /** The sheet's scenes as number buttons (in "Describe the conversation" and above the chat). */
+  /** The sheet's scenes as number buttons (in "Describe the conversation in each scene" and above the chat). */
   const sheetSceneList = sheetScenes.map((p) => ({ id: p.id, number: p.sheet!.number, name: p.name }));
   const sceneNow: SceneRef | null = saved
     ? { id: saved.projectId ?? 'unsaved', number: saved.sceneSheet?.number ?? '', name: saved.projectName }
@@ -693,7 +691,7 @@ export default function AgentStudioPage() {
     storeConversations(backup.conversations);
     setSaved(backup.saved);
     const scene = backup.saved.projectId ?? 'unsaved';
-    showConversation(scene, backup.saved.flow, backup.conversations.lastStart[scene] ?? '');
+    showConversation(scene, backup.saved.flow, '');
     refreshSheetScenes();
     try {
       window.localStorage.removeItem(DEMO_BACKUP_KEY);
@@ -768,14 +766,6 @@ export default function AgentStudioPage() {
     setLog(c.log);
     setCueLog(c.cueLog);
     setStartAt(c.startAt);
-  };
-
-  // "Start at": moves to that starting point's conversation (the one being
-  // left is kept, and comes back when its starting point is chosen again).
-  const changeStart = (start: string) => {
-    if (busy) return setError('Wait for the agent to finish replying, then change the starting point.');
-    stopAudio();
-    showConversation(sceneKey, flow, start);
   };
 
   // "Refresh this scene": just the open scene's conversation starts again.
@@ -853,7 +843,7 @@ export default function AgentStudioPage() {
   const openScene = (project: AgentProject) => {
     loadFlow(project.flow, 'design');
     // Pick its conversation up where it was left, at the starting point it was on.
-    showConversation(project.id, project.flow, conversations.current.lastStart[project.id] ?? '');
+    showConversation(project.id, project.flow, '');
     const shared = Boolean(project.sheet);
     const voice = shared ? undefined : project.voice;
     const music = project.music ?? null;
@@ -1652,7 +1642,7 @@ export default function AgentStudioPage() {
           {/* The guided tour of the interface (see onboardingSteps.tsx). */}
           <OnboardingTour
             steps={ONBOARDING_STEPS}
-            actions={sceneDemoActions({ begin: beginSceneDemo })}
+            actions={{ ...sceneDemoActions({ begin: beginSceneDemo }), ...LAYOUT_DEMO_ACTIONS }}
             onLeaveGroup={(group) => (group === 'scenes-demo' ? endSceneDemo() : undefined)}
           >
             {(start) => (
@@ -1685,6 +1675,9 @@ export default function AgentStudioPage() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button onClick={() => setKeysOpen((o) => !o)} aria-expanded={keysOpen} data-tour="keys-button" className={buttonOutline}>
+            Keys
+          </button>
           <button onClick={() => setProjectsOpen(true)} className={buttonOutline} data-tour="scenes-button">
             Scenes
           </button>
@@ -1696,9 +1689,6 @@ export default function AgentStudioPage() {
             title={dirty ? 'There are unsaved changes — click to save the scene' : 'Everything is saved'}
           >
             {dirty ? 'Not Saved' : 'Saved'}
-          </button>
-          <button onClick={() => setKeysOpen((o) => !o)} aria-expanded={keysOpen} data-tour="keys-button" className={buttonOutline}>
-            Keys
           </button>
         </div>
       </header>
@@ -1807,9 +1797,10 @@ export default function AgentStudioPage() {
 
         {/* Conversation */}
         <section className="flex min-h-[520px] flex-col border-b-2 border-ink lg:min-h-0 lg:border-b-0 lg:border-r-2">
-          {/* Two rows of controls, every one 40px tall: the conversation itself on
-              top, its sound below — with room on each row for more later. */}
-          <div className="flex flex-col gap-2 border-b-2 border-ink px-3 py-2.5">
+          {/* One row of controls, every one exactly 40px tall: the conversation on
+              the left, its sound (music, voice) on the right. Its grey (and the
+              scene row's) is a step darker than the dialogue's. */}
+          <div className="flex flex-col gap-2 border-b-2 border-ink bg-hair px-3 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => setConfirmCompleteRestart(true)}
@@ -1827,55 +1818,6 @@ export default function AgentStudioPage() {
               >
                 Refresh this scene
               </button>
-              <span className={`ml-2 ${fieldLabel}`}>Start at</span>
-              <select
-                value={startAt}
-                onChange={(e) => changeStart(e.target.value)}
-                className="h-10 cursor-pointer appearance-none border border-ink bg-transparent pl-2 pr-7 font-label text-[12px] text-ink hover:bg-muted/60"
-              >
-                <option value="">{firstStage ? `${firstStage.code} ${firstStage.name} (first)` : '—'}</option>
-                {orderedStages.slice(1).map((s) => (
-                  <option key={s.id} value={s.code}>
-                    {s.code} {s.name}
-                  </option>
-                ))}
-              </select>
-              {/* The browser's own arrow is hidden; this solid one replaces it. */}
-              <DropdownArrow className="pointer-events-none -ml-6 mr-2 text-ink" />
-              {saved.voiceExpressive && (
-                <span
-                  className="flex h-10 items-center px-2 font-label text-[10px] uppercase tracking-widest text-ink"
-                  title="The voice in use is set to expressive (Voice panel): the agent adds performance cues — [laughs], [whispers]… — and ElevenLabs' expressive model performs them."
-                >
-                  ✦ Expressive voice
-                </span>
-              )}
-              <span className="ml-auto" />
-              <PatientMenu
-                patients={patients}
-                activeId={saved.activePatientId}
-                onSelect={(id) => {
-                  setSaved({ ...saved, activePatientId: id });
-                  // Row 7 shows the selected patient: switching patients rewrites this scene's cell.
-                  const patient = patients.find((p) => p.id === id);
-                  if (patient && sceneNow) writeSavedToSheet(sceneNow.id, saved.sceneSheet, patient);
-                }}
-                onCreate={(name) =>
-                  void createPatient(name).then((p) => {
-                    setSaved((s) => (s ? { ...s, activePatientId: p.id } : s));
-                    setMemoryVersion((v) => v + 1);
-                  })
-                }
-                onClear={(id) => void clearMemory(id).then(() => setMemoryVersion((v) => v + 1))}
-                onDelete={(id) =>
-                  void deletePatient(id).then(() => {
-                    setSaved((s) => (s && s.activePatientId === id ? { ...s, activePatientId: null } : s));
-                    setMemoryVersion((v) => v + 1);
-                  })
-                }
-              />
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
               <span className="ml-auto" />
               <MusicPanel
                 trackName={saved.musicTrack?.name ?? null}
@@ -1981,11 +1923,13 @@ export default function AgentStudioPage() {
             </div>
           </div>
 
-          {/* The sheet's scenes, to switch without opening "Describe the conversation"
+          {/* The sheet's scenes, to switch without opening "Describe the conversation in each scene"
               (the same buttons as there — both always show the open scene). */}
           {sheetSceneList.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 border-b-2 border-ink px-3 py-2">
-              <span className={fieldLabel}>Scene</span>
+            // Three columns: the buttons sit in the exact centre of the chat column whatever the
+            // scene's name (the label and name take the space either side), as the window resizes.
+            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b-2 border-ink bg-hair px-3 py-2">
+              <span className={`justify-self-end ${fieldLabel}`}>Scene</span>
               <SceneButtons
                 scenes={sheetSceneList}
                 currentId={saved.projectId}
@@ -1993,7 +1937,9 @@ export default function AgentStudioPage() {
                 disabled={busy}
                 label="Switch scene"
               />
-              {saved.sceneSheet && <span className="min-w-0 truncate font-body text-sm text-ink">{saved.projectName}</span>}
+              <span className="min-w-0 truncate font-body text-sm text-ink" title={saved.projectName}>
+                {saved.sceneSheet ? saved.projectName : ''}
+              </span>
             </div>
           )}
 
@@ -2024,9 +1970,10 @@ export default function AgentStudioPage() {
                     <CueMarker key={c.id} cue={c} />
                   ))}
                 <div className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  {/* The caller's words: white on blue (#3c5eac — about 6:1, easy to read). */}
                   <div
                     className={`max-w-[80%] px-3 py-2 font-body text-sm ${
-                      m.role === 'user' ? 'bg-muted-ink text-paper' : 'border-2 border-ink bg-paper text-ink'
+                      m.role === 'user' ? 'bg-[#3c5eac] text-paper' : 'border-2 border-ink bg-paper text-ink'
                     }`}
                   >
                     {m.role === 'assistant' ? withoutCues(m.text) : m.text}

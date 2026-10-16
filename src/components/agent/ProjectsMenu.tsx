@@ -325,7 +325,16 @@ export function ProjectsMenu({
   // slide aside to open a gap where it will land.
   const rowStyle = (i: number): CSSProperties => {
     if (!drag) return {};
-    if (i === drag.from) return { transform: `translateY(${drag.offset}px)`, position: 'relative', zIndex: 10 };
+    // The dragged scene lifts: a little larger, with a deeper shadow (the size eases in; the position follows the pointer exactly).
+    if (i === drag.from) {
+      return {
+        transform: `translateY(${drag.offset}px)`,
+        scale: '1.03',
+        transition: 'scale 180ms ease, box-shadow 180ms ease',
+        position: 'relative',
+        zIndex: 10,
+      };
+    }
     let shift = 0;
     if (drag.from < drag.to && i > drag.from && i <= drag.to) shift = -drag.gap;
     if (drag.to < drag.from && i >= drag.to && i < drag.from) shift = drag.gap;
@@ -433,7 +442,7 @@ export function ProjectsMenu({
                 </button>
               );
               const rowClass = `flex flex-wrap items-center gap-3 border-b border-hair py-3 ${
-                dragging ? 'cursor-grabbing border-2 border-ink shadow-[0_8px_20px_rgba(0,0,0,0.18)]' : ''
+                dragging ? 'cursor-grabbing border-2 border-ink bg-paper shadow-[0_14px_32px_rgba(0,0,0,0.28)]' : ''
               }`;
               const setRef = (el: HTMLDivElement | null) => {
                 rowRefs.current[i] = el;

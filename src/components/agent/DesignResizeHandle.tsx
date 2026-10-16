@@ -56,6 +56,7 @@ export function DesignResizeHandle({
       role="separator"
       aria-orientation="vertical"
       aria-label="Resize the Design Process column"
+      data-tour="resize-border"
       aria-valuemin={DESIGN_WIDTH.min}
       aria-valuemax={DESIGN_WIDTH.max}
       aria-valuenow={width}
@@ -64,7 +65,11 @@ export function DesignResizeHandle({
       onPointerDown={(e) => {
         if (e.button !== 0) return;
         e.preventDefault();
-        e.currentTarget.setPointerCapture(e.pointerId);
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          // Not a real pointer (the onboarding tour's demonstration) — following still works on the handle.
+        }
         drag.current = { startX: e.clientX, startWidth: width };
         // No text gets selected, and the cursor stays put, while dragging over the page.
         document.body.style.userSelect = 'none';

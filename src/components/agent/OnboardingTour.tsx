@@ -52,8 +52,12 @@ export type TourHelpers = {
   type: (el: HTMLInputElement, text: string) => Promise<void>;
   /** Presses a key (e.g. 'ArrowDown') on an element, shown as a little key label by the pointer. */
   press: (el: HTMLElement, key: string) => Promise<void>;
-  /** Drags `handle` (a pointer-driven drag handle) up or down until it's just above `above`. */
-  drag: (handle: HTMLElement, above: HTMLElement) => Promise<void>;
+  /** Drags `handle` (a pointer-driven drag handle) up or down until it's just above — or below — `target`. */
+  drag: (handle: HTMLElement, target: HTMLElement, place?: 'above' | 'below') => Promise<void>;
+  /** Drags `handle` sideways by `dx` pixels (e.g. a column's resize border). */
+  slide: (handle: HTMLElement, dx: number) => Promise<void>;
+  /** Plays what follows this many times slower again (e.g. 2 = half the usual demo speed). */
+  setPace: (times: number) => void;
   /** Outlines this element (instead of the step's target) and puts the card beside it. */
   show: (el: HTMLElement | null) => void;
   wait: (ms: number) => Promise<void>;
@@ -62,6 +66,8 @@ export type TourHelpers = {
 class Stopped extends Error {}
 
 const PROGRESS_KEY = 'chatbot-designer-onboarding';
+/** How much slower than "natural" the demonstrations play (2 = half speed), so they're easy to follow. */
+const DEMO_PACE = 2;
 const CARD_WIDTH = 360;
 const GAP = 18; // between the card and what it points at
 const EDGE = 12; // nearest the card goes to the window's edge
@@ -159,7 +165,7 @@ export function OnboardingTour({
   const [running, setRunning] = useState(false);
   const [demoProblem, setDemoProblem] = useState<string | null>(null);
   /** The demo's pointer: where it is, whether it's pressed, and whether to glide or jump there. */
-  const [pointer, setPointer] = useState<{ x: number; y: number; pressed: boolean; glide: boolean; key?: string } | null>(null);
+  const [pointer, setPointer] = useState<{ x: number; y: number; pressed: boolean; glide: boolean; key?: string; pace?: number } | null>(null);
   /** What a demo is outlining right now (instead of the step's target). */
   const shown = useRef<HTMLElement | null>(null);
   /** The group of steps the tour is in. */
@@ -226,6 +232,9 @@ export function OnboardingTour({
       await new Promise((r) => setTimeout(r, ms));
       check();
     };
+    // The demonstration's own timings, at the demo pace (and any extra slowing a stage asks for).
+    let extra = 1;
+    const slow = (ms: number) => wait(ms * DEMO_PACE * extra);
     const centre = (el: HTMLElement) => {
       const r = el.getBoundingClientRect();
       return { x: r.left + Math.min(r.width / 2, 60), y: r.top + r.height / 2 };
@@ -233,9 +242,37 @@ export function OnboardingTour({
     const point = async (el: HTMLElement) => {
       check();
       el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-      await wait(60);
-      setPointer({ ...centre(el), pressed: false, glide: true });
-      await wait(700);
+      await slow(60);
+      setPointer({ ...centre(el), pressed: false, glide: true, pace: extra });
+      await slow(700);
+    };
+    // Press on `handle`, move (eased, so it starts and ends gently) to `to`, let go. It always lets
+    // go — even if the student moves on mid-drag — so nothing is left held.
+    const pull = async (handle: HTMLElement, from: { x: number; y: number }, to: { x: number; y: number }) => {
+      let at = from;
+      const fire = (type: string) =>
+        handle.dispatchEvent(
+          new PointerEvent(type, { bubbles: true, clientX: at.x, clientY: at.y, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }),
+        );
+      setPointer({ ...from, pressed: true, glide: false });
+      fire('pointerdown');
+      try {
+        await slow(200);
+        const moves = 28;
+        for (let i = 1; i <= moves; i++) {
+          const t = i / moves;
+          const ease = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+          at = { x: from.x + (to.x - from.x) * ease, y: from.y + (to.y - from.y) * ease };
+          setPointer({ ...at, pressed: true, glide: false });
+          fire('pointermove');
+          await slow(35);
+        }
+        await slow(250);
+      } finally {
+        fire('pointerup');
+      }
+      setPointer({ ...to, pressed: false, glide: false });
+      await slow(600);
     };
     return {
       wait,
@@ -254,20 +291,20 @@ export function OnboardingTour({
       click: async (el) => {
         await point(el);
         setPointer((p) => p && { ...p, pressed: true });
-        await wait(160);
+        await slow(160);
         el.click();
         setPointer((p) => p && { ...p, pressed: false });
-        await wait(450);
+        await slow(450);
       },
       press: async (el, key) => {
         await point(el);
         el.focus();
         setPointer((p) => p && { ...p, pressed: true, key: key.replace('Arrow', '') });
-        await wait(200);
+        await slow(200);
         el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
-        await wait(500);
+        await slow(500);
         setPointer((p) => p && { ...p, pressed: false, key: undefined });
-        await wait(300);
+        await slow(300);
       },
       type: async (el, text) => {
         await point(el);
@@ -280,35 +317,24 @@ export function OnboardingTour({
         };
         put('');
         for (let i = 1; i <= text.length; i++) {
-          await wait(70);
+          await slow(70);
           put(text.slice(0, i));
         }
-        await wait(400);
+        await slow(400);
       },
-      drag: async (handle, above) => {
+      setPace: (times) => {
+        extra = times;
+      },
+      drag: async (handle, target, place = 'above') => {
         await point(handle);
         const from = centre(handle);
-        const to = above.getBoundingClientRect().top + 6;
-        const fire = (type: string, y: number) =>
-          handle.dispatchEvent(
-            new PointerEvent(type, { bubbles: true, clientX: from.x, clientY: y, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }),
-          );
-        setPointer({ ...from, pressed: true, glide: false });
-        fire('pointerdown', from.y);
-        await wait(200);
-        const moves = 28;
-        for (let i = 1; i <= moves; i++) {
-          // Eased, so it starts and ends gently.
-          const t = i / moves;
-          const y = from.y + (to - from.y) * (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
-          setPointer({ x: from.x, y, pressed: true, glide: false });
-          fire('pointermove', y);
-          await wait(35);
-        }
-        await wait(250);
-        fire('pointerup', to);
-        setPointer({ x: from.x, y: to, pressed: false, glide: false });
-        await wait(600);
+        const box = target.getBoundingClientRect();
+        await pull(handle, from, { x: from.x, y: place === 'above' ? box.top + 6 : box.bottom - 6 });
+      },
+      slide: async (handle, dx) => {
+        await point(handle);
+        const from = centre(handle);
+        await pull(handle, from, { x: from.x + dx, y: from.y });
       },
     };
   }, []);
@@ -553,7 +579,9 @@ export function OnboardingTour({
                 top: pointer.y - 2,
                 transform: `scale(${pointer.pressed ? 0.82 : 1})`,
                 transformOrigin: '4px 2px',
-                transition: pointer.glide ? 'left 650ms ease-in-out, top 650ms ease-in-out, transform 120ms' : 'transform 120ms',
+                transition: pointer.glide
+                  ? `left ${650 * DEMO_PACE * (pointer.pace ?? 1)}ms ease-in-out, top ${650 * DEMO_PACE * (pointer.pace ?? 1)}ms ease-in-out, transform 120ms`
+                  : 'transform 120ms',
               }}
             >
               <path d="M4 2 L4 20 L9 15 L12.5 22 L15.5 20.5 L12 14 L19 14 Z" fill="#000" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" />

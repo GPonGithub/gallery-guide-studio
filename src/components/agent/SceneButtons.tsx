@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * A row of numbered buttons, one per scene from the sheet — in "Describe the
- * conversation" and above the chat. Both rows show the open scene
- * highlighted and switch scenes the same way, so they always agree.
+ * A row of numbered buttons, one per scene from the sheet — in sections 2–5
+ * of the Design Process and above the chat. Every row shows the open scene highlighted and switches scenes
+ * the same way, so they always agree.
  */
 export function SceneButtons({
   scenes,

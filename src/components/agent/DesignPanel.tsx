@@ -143,7 +143,7 @@ function SavedFromScene({
     <div className="flex flex-col gap-1">
       {items.length === 0 ? (
         <p className="font-body text-xs italic text-muted-ink">
-          {patientName ? 'Nothing saved yet — it fills in as the conversation goes.' : 'No patient selected (Patient, above the chat).'}
+          Nothing saved yet — it fills in as the conversation goes.
         </p>
       ) : (
         <div className="max-h-80 overflow-y-auto border-2 border-ink px-3 py-2 font-body text-[13px] leading-snug text-ink">
@@ -466,7 +466,7 @@ export function DesignPanel({
         archived.length && `${archived.length} archived (left alone)`,
         edited.length && `${edited.length} edited here and in the sheet — choose below`,
       ].filter(Boolean);
-      say(`✓ Scenes: ${parts.join(', ')}. Pick one by its number under “Describe the conversation”.`);
+      say(`✓ Scenes: ${parts.join(', ')}. Pick one by its number under “Describe the conversation in each scene”.`);
       setConflicts(edited);
     } catch (err) {
       say(`✗ ${err instanceof Error ? err.message : 'Couldn’t read the sheet.'}`);
@@ -579,7 +579,7 @@ export function DesignPanel({
         )}
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="2 · Describe the conversation" tourId="design-2">
+      <CollapsiblePanel title="2 · Describe the conversation in each scene" tourId="design-2">
         <SceneButtons
           scenes={sheetScenes}
           currentId={currentSceneId}
@@ -642,6 +642,7 @@ export function DesignPanel({
       </CollapsiblePanel>
 
       <CollapsiblePanel title="3 · Information this scene can use" tourId="design-3">
+        <SceneButtons scenes={sheetScenes} currentId={currentSceneId} onSwitch={onSwitchScene} disabled={busy !== null} />
         <p className="font-body text-xs italic text-muted-ink">
           Facts the bot can rely on but never invent: names, times, prices, options (row 4 of the sheet, after the
           &ldquo;All scenes&rdquo; column&rsquo;s). It answers questions and offers choices from this, and says when
@@ -673,14 +674,15 @@ export function DesignPanel({
         {memory.error && <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">{memory.error}</p>}
         <MemoryList
           items={memory.available}
-          empty={memory.patientName ? 'Nothing saved by earlier scenes yet.' : 'No patient selected (Patient, above the chat).'}
+          empty="Nothing saved by earlier scenes yet."
         />
       </CollapsiblePanel>
 
       <CollapsiblePanel title="4 · Information saved from the scene" tourId="design-4">
+        <SceneButtons scenes={sheetScenes} currentId={currentSceneId} onSwitch={onSwitchScene} disabled={busy !== null} />
         <p className="font-body text-xs italic text-muted-ink">
           What to pick up during this scene&rsquo;s conversation and keep for the patient&rsquo;s later scenes (row 5 of
-          the sheet). It&rsquo;s saved to the patient selected above the chat; scenes numbered after this one can use it.
+          the sheet). It&rsquo;s kept for the patient, and scenes numbered after this one can use it.
         </p>
         <textarea
           value={flow.saveInfo ?? ''}
@@ -702,6 +704,7 @@ export function DesignPanel({
       </CollapsiblePanel>
 
       <CollapsiblePanel title="5 · Information this scene cannot use" tourId="design-5">
+        <SceneButtons scenes={sheetScenes} currentId={currentSceneId} onSwitch={onSwitchScene} disabled={busy !== null} />
         <p className="font-body text-xs italic text-muted-ink">
           What the bot must not have in this scene (row 6 of the sheet). Anything the patient&rsquo;s earlier scenes
           saved that falls under this is left out of what the bot is given — it never sees it. It&rsquo;s also told not
@@ -742,7 +745,7 @@ export function DesignPanel({
                   ? `Draws ${scene.heading} in its own section of the board (replacing only its earlier drawing)`
                   : 'Draws the current flow on the board'
                 : scene.fromSheet
-                  ? 'Generate this scene’s conversation first (Describe the conversation)'
+                  ? 'Generate this scene’s conversation first (Describe the conversation in each scene)'
                   : 'There’s no flow to draw yet'
             }
           >
