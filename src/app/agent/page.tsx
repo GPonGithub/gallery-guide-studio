@@ -283,10 +283,8 @@ export default function AgentStudioPage() {
   const [onboardPulse, setOnboardPulse] = useState(false);
   useEffect(() => {
     try {
-      // (Someone who already took the tour, before the pulse existed, counts as having clicked it.)
-      const seen = window.localStorage.getItem(ONBOARD_SEEN_KEY) || window.localStorage.getItem('chatbot-designer-onboarding');
       // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
-      if (!seen) setOnboardPulse(true);
+      if (!window.localStorage.getItem(ONBOARD_SEEN_KEY)) setOnboardPulse(true);
     } catch {
       // Storage blocked: no pulse, rather than one that could never be switched off.
     }
