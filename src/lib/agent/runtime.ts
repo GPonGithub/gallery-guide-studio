@@ -14,6 +14,7 @@ import {
   type CueEvent,
   type CuePayload,
   type CueStatus,
+  type RememberedItem,
   type Exit,
   type SessionState,
   type Stage,
@@ -52,6 +53,11 @@ async function timed<T>(timings: string[], label: string, work: Promise<T>): Pro
   }
 }
 
+/** The patient's remembered information, one line each, with the scene it came from. */
+function memoryLines(memory: RememberedItem[]): string {
+  return memory.map((m) => `- ${m.label}: ${m.value} (${m.scene})`).join('\n');
+}
+
 function transcript(history: ChatTurn[]): string {
   return history.map((t) => `${t.role === 'user' ? 'CALLER' : 'AGENT'}: ${t.text}`).join('\n');
 }
@@ -66,6 +72,8 @@ function exitLabel(flow: AgentFlow, exit: Exit): string {
 // G1, G2… (global ones), as numbered in the prompt.
 export type Analysis = {
   slots: { name: string; value: string }[];
+  /** For the patient's later scenes ("Information saved from the scene"). */
+  saves: { label: string; value: string }[];
   exit: { id: string } | null;
   goalMet: boolean;
   offTopic: boolean;
@@ -77,12 +85,15 @@ export type Analysis = {
  * it writes is time the caller spends waiting. Unknown lines are ignored.
  */
 export function parseAnalysis(text: string): Analysis {
-  const analysis: Analysis = { slots: [], exit: null, goalMet: false, offTopic: false };
+  const analysis: Analysis = { slots: [], saves: [], exit: null, goalMet: false, offTopic: false };
+  const unquote = (v: string) => v.trim().replace(/^["']|["']$/g, '');
   for (const raw of text.split('\n')) {
     const line = raw.trim().replace(/^[-*•]\s*/, '');
     const set = /^SET\s+([\w.-]+)\s*[=:]\s*(.+)$/i.exec(line);
+    const save = /^SAVE\s+(.+?)\s*[=:]\s*(.+)$/i.exec(line);
     const exit = /^EXIT\s+([SG]\d+)\b/i.exec(line);
-    if (set) analysis.slots.push({ name: set[1], value: set[2].trim().replace(/^["']|["']$/g, '') });
+    if (set) analysis.slots.push({ name: set[1], value: unquote(set[2]) });
+    else if (save) analysis.saves.push({ label: unquote(save[1]).toLowerCase(), value: unquote(save[2]) });
     else if (exit) analysis.exit ??= { id: exit[1].toUpperCase() };
     else if (/^GOAL\s+MET\b/i.test(line)) analysis.goalMet = true;
     else if (/^OFF[\s-]?TOPIC\b/i.test(line)) analysis.offTopic = true;
@@ -97,17 +108,23 @@ async function analyse(
   state: SessionState,
   history: ChatTurn[],
   userText: string,
+  memory: RememberedItem[],
+  savedHere: { label: string; value: string }[],
   abortSignal?: AbortSignal,
 ): Promise<Analysis> {
   const value = (name: string) => state.slots[name] ?? '(not yet)';
   const stageSlots = stage.collect
     .map((s) => `- ${s.name}${s.required ? ' [required]' : ''}: ${s.description} — current: ${value(s.name)}`)
     .join('\n');
-  const otherSlots = flow.stages
-    .filter((st) => st.code !== stage.code)
-    .flatMap((st) => st.collect)
+  const otherStages = flow.stages.filter((st) => st.code !== stage.code).flatMap((st) => st.collect);
+  const otherSlots = otherStages
     .filter((s) => !state.slots[s.name])
     .map((s) => `- ${s.name}: ${s.description}`)
+    .join('\n');
+  // Shown with their values so a correction ("actually it's…") can replace them.
+  const recordedSlots = otherStages
+    .filter((s) => state.slots[s.name])
+    .map((s) => `- ${s.name}: ${state.slots[s.name]}`)
     .join('\n');
   const exits = [
     ...stage.exits.map((e, i) => `S${i + 1}: → ${exitLabel(flow, e)} — ${e.onComplete ? 'once the goal is met' : `when ${e.when}`}`),
@@ -124,12 +141,22 @@ async function analyse(
       "From the caller's latest message, in context, write only the lines below that apply — nothing else:\n" +
       'SET <name> = <value>   for each listed piece of information the caller has now given (exact name; short plain ' +
       'value, e.g. Tuesday, Dr Smith, no). Include information for later stages if they volunteer it. Only what they ' +
-      'actually said or clearly confirmed, never guesses; a vague answer ("whenever", "not sure") is not a value.\n' +
+      'actually said or clearly confirmed, never guesses; a vague answer ("whenever", "not sure") is not a value. If ' +
+      'they correct or change something already recorded ("sorry, it\'s actually…"), SET it again with the new value.\n' +
       "EXIT <id>              if their message clearly matches an exit's condition (never one marked \"once the goal " +
       'is met" — those happen automatically).\n' +
       "GOAL MET               only if this stage's goal is now fully achieved (including anything the agent must " +
       'confirm).\n' +
       "OFF TOPIC              if the message has nothing to do with this stage's goal and matches no exit.\n" +
+      (flow.saveInfo?.trim()
+        ? 'SAVE <Label> = <value> for anything the caller has now said or confirmed that "INFORMATION TO SAVE" asks ' +
+          'for — a short label in Title Case (e.g. Preferred Doctor, Appointment Date, Appointment Time, Insurance ' +
+          'Provider, Appointment Confirmed, Text Reminder Requested; reuse a label already used for the same thing, so a ' +
+          'changed answer replaces the old one) and the value in a few plain words: dates in full (October 22, 2026), ' +
+          'times like 10:30 a.m., Yes or No for a confirmation or a request. Only what they actually said or ' +
+          'confirmed — never a guess, never a detail they haven\'t given. If they correct something already saved, ' +
+          'SAVE it again under the same label with the corrected value.\n'
+        : '') +
       'If none apply, write NONE.',
     prompt: [
       `CURRENT STAGE ${stage.code}: ${stage.name}`,
@@ -137,9 +164,20 @@ async function analyse(
       stage.instructions ? `INSTRUCTIONS TO THE AGENT: ${stage.instructions}` : '',
       `INFORMATION THIS STAGE NEEDS:\n${stageSlots || '(none)'}`,
       otherSlots ? `INFORMATION LATER STAGES NEED (record if volunteered):\n${otherSlots}` : '',
+      recordedSlots ? `ALREADY RECORDED IN OTHER STAGES (SET again if the caller corrects one):\n${recordedSlots}` : '',
       `EXITS:\n${exits || '(none)'}`,
       flow.knowledge?.trim()
         ? `REFERENCE INFORMATION (use it to judge whether an answer is real — e.g. a doctor who isn't listed is not a valid answer):\n${flow.knowledge.trim()}`
+        : '',
+      flow.canUse?.trim() ? `ALSO AVAILABLE IN THIS SCENE:\n${flow.canUse.trim()}` : '',
+      memory.length > 0
+        ? `ALREADY KNOWN FROM THE PATIENT'S EARLIER SCENES (counts as given — use it for SET lines where it fits; where it differs from the reference information, it is the newer and correct one):\n${memoryLines(memory)}`
+        : '',
+      flow.saveInfo?.trim()
+        ? `INFORMATION TO SAVE (for the patient's later scenes):\n${flow.saveInfo.trim()}` +
+          (savedHere.length > 0
+            ? `\nALREADY SAVED IN THIS SCENE (reuse the label; SAVE again if the caller corrects one):\n${savedHere.map((it) => `- ${it.label} = ${it.value}`).join('\n')}`
+            : '')
         : '',
       `CONVERSATION SO FAR:\n${transcript(history.slice(-HISTORY_FOR_ANALYSIS)) || '(nothing yet)'}`,
       `CALLER'S LATEST MESSAGE: ${userText}`,
@@ -254,6 +292,8 @@ class Turn {
   apply(analysis: Analysis) {
     const stage = this.stage();
     if (!stage) return;
+    // Kept for the patient's later scenes — the app saves them (see memory.ts).
+    for (const { label, value } of analysis.saves) if (label && value) this.events.push({ type: 'saved', label, value });
 
     const declared = new Set(this.flow.stages.flatMap((s) => s.collect.map((c) => c.name)));
     for (const { name, value } of analysis.slots) {
@@ -319,6 +359,7 @@ function responderSystem(
   stage: Stage,
   state: SessionState,
   arrivedFrom: Turn['arrivedFrom'],
+  memory: RememberedItem[],
 ): SystemModelMessage[] {
   // The part that's the same every turn (persona, rules, knowledge base) goes
   // first and is cached by Anthropic, so a long knowledge base isn't re-read
@@ -331,14 +372,25 @@ function responderSystem(
       `REFERENCE INFORMATION — the facts you can rely on:\n${flow.knowledge.trim()}\n\n` +
         'Use it to answer questions and to offer real options. Never invent names, times, prices or other facts ' +
         "that aren't in it; if something isn't covered, say you don't have that information and offer to have " +
-        'someone call back. This is a voice call: offer two or three options at a time, never read out a whole list.',
+        'someone call back. This is a voice call: offer two or three options at a time, never read out a whole list. ' +
+        'What the caller tells you, and what they told us in earlier scenes, is newer than this: where they differ ' +
+        '(a changed phone number, a different doctor), theirs is correct and this is out of date.',
+    flow.canUse?.trim() && `FOR THIS PART OF THE CONVERSATION YOU MAY ALSO USE:\n${flow.canUse.trim()}`,
   ].filter(Boolean);
   const collected = Object.entries(state.slots).map(([k, v]) => `${k} = ${v}`);
   const missing = stage.collect.filter((s) => !state.slots[s.name]);
   const parts = [
     `CURRENT GOAL: ${stage.goal}`,
     stage.instructions.trim() && `HOW TO APPROACH IT:\n${stage.instructions.trim()}`,
-    collected.length > 0 && `ALREADY KNOWN ABOUT THE CALLER (use it, never ask again):\n${collected.join('\n')}`,
+    collected.length > 0 &&
+      `ALREADY KNOWN ABOUT THE CALLER FROM THIS CALL (use it, never ask again; it overrides the reference information):\n${collected.join('\n')}`,
+    memory.length > 0 &&
+      "FROM THE PATIENT'S EARLIER SCENES (what they told us before — use it naturally, never ask for it again; it is " +
+        'newer than the reference information and takes priority over it wherever they differ, unless the caller ' +
+        `changes it in this call):\n${memoryLines(memory)}`,
+    flow.cannotUse?.trim() &&
+      `THIS SCENE MUST NOT USE OR BRING UP:\n${flow.cannotUse.trim()}\nDon't mention, ask about or draw on any of this — ` +
+        "not even from general knowledge. If the caller raises it, say kindly that it isn't something you can go into here.",
     missing.length > 0 &&
       `STILL NEEDED FOR THIS GOAL:\n${missing.map((s) => `- ${s.description}${s.required ? '' : ' (only if relevant)'}`).join('\n')}`,
     state.ended
@@ -497,7 +549,7 @@ class ReplyStream {
 }
 
 export async function runTurnStream(
-  { flow, state: incoming, history, userText, anthropicApiKey, holdCues }: TurnRequest,
+  { flow, state: incoming, history, userText, anthropicApiKey, holdCues, memory = [], savedHere }: TurnRequest,
   abortSignal: AbortSignal | undefined,
   emit: (event: TurnStreamEvent) => void,
 ): Promise<void> {
@@ -522,7 +574,7 @@ export async function runTurnStream(
       model,
       abortSignal: abortSignal ? AbortSignal.any([abortSignal, stop.signal]) : stop.signal,
       // Built right now, from the state as it is at this moment.
-      system: responderSystem(flow, stage, state, arrivedFrom),
+      system: responderSystem(flow, stage, state, arrivedFrom, memory),
       messages: toModelMessages(history, userText),
       providerOptions: NO_THINKING,
       maxOutputTokens: 300,
@@ -567,7 +619,7 @@ export async function runTurnStream(
     })().catch(() => {});
     const streakBefore = state.offTopicStreak;
     try {
-      const analysis = await timed(timings, 'analyse', analyse(fast, flow, startStage, state, history, userText, abortSignal));
+      const analysis = await timed(timings, 'analyse', analyse(fast, flow, startStage, state, history, userText, memory, savedHere ?? [], abortSignal));
       turn.apply(analysis);
     } catch (err) {
       turn.events.push({ type: 'rejected', text: `Analysis failed (${err instanceof Error ? err.message : 'error'}) — replying without it.` });
@@ -637,4 +689,39 @@ export async function sendHeldCues(flow: AgentFlow, payloads: CuePayload[]): Pro
   const url = flow.tdUrl.trim();
   if (!url) return payloads.map(() => 'logged');
   return Promise.all(payloads.map((payload) => postCue(url, payload)));
+}
+
+/**
+ * Which of a patient's remembered items a scene's "Information this scene
+ * cannot use" rules out. The scene's agent is then never given those at all
+ * (rather than being given them and told to ignore them). An item whose
+ * label the rules mention is ruled out outright; the rest are judged by the
+ * fast model, which is told to rule out anything it's unsure about.
+ * Returns the indexes of the items to leave out.
+ */
+export async function blockedMemory(cannotUse: string, items: RememberedItem[], anthropicApiKey: string): Promise<number[]> {
+  const rules = cannotUse.trim();
+  if (!rules || items.length === 0) return [];
+  const lower = rules.toLowerCase();
+  const blocked = new Set(items.flatMap((it, i) => (lower.includes(it.label.trim().toLowerCase()) ? [i] : [])));
+  const rest = items.map((it, i) => ({ it, i })).filter(({ i }) => !blocked.has(i));
+  if (rest.length === 0) return [...blocked];
+  const { text } = await generateText({
+    model: anthropicModel(anthropicApiKey, FAST_MODEL),
+    providerOptions: NO_THINKING,
+    temperature: 0,
+    system:
+      'You decide what a chatbot must not be given. Below are the rules for what it cannot use, then numbered pieces ' +
+      'of information about a patient. Write BLOCK <number> on its own line for every piece that falls under any rule ' +
+      '(directly, or by revealing it). When unsure, block it. If nothing falls under the rules, write NONE.',
+    prompt: `RULES — THIS SCENE CANNOT USE:\n${rules}\n\nINFORMATION:\n${rest
+      .map(({ it }, n) => `${n + 1}. ${it.label}: ${it.value}`)
+      .join('\n')}`,
+    maxOutputTokens: 200,
+  });
+  for (const match of text.matchAll(/BLOCK\s+(\d+)/gi)) {
+    const entry = rest[Number(match[1]) - 1];
+    if (entry) blocked.add(entry.i);
+  }
+  return [...blocked].sort((a, b) => a - b);
 }

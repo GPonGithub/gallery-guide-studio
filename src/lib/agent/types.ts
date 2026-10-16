@@ -87,9 +87,28 @@ export type AgentFlow = {
    * Facts the agent can draw on — doctors, opening hours, prices, menus…
    * Written by the student (never generated), kept separate from the
    * conversation design, and preserved when a flow is generated or
-   * imported from FigJam.
+   * imported from FigJam. Shown as "Knowledge base".
    */
   knowledge?: string;
+  /**
+   * "Information this scene can use": context specific to this scene, given
+   * to the agent along with the knowledge base and what the patient's
+   * earlier scenes saved. Kept like `knowledge` when a flow is generated or
+   * imported.
+   */
+  canUse?: string;
+  /**
+   * "Information saved from the scene": what to collect during the
+   * conversation and keep for the patient's later scenes (see memory.ts).
+   * Kept like `knowledge` when a flow is generated or imported.
+   */
+  saveInfo?: string;
+  /**
+   * "Information this scene cannot use": anything the patient's earlier
+   * scenes saved that matches this is removed before the agent sees it.
+   * Kept like `knowledge` when a flow is generated or imported.
+   */
+  cannotUse?: string;
 };
 
 /** Everything the runtime tracks about one conversation. Owned by code, not the LLM. */
@@ -135,7 +154,12 @@ export type AgentEvent =
   | { type: 'offTopic'; streak: number }
   | { type: 'end'; reason: string }
   | { type: 'note'; text: string }
-  | { type: 'rejected'; text: string };
+  | { type: 'rejected'; text: string }
+  /** Picked up for the patient's later scenes (cross-scene memory). */
+  | { type: 'saved'; label: string; value: string };
+
+/** Something the patient's earlier scenes saved, as the agent is given it (restrictions already applied). */
+export type RememberedItem = { label: string; value: string; scene: string };
 
 export type ChatTurn = { role: 'user' | 'assistant'; text: string };
 
@@ -155,6 +179,13 @@ export type TurnRequest = {
    * away and nothing must have fired.
    */
   holdCues?: boolean;
+  /**
+   * What the patient's earlier scenes saved that this scene may use —
+   * anything its "cannot use" rules out has already been removed.
+   */
+  memory?: RememberedItem[];
+  /** What this scene has already saved for the patient — so the same thing keeps its label, and a correction replaces it. */
+  savedHere?: { label: string; value: string }[];
 };
 
 export type TurnResponse = {

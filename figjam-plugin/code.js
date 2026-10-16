@@ -267,7 +267,7 @@ async function run(initials, apiKey) {
   figma.ui.postMessage({ type: 'done' });
 }
 
-// --- Goal Agent Studio (v4) ---------------------------------------------------
+// --- Chatbot Designer (v4) ----------------------------------------------------
 // The app sends a finished layout spec (cards as rows of [label, value], plus
 // arrows) and this just draws it; the card format itself lives in the app
 // (src/lib/agent/cards.ts), so drawing and importing always agree. Every
@@ -320,41 +320,16 @@ async function drawAgentCard(card, x, y) {
   return table;
 }
 
-async function drawAgentFlow(spec) {
-  const page = figma.currentPage;
-
-  // Replace whatever this plugin drew last time (connectors first, so none
-  // are left pointing at removed cards).
-  const previous = page.findAll(function (n) { return n.getPluginData(AGENT_TAG) === '1'; });
-  previous.sort(function (a, b) { return (a.type === 'CONNECTOR' ? 0 : 1) - (b.type === 'CONNECTOR' ? 0 : 1); });
-  previous.forEach(function (n) { if (!n.removed) n.remove(); });
-  if (previous.length > 0) log('Removed the previously drawn flow (' + previous.length + ' items).');
-
-  // Hand-made cards (e.g. the template's) aren't replaced — and Import reads
-  // every card on the board, so two sets would collide. Say so up front.
-  const otherCards = page.findAllWithCriteria({ types: ['TABLE'] }).filter(function (t) {
-    const kind = t.cellAt(0, 0).text.characters.trim().toUpperCase();
-    return kind === 'STAGE' || kind === 'MASTER' || kind === 'KNOWLEDGE';
-  });
-  if (otherCards.length > 0) {
-    log('Warning: this board already has ' + otherCards.length + ' STAGE/MASTER/KNOWLEDGE cards the plugin did not draw. Import reads every card, so use an empty board for a new flow (or delete the old cards).');
-  }
-
-  // Start to the right of anything else already on the board.
-  let originX = 0;
-  let originY = 0;
-  if (page.children.length > 0) {
-    originX = Math.max.apply(null, page.children.map(function (n) { return n.x + n.width; })) + 600;
-    originY = Math.min.apply(null, page.children.map(function (n) { return n.y; }));
-  }
-
+// Draws a flow's title, intro, cards and arrows with its top-left corner at
+// (originX, originY), marking every node with `mark`. Returns them all.
+async function drawFlowContents(spec, originX, originY, mark) {
   const bold = { family: 'Inter', style: 'Bold' };
   const medium = { family: 'Inter', style: 'Medium' };
   await figma.loadFontAsync(bold);
   await figma.loadFontAsync(medium);
 
   const created = [];
-  const title = tag(figma.createText());
+  const title = mark(figma.createText());
   title.fontName = bold;
   title.fontSize = 56;
   title.characters = spec.title;
@@ -362,7 +337,7 @@ async function drawAgentFlow(spec) {
   title.y = originY;
   created.push(title);
 
-  const intro = tag(figma.createText());
+  const intro = mark(figma.createText());
   intro.fontName = medium;
   intro.fontSize = 20;
   intro.characters = spec.intro;
@@ -378,7 +353,7 @@ async function drawAgentFlow(spec) {
   for (let i = 0; i < spec.cards.length; i++) {
     const card = spec.cards[i];
     if (card.area !== 'top') continue;
-    const table = await drawAgentCard(card, originX + card.column * (CARD_WIDTH + CARD_GAP_X), top);
+    const table = mark(await drawAgentCard(card, originX + card.column * (CARD_WIDTH + CARD_GAP_X), top));
     nodes[i] = table;
     created.push(table);
     topBottom = Math.max(topBottom, table.y + table.height);
@@ -386,14 +361,13 @@ async function drawAgentFlow(spec) {
   log('Drew the MASTER, GUIDE and KNOWLEDGE cards.');
 
   const flowTop = topBottom + 260;
-  spec.flowTop = flowTop;
   const columnY = {};
   let stageCount = 0;
   for (let i = 0; i < spec.cards.length; i++) {
     const card = spec.cards[i];
     if (card.area !== 'flow') continue;
     const y = columnY[card.column] === undefined ? flowTop : columnY[card.column];
-    const table = await drawAgentCard(card, originX + card.column * (CARD_WIDTH + CARD_GAP_X), y);
+    const table = mark(await drawAgentCard(card, originX + card.column * (CARD_WIDTH + CARD_GAP_X), y));
     columnY[card.column] = y + table.height + CARD_GAP_Y;
     nodes[i] = table;
     created.push(table);
@@ -410,10 +384,10 @@ async function drawAgentFlow(spec) {
     const from = nodes[link.from];
     const to = nodes[link.to];
     if (!from || !to) continue;
-    const connector = tag(figma.createConnector());
+    const connector = mark(figma.createConnector());
     let startMagnet;
     let endMagnet;
-    if (from.y + from.height < spec.flowTop && to.y >= spec.flowTop) {
+    if (from.y + from.height < flowTop && to.y >= flowTop) {
       startMagnet = 'BOTTOM'; endMagnet = 'TOP'; // MASTER above the flow
     } else if (to.x > from.x + 100) {
       startMagnet = 'RIGHT'; endMagnet = 'LEFT';
@@ -432,16 +406,190 @@ async function drawAgentFlow(spec) {
     created.push(connector);
   }
   log('Drew ' + spec.links.length + ' arrows.');
+  return created;
+}
 
+async function drawAgentFlow(spec) {
+  if (spec.scene) return drawSceneFlow(spec);
+  const page = figma.currentPage;
+
+  // Replace whatever this plugin drew last time (connectors first, so none
+  // are left pointing at removed cards). Scene sections are left alone.
+  const previous = page.findAll(function (n) { return n.getPluginData(AGENT_TAG) === '1'; });
+  previous.sort(function (a, b) { return (a.type === 'CONNECTOR' ? 0 : 1) - (b.type === 'CONNECTOR' ? 0 : 1); });
+  previous.forEach(function (n) { if (!n.removed) n.remove(); });
+  if (previous.length > 0) log('Removed the previously drawn flow (' + previous.length + ' items).');
+
+  // Hand-made cards (e.g. the template's) aren't replaced — and Import reads
+  // every card on the board, so two sets would collide. Say so up front.
+  const otherCards = page.findAllWithCriteria({ types: ['TABLE'] }).filter(function (t) {
+    if (insideSceneSection(t)) return false;
+    const kind = t.cellAt(0, 0).text.characters.trim().toUpperCase();
+    return kind === 'STAGE' || kind === 'MASTER' || kind === 'KNOWLEDGE';
+  });
+  if (otherCards.length > 0) {
+    log('Warning: this board already has ' + otherCards.length + ' STAGE/MASTER/KNOWLEDGE cards the plugin did not draw. Import reads every card, so use an empty board for a new flow (or delete the old cards).');
+  }
+
+  // Start to the right of anything else already on the board.
+  let originX = 0;
+  let originY = 0;
+  if (page.children.length > 0) {
+    originX = Math.max.apply(null, page.children.map(function (n) { return n.x + n.width; })) + 600;
+    originY = Math.min.apply(null, page.children.map(function (n) { return n.y; }));
+  }
+  const created = await drawFlowContents(spec, originX, originY, tag);
   figma.viewport.scrollAndZoomIntoView(created);
   log('Done — the flow is on the board.');
 }
 
-// Every table on the page, top-to-bottom, left-to-right, as rows of
-// [left cell, right cell]. The app decides which ones are STAGE/MASTER
-// cards; anything else (old step tables, notes) is simply ignored there.
-function readAgentFlow() {
-  const tables = figma.currentPage.findAllWithCriteria({ types: ['TABLE'] });
+// --- scenes -------------------------------------------------------------------
+// A scene from the app is drawn inside its own FigJam section, headed with
+// its number and name and tied to the scene's id — so writing it again
+// replaces just that section. Sections sit in one row in scene-number order,
+// each sized to its own flow; a section only moves when the one before it
+// has grown into its space.
+
+const SCENE_TAG = 'goalAgentScene';
+const SCENE_NUMBER_TAG = 'goalAgentSceneNumber';
+// Inside a section, around its flow (extra on the right for arrows that loop out).
+const SCENE_PAD = 200;
+const SCENE_PAD_RIGHT = 400;
+// Between neighbouring sections.
+const SCENE_GAP = 400;
+
+function sceneSections() {
+  return figma.currentPage.findAllWithCriteria({ types: ['SECTION'] }).filter(function (s) {
+    return s.getPluginData(SCENE_TAG) !== '';
+  });
+}
+
+function insideSceneSection(node) {
+  for (let n = node.parent; n && n.type !== 'PAGE'; n = n.parent) {
+    if (n.type === 'SECTION' && n.getPluginData(SCENE_TAG) !== '') return n;
+  }
+  return null;
+}
+
+// Scene numbers as people expect: 2 before 10, numbers before words.
+function compareSceneNumbers(a, b) {
+  const na = parseFloat(a);
+  const nb = parseFloat(b);
+  if (!isNaN(na) && !isNaN(nb) && na !== nb) return na - nb;
+  if (isNaN(na) !== isNaN(nb)) return isNaN(na) ? 1 : -1;
+  return String(a).localeCompare(String(b), undefined, { numeric: true });
+}
+
+function markScene(node) {
+  node.setPluginData(AGENT_TAG, 'scene');
+  return node;
+}
+
+async function drawSceneFlow(spec) {
+  const page = figma.currentPage;
+  const key = spec.scene.key;
+  const number = String(spec.scene.number || '');
+  const sections = sceneSections();
+  const old = sections.find(function (s) { return s.getPluginData(SCENE_TAG) === key; });
+  const others = sections.filter(function (s) { return s !== old; });
+
+  // Draw it out of the way first, so its real size is known before it's placed.
+  const scratch = -2000000;
+  const created = await drawFlowContents(spec, scratch, scratch, markScene);
+  const solid = created.filter(function (n) { return n.type !== 'CONNECTOR'; });
+  const minX = Math.min.apply(null, solid.map(function (n) { return n.x; }));
+  const minY = Math.min.apply(null, solid.map(function (n) { return n.y; }));
+  const maxX = Math.max.apply(null, solid.map(function (n) { return n.x + n.width; }));
+  const maxY = Math.max.apply(null, solid.map(function (n) { return n.y + n.height; }));
+  const width = maxX - minX + SCENE_PAD + SCENE_PAD_RIGHT;
+  const height = maxY - minY + SCENE_PAD * 2;
+
+  // Where it goes: where it was before; or after the scene numbered just
+  // before it; or where the scene numbered just after it is (which then moves
+  // along); or, for the board's first scene, to the right of everything else.
+  let x;
+  let y;
+  if (old) {
+    x = old.x;
+    y = old.y;
+  } else {
+    const before = others.filter(function (o) { return compareSceneNumbers(o.getPluginData(SCENE_NUMBER_TAG), number) < 0; });
+    const after = others.filter(function (o) { return compareSceneNumbers(o.getPluginData(SCENE_NUMBER_TAG), number) >= 0; });
+    if (before.length > 0) {
+      const prev = before.reduce(function (a, b) { return a.x + a.width >= b.x + b.width ? a : b; });
+      x = prev.x + prev.width + SCENE_GAP;
+      y = prev.y;
+    } else if (after.length > 0) {
+      const next = after.reduce(function (a, b) { return a.x <= b.x ? a : b; });
+      x = next.x;
+      y = next.y;
+    } else {
+      const content = page.children.filter(function (n) { return created.indexOf(n) < 0; });
+      x = content.length > 0 ? Math.max.apply(null, content.map(function (n) { return n.x + n.width; })) + 600 : 0;
+      y = content.length > 0 ? Math.min.apply(null, content.map(function (n) { return n.y; })) : 0;
+    }
+  }
+
+  // Make room: if this scene now reaches into the next section(s) along the
+  // row, those — and everything after them — move right just enough.
+  const reach = x + width + SCENE_GAP;
+  const inTheWay = others.filter(function (o) {
+    return o.x >= x - 1 && o.x < reach && o.y < y + height && o.y + o.height > y;
+  });
+  if (inTheWay.length > 0) {
+    const firstX = Math.min.apply(null, inTheWay.map(function (o) { return o.x; }));
+    const shift = reach - firstX;
+    let moved = 0;
+    others.forEach(function (o) {
+      if (o.x >= firstX - 1) {
+        o.x += shift;
+        moved++;
+      }
+    });
+    log('Moved ' + moved + ' later scene' + (moved === 1 ? '' : 's') + ' along to make room.');
+  }
+
+  if (old) {
+    old.remove();
+    log('Replaced this scene’s earlier drawing.');
+  }
+
+  const section = figma.createSection();
+  section.name = spec.scene.heading;
+  section.setPluginData(SCENE_TAG, key);
+  section.setPluginData(SCENE_NUMBER_TAG, number);
+  section.x = x;
+  section.y = y;
+  section.resizeWithoutConstraints(width, height);
+  // Inside a section, positions are relative to it.
+  solid.forEach(function (n) {
+    const relX = n.x - minX + SCENE_PAD;
+    const relY = n.y - minY + SCENE_PAD;
+    section.appendChild(n);
+    n.x = relX;
+    n.y = relY;
+  });
+  created.forEach(function (n) { if (n.type === 'CONNECTOR') section.appendChild(n); });
+
+  figma.viewport.scrollAndZoomIntoView([section]);
+  log('Done — ' + spec.scene.heading + ' is on the board in its own section.');
+}
+
+// Every table, top-to-bottom, left-to-right, as rows of [left cell, right
+// cell] — for a scene, just the tables in its section; otherwise those not
+// in any scene section. The app decides which ones are STAGE/MASTER cards;
+// anything else (old step tables, notes) is simply ignored there.
+function readAgentFlow(payload) {
+  const key = payload && payload.sceneKey;
+  const section = key ? sceneSections().find(function (s) { return s.getPluginData(SCENE_TAG) === key; }) : null;
+  let tables;
+  if (section) {
+    tables = section.findAllWithCriteria({ types: ['TABLE'] });
+    log('Reading ' + section.name + ' only.');
+  } else {
+    tables = figma.currentPage.findAllWithCriteria({ types: ['TABLE'] }).filter(function (t) { return !insideSceneSection(t); });
+    if (key) log('This scene has no section on the board yet — reading the cards that aren’t in any scene section.');
+  }
   tables.sort(function (a, b) { return a.y - b.y || a.x - b.x; });
   return tables.map(function (t) {
     const rows = [];
@@ -487,7 +635,7 @@ figma.ui.onmessage = async (msg) => {
     figma.ui.postMessage({ type: 'done' });
   } else if (msg.type === 'read-agent-flow') {
     try {
-      const tables = readAgentFlow();
+      const tables = readAgentFlow(msg.payload);
       log('Read ' + tables.length + ' tables from the board.');
       figma.ui.postMessage({ type: 'agent-read-result', tables: tables });
     } catch (err) {

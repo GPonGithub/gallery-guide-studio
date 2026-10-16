@@ -13,6 +13,11 @@ export const buttonPrimary =
   'hover:bg-paper hover:text-ink disabled:cursor-not-allowed disabled:border-hair disabled:bg-hair disabled:text-muted-ink ' +
   'focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-[3px]';
 
+// A button whose work is under way: white with black text and a black
+// spinning wheel, the same whether or not the pointer is over it.
+export const buttonBusy =
+  `inline-flex items-center gap-2 border-2 border-ink bg-paper px-4 py-2 ${labelText} text-ink cursor-wait`;
+
 export const buttonOutline =
   `border-2 border-ink bg-paper px-4 py-2 ${labelText} text-ink transition-colors duration-100 ` +
   'hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:border-hair disabled:text-muted-ink disabled:hover:bg-paper disabled:hover:text-muted-ink ' +

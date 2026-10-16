@@ -1,7 +1,9 @@
 'use client';
 
 import { run } from '@/lib/browserDb';
+import { blankStage, emptyFlow } from './flow';
 import type { AgentProject } from './projectStore';
+import { compareSceneNumbers, type SheetScene } from './sheetScenes';
 
 /**
  * Saved projects, kept in this browser (see browserDb.ts) — each student's
@@ -70,6 +72,11 @@ export async function saveProject(input: ProjectToSave): Promise<AgentProject> {
     id: input.id ?? crypto.randomUUID(),
     // Saving keeps a scene where it is in the list; a new one goes at the end.
     order: existing?.order ?? (await nextOrder()),
+    // A scene keeps its link to its sheet column (and stays archived if it
+    // was); a copy is a scene of its own.
+    sheet: existing?.sheet,
+    archived: existing?.archived,
+    figjamFlow: content.figjamFlow !== undefined ? content.figjamFlow : (existing?.figjamFlow ?? null),
     updatedAt: Date.now(),
   };
   if (project.music) {
@@ -136,7 +143,7 @@ export async function importProject(file: File, replace: (existing: AgentProject
   } catch {
     throw new Error(`“${file.name}” isn’t a scene file.`);
   }
-  if (data?.format !== FORMAT || !data.project?.flow) throw new Error(`“${file.name}” isn’t a Goal Agent scene file.`);
+  if (data?.format !== FORMAT || !data.project?.flow) throw new Error(`“${file.name}” isn’t a Chatbot Designer scene file.`);
   const existing = await getProject(data.project.id);
   const replacing = existing !== null && replace(existing);
   const project: AgentProject = replacing
@@ -193,4 +200,168 @@ export function moveServerProjectsHere(): Promise<void> {
     }
   })();
   return migration;
+}
+
+// --- scenes from a Google Sheet --------------------------------------------
+
+/** An imported scene that has been changed in the app since, and has new content in the sheet too. */
+export type SheetConflict = { project: AgentProject; scene: SheetScene };
+
+export type SheetImport = {
+  added: AgentProject[];
+  updated: AgentProject[];
+  unchanged: AgentProject[];
+  /** Archived scenes whose column is in the sheet — left exactly as they are. */
+  archived: AgentProject[];
+  /** Waiting for "keep mine" or "use the sheet" (see applySheetScene). */
+  conflicts: SheetConflict[];
+};
+
+/**
+ * Brings a sheet's scenes in. Scenes are matched to ones already imported
+ * from the same sheet by scene number (so inserting a column, like "All
+ * scenes", doesn't shuffle them), or else by column — never duplicated. A matched scene that hasn't been
+ * edited in the app takes the sheet's new name and description; one that
+ * has been edited is left alone and reported as a conflict. New columns
+ * become new scenes, in scene-number order after the existing ones.
+ */
+export async function importSheetScenes(sheetId: string, gid: string, scenes: SheetScene[]): Promise<SheetImport> {
+  const all = await listProjects();
+  const result: SheetImport = { added: [], updated: [], unchanged: [], archived: [], conflicts: [] };
+  let order = all.length === 0 ? 0 : Math.max(...all.map((p, i) => p.order ?? i)) + 1;
+  const sorted = [...scenes].sort((a, b) => compareSceneNumbers(a.number, b.number));
+  const fromSheet = all.filter((p) => p.sheet?.sheetId === sheetId);
+  const numbers = new Set(scenes.map((s) => s.number));
+  for (const scene of sorted) {
+    const existing =
+      fromSheet.find((p) => p.sheet!.number === scene.number) ??
+      // Same column, renumbered in the sheet (and its old number gone from it).
+      fromSheet.find((p) => p.sheet!.column === scene.column && !numbers.has(p.sheet!.number));
+    if (!existing) {
+      const project: AgentProject = {
+        id: crypto.randomUUID(),
+        name: scene.name,
+        flow: {
+          ...emptyFlow,
+          name: scene.name,
+          stages: [blankStage('1')],
+          knowledge: scene.knowledge,
+          saveInfo: scene.saveInfo,
+          cannotUse: scene.cannotUse,
+        },
+        brief: scene.description,
+        generatedBrief: null,
+        boardUrl: '',
+        music: null,
+        order: order++,
+        sheet: { sheetId, gid, ...baselineOf(scene) },
+        figjamFlow: null,
+        updatedAt: Date.now(),
+      };
+      await putProject(project);
+      result.added.push(project);
+      continue;
+    }
+    // Archived: protected from the sheet entirely.
+    if (existing.archived) {
+      result.archived.push(existing);
+      continue;
+    }
+    const source = existing.sheet!;
+    // The number and column are the sheet's to give, so they follow it without asking.
+    const placeChanged = source.number !== scene.number || source.column !== scene.column;
+    const placed = placeChanged ? { ...existing, sheet: { ...source, number: scene.number, column: scene.column } } : existing;
+    const sheetChanged =
+      source.importedName !== scene.name ||
+      source.importedBrief !== scene.description ||
+      (source.importedKnowledge ?? source.importedCanUse ?? null) !== scene.knowledge ||
+      (source.importedSaveInfo ?? null) !== scene.saveInfo ||
+      // The sheet no longer has a "can use" row: text from an older import goes.
+      Boolean(source.importedSceneUse) ||
+      (source.importedCannotUse ?? null) !== scene.cannotUse;
+    if (placeChanged && (!sheetChanged || editedSinceImport(existing))) await putProject(placed);
+    if (!sheetChanged) {
+      result.unchanged.push(placed);
+      continue;
+    }
+    if (editedSinceImport(existing)) {
+      result.conflicts.push({ project: placed, scene });
+      continue;
+    }
+    const updated = await applySheetScene(existing, scene);
+    result.updated.push(updated);
+  }
+  return result;
+}
+
+/** What the sheet said about a scene, kept to tell later whether it's been edited in the app. */
+function baselineOf(scene: SheetScene) {
+  return {
+    column: scene.column,
+    number: scene.number,
+    importedName: scene.name,
+    importedBrief: scene.description,
+    importedKnowledge: scene.knowledge,
+    importedSaveInfo: scene.saveInfo,
+    importedSceneUse: '',
+    importedCannotUse: scene.cannotUse,
+    importedCanUse: undefined,
+  };
+}
+
+/** Changed in the app since it was last imported (rows 4–7 only once they were imported separately). */
+function editedSinceImport(project: AgentProject): boolean {
+  const s = project.sheet!;
+  const differs = (now: string | undefined, then: string | undefined) => then !== undefined && (now ?? '') !== then;
+  return (
+    project.name !== s.importedName ||
+    project.brief !== s.importedBrief ||
+    differs(project.flow.knowledge, s.importedKnowledge ?? s.importedCanUse) ||
+    differs(project.flow.saveInfo, s.importedSaveInfo) ||
+    differs(project.flow.canUse, s.importedSceneUse) ||
+    differs(project.flow.cannotUse, s.importedCannotUse)
+  );
+}
+
+/** Takes the sheet's version of a scene: name, description and rows 4–7 (its flow's stages stay until regenerated). */
+export async function applySheetScene(project: AgentProject, scene: SheetScene): Promise<AgentProject> {
+  const source = project.sheet!;
+  const updated: AgentProject = {
+    ...project,
+    name: scene.name,
+    brief: scene.description,
+    flow: {
+      ...project.flow,
+      knowledge: scene.knowledge,
+      saveInfo: scene.saveInfo,
+      canUse: '',
+      cannotUse: scene.cannotUse,
+    },
+    sheet: { ...source, ...baselineOf(scene) },
+    updatedAt: Date.now(),
+  };
+  await putProject(updated);
+  return updated;
+}
+
+/** "Keep mine": the scene stays as edited; the sheet's current version becomes the new baseline. */
+export async function keepSceneEdits(project: AgentProject, scene: SheetScene): Promise<void> {
+  const source = project.sheet!;
+  await putProject({ ...project, sheet: { ...source, ...baselineOf(scene) } });
+}
+
+/**
+ * Archives a scene, or brings it back — to the bottom of the list. Nothing
+ * else about it changes.
+ */
+export async function setArchived(id: string, archived: boolean): Promise<void> {
+  const project = await getProject(id);
+  if (!project) return;
+  await putProject({ ...project, archived, order: archived ? project.order : await nextOrder() });
+}
+
+/** Records that a scene's current flow is on FigJam (without touching anything else about it). */
+export async function markWrittenToFigjam(id: string, fingerprint: string): Promise<void> {
+  const project = await getProject(id);
+  if (project) await putProject({ ...project, figjamFlow: fingerprint });
 }

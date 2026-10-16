@@ -147,11 +147,11 @@ export function flowToBoard(flow: AgentFlow): BoardSpec {
   }
 
   return {
-    title: `${flow.name?.trim() || 'Goal Agent'} — Conversation Flow`,
+    title: `${flow.name?.trim() || 'Chatbot'} — Conversation Flow`,
     intro:
       'Each STAGE table is one part of the conversation: a goal, the information it needs, and where it can go next. ' +
       'The agent talks freely to reach each goal and steers callers back when they wander. Edit anything here, then ' +
-      'click Import from FigJam in Goal Agent Studio to test it. The GUIDE card explains how to write each row.',
+      'click Import from FigJam in Chatbot Designer to test it. The GUIDE card explains how to write each row.',
     cards,
     links,
   };
@@ -220,7 +220,14 @@ function parseList<T>(cell: string, parse: (line: string) => T | null, what: str
 
 export function boardToFlow(
   tables: ReadTable[],
-  keep: { tdUrl?: string; tdTiming?: AgentFlow['tdTiming']; knowledge?: string } = {},
+  keep: {
+    tdUrl?: string;
+    tdTiming?: AgentFlow['tdTiming'];
+    knowledge?: string;
+    saveInfo?: string;
+    canUse?: string;
+    cannotUse?: string;
+  } = {},
 ): { flow: AgentFlow; warnings: string[] } {
   const warnings: string[] = [];
   // The knowledge base isn't on the board — keep the app's copy.
@@ -234,6 +241,10 @@ export function boardToFlow(
     tdUrl: keep.tdUrl ?? '',
     tdTiming: keep.tdTiming,
     knowledge: keep.knowledge ?? '',
+    // Not on the board either: what to save, and what this scene cannot use.
+    saveInfo: keep.saveInfo,
+    canUse: keep.canUse,
+    cannotUse: keep.cannotUse,
   };
   let sawMaster = false;
   let sawKnowledge = false;

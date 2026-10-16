@@ -6,7 +6,7 @@ import type { VoiceSettings } from '@/lib/types';
 import type { AgentFlow } from './types';
 
 /**
- * Saved Goal Agent Studio projects — a flow plus the brief it came from, the
+ * Saved Chatbot Designer projects — a flow plus the brief it came from, the
  * FigJam board it lives on, its voices and its background music. Kept next
  * to the app (not in the browser) so projects survive cleared browser data
  * and show up in any browser on this computer. API keys are never part of a
@@ -18,6 +18,28 @@ export type ProjectVoice = {
   voiceSettings: VoiceSettings | null;
   /** The voice in use speaks with ElevenLabs' expressive model (missing = regular). */
   expressive?: boolean;
+};
+
+/**
+ * Where an imported scene came from: its sheet and column (its lasting link
+ * to the sheet — the scene's own id is separate), its number as the sheet
+ * gives it, and its name and description as last imported (to tell whether
+ * they've been edited in the app since).
+ */
+export type SheetSource = {
+  sheetId: string;
+  gid: string;
+  column: string;
+  number: string;
+  importedName: string;
+  importedBrief: string;
+  /** Rows 4–7 as last imported (each missing on scenes imported before it was read separately). */
+  importedKnowledge?: string;
+  importedSaveInfo?: string;
+  importedSceneUse?: string;
+  importedCannotUse?: string;
+  /** The knowledge base under its earlier name (scenes imported when row 4 was called "can use"). */
+  importedCanUse?: string;
 };
 
 /** The music's file is stored separately (see musicFile); `key` changes whenever a new file is dropped in. */
@@ -37,6 +59,12 @@ export type AgentProject = {
   music?: ProjectMusic | null;
   /** Position in the Scenes list (0 = first), set by dragging; missing = not placed yet. */
   order?: number;
+  /** Set for scenes imported from a Google Sheet. */
+  sheet?: SheetSource;
+  /** Fingerprint of the flow as last written to FigJam (null/missing = never written). */
+  figjamFlow?: string | null;
+  /** Put away: listed separately, and never changed by a Google Sheet import. */
+  archived?: boolean;
   updatedAt: number;
 };
 

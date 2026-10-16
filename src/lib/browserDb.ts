@@ -7,11 +7,12 @@
  *   music         the open project's music file, as a working copy
  *   projects      saved projects, by id (see localProjects.ts)
  *   projectMusic  each saved project's music file, by project id
+ *   patients      each patient and what their scenes have saved (see memory.ts)
  */
 
 const DB_NAME = 'goal-agent-studio';
-const VERSION = 2;
-export const STORES = ['music', 'projects', 'projectMusic'] as const;
+const VERSION = 3;
+export const STORES = ['music', 'projects', 'projectMusic', 'patients'] as const;
 export type StoreName = (typeof STORES)[number];
 
 export function openDb(): Promise<IDBDatabase> {

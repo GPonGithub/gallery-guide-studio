@@ -44,6 +44,12 @@ function EventLine({ event }: { event: AgentEvent }) {
       return <li className="font-medium">■ Conversation ended — {event.reason}</li>;
     case 'note':
       return <li className="italic text-muted-ink">{event.text}</li>;
+    case 'saved':
+      return (
+        <li>
+          💾 Saved for later scenes: <span className="font-label">{event.label}</span> = {event.value}
+        </li>
+      );
     case 'rejected':
       return <li className="text-[#b91c1c]">⚠ {event.text}</li>;
   }

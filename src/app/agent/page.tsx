@@ -1,7 +1,7 @@
 'use client';
 
-import { Fragment, useEffect, useRef, useState } from 'react';
-import { DesignPanel } from '@/components/agent/DesignPanel';
+import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { DesignPanel, type SheetImportOutcome, type SheetSync } from '@/components/agent/DesignPanel';
 import { MasterEditor, StageEditor } from '@/components/agent/FlowEditor';
 import { OpenMic, type OpenMicStatus, type UtteranceTiming } from '@/components/agent/OpenMic';
 import { SpeechQueue } from '@/components/agent/speechQueue';
@@ -9,15 +9,43 @@ import { startStreamedClip, type StreamedClip } from '@/components/agent/streame
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
 import { DropdownArrow } from '@/components/agent/DropdownArrow';
+import { PatientMenu } from '@/components/agent/PatientMenu';
+import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { CueMarker, CueMonitor, type SentCue } from '@/components/agent/CueMonitor';
 import { adoptKeylessTrack, clearTrack, loadTrack, saveTrack } from '@/lib/musicStore';
-import { getProjectMusic, moveServerProjectsHere } from '@/lib/agent/localProjects';
+import {
+  applySheetScene,
+  getProject,
+  getProjectMusic,
+  importSheetScenes,
+  keepSceneEdits,
+  listProjects,
+  markWrittenToFigjam,
+  moveServerProjectsHere,
+  type SheetConflict,
+} from '@/lib/agent/localProjects';
+import { compareSceneNumbers, type SheetScene } from '@/lib/agent/sheetScenes';
+import { displayLabel, isScriptUrl } from '@/lib/agent/sheetScript';
+import {
+  clearMemory,
+  createPatient,
+  deletePatient,
+  earlierMemory,
+  listPatients,
+  saveToMemory,
+  savedInScene,
+  type MemoryItem,
+  type Patient,
+  type SceneRef,
+} from '@/lib/agent/memory';
+import type { RememberedItem } from '@/lib/agent/types';
 import type { TurnStreamEvent } from '@/lib/agent/runtime';
 import { MAX_VOICES, VoicePanel, type AccountVoices, type SavedVoice, type VoiceCheck } from '@/components/agent/VoicePanel';
 import { DEFAULT_VOICE_SETTINGS } from '@/lib/storage';
 import type { VoiceSettings } from '@/lib/types';
-import { ProjectsMenu, type CurrentProject } from '@/components/agent/ProjectsMenu';
-import type { AgentProject, ProjectMusic, ProjectVoice } from '@/lib/agent/projectStore';
+import { ProjectsMenu, saveProjectRequest, type CurrentProject } from '@/components/agent/ProjectsMenu';
+import type { AgentProject, ProjectMusic, ProjectVoice, SheetSource } from '@/lib/agent/projectStore';
 import { Inspector, type TurnLog } from '@/components/agent/Inspector';
 import { blankStage, emptyFlow, initialState, sampleFlow, sortStages, startStage } from '@/lib/agent/flow';
 import type { AgentEvent, AgentFlow, ChatTurn, CueEvent, CueStatus, SessionState, Stage, TurnResponse } from '@/lib/agent/types';
@@ -41,6 +69,18 @@ type Saved = {
   brief: string;
   /** `brief` as it was when the flow was last generated (null = never) — it's up to date when they match. */
   generatedBrief: string | null;
+  /** The Google Sheet link last used to generate scenes. */
+  sheetUrl: string;
+  /** The sheet's Apps Script web app, which writes what scenes save into row 7 (see lib/agent/sheetScript.ts). */
+  sheetScriptUrl: string;
+  /** The sheet whose scenes get number buttons in "Describe the conversation". */
+  activeSheetId: string | null;
+  /** The open scene's link to its sheet column, if it was imported from one. */
+  sceneSheet: SheetSource | null;
+  /** Fingerprint of the open scene's flow as last written to FigJam (null = not written). */
+  figjamFlow: string | null;
+  /** The patient being talked to: what their conversations save is kept for them (see memory.ts). */
+  activePatientId: string | null;
   /** The FigJam board the flow is drawn on and imported from. */
   boardUrl: string;
   /** The saved project this work belongs to (null = not saved yet). */
@@ -63,6 +103,57 @@ type Saved = {
   /** The open project's music (its file is in IndexedDB — see musicStore), or none. */
   musicTrack: { name: string; key: string } | null;
 };
+
+// Conversations are kept — per scene, and within a scene per starting stage
+// ("Start at") — when moving to another scene or starting point, and brought
+// back on return (and across reloads). Only "Refresh this scene" (or
+// "Complete restart") clears one. Scenes are keyed by id ('unsaved' for a
+// scene not saved yet); `lastStart` remembers each scene's starting point.
+const CONVERSATIONS_KEY = 'goal-agent-conversations:v2';
+const OLD_CONVERSATIONS_KEY = 'goal-agent-conversations:v1';
+type SceneConversation = { session: SessionState; messages: ChatTurn[]; log: TurnLog[]; cueLog: SentCue[]; startAt: string };
+type ConversationStore = { threads: Record<string, SceneConversation>; lastStart: Record<string, string> };
+const threadKey = (scene: string, start: string) => `${scene}::${start}`;
+
+function loadConversations(): ConversationStore {
+  try {
+    const stored = window.localStorage.getItem(CONVERSATIONS_KEY);
+    if (stored) return JSON.parse(stored) as ConversationStore;
+    // From when each scene had a single conversation.
+    const old = JSON.parse(window.localStorage.getItem(OLD_CONVERSATIONS_KEY) ?? '{}') as Record<string, SceneConversation>;
+    const store: ConversationStore = { threads: {}, lastStart: {} };
+    for (const [scene, c] of Object.entries(old)) {
+      store.threads[threadKey(scene, c.startAt)] = c;
+      store.lastStart[scene] = c.startAt;
+    }
+    return store;
+  } catch {
+    return { threads: {}, lastStart: {} };
+  }
+}
+
+function storeConversations(store: ConversationStore) {
+  try {
+    window.localStorage.setItem(CONVERSATIONS_KEY, JSON.stringify(store));
+  } catch {
+    // Not kept across a reload — still kept while the page is open.
+  }
+}
+
+// A saved conversation still fits its scene: the stage it was at still exists.
+const fitsFlow = (c: SceneConversation | undefined, flow: AgentFlow): c is SceneConversation =>
+  Boolean(c && (c.session.ended || flow.stages.some((st) => st.code === c.session.stageCode)));
+
+// What the open scene may use from the patient's earlier scenes, and what its
+// "cannot use" keeps out (all of it, with `error`, if the check failed).
+type MemoryCheck = { allowed: MemoryItem[]; blocked: MemoryItem[]; error?: string };
+
+// A remembered item as the agent is given it.
+const toRemembered = (it: MemoryItem): RememberedItem => ({
+  label: it.label,
+  value: it.value,
+  scene: it.sceneNumber ? `Scene ${it.sceneNumber} · ${it.sceneName}` : it.sceneName,
+});
 
 // Restart is the conversation's main reset, so its outline is twice as heavy as other buttons'.
 const restartButton = buttonOutline.replace('border-2 ', 'border-4 ');
@@ -112,6 +203,12 @@ function loadSaved(): Saved {
     voiceSettings: null,
     brief: '',
     generatedBrief: null,
+    sheetUrl: '',
+    sheetScriptUrl: '',
+    activeSheetId: null,
+    sceneSheet: null,
+    figjamFlow: null,
+    activePatientId: null,
     boardUrl: '',
     projectId: null,
     projectName: 'Untitled scene',
@@ -174,6 +271,25 @@ export default function AgentStudioPage() {
   const [voiceOn, setVoiceOn] = useState(true);
   // Every TouchDesigner cue of this conversation, as it went out (see CueMonitor).
   const [cueLog, setCueLog] = useState<SentCue[]>([]);
+  const conversations = useRef<ConversationStore>({ threads: {}, lastStart: {} });
+  // Row 7 of the sheet, per scene: how the last write of its saved information went.
+  const [sheetSync, setSheetSync] = useState<Record<string, SheetSync>>({});
+  const sheetWrites = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const [confirmCompleteRestart, setConfirmCompleteRestart] = useState(false);
+  // The Design Process column's width — dragged on its border (see DesignResizeHandle).
+  const [designWidth, setDesignWidth] = useState<number>(DESIGN_WIDTH.standard);
+  const resizeDesign = (width: number) => {
+    const next = clampDesignWidth(width);
+    setDesignWidth(next);
+    saveDesignWidth(next);
+  };
+  const [sheetScenes, setSheetScenes] = useState<AgentProject[]>([]);
+  const [patients, setPatients] = useState<Patient[]>([]);
+  // Bumped whenever a patient's memory changes, to re-read it.
+  const [memoryVersion, setMemoryVersion] = useState(0);
+  const memoryChecks = useRef(new Map<string, Promise<MemoryCheck>>());
+  const [memoryCheck, setMemoryCheck] = useState<{ key: string; result: MemoryCheck } | null>(null);
+  const [sheetScenesVersion, setSheetScenesVersion] = useState(0);
   const cueStatusRef = useRef(new Map<string, CueStatus>());
   const [openMicOn, setOpenMicOn] = useState(false);
   const [openMicStatus, setOpenMicStatus] = useState<OpenMicStatus>('off');
@@ -289,9 +405,30 @@ export default function AgentStudioPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
     setSaved(loaded);
     setSession(initialState(loaded.flow));
+    // The open scene's conversation, at the starting point it was left on.
+    conversations.current = loadConversations();
+    const scene = loaded.projectId ?? 'unsaved';
+    const start = conversations.current.lastStart[scene] ?? '';
+    const resumed = conversations.current.threads[threadKey(scene, start)];
+    if (fitsFlow(resumed, loaded.flow)) {
+      setSession(resumed.session);
+      setMessages(resumed.messages);
+      setLog(resumed.log);
+      setCueLog(resumed.cueLog);
+      setStartAt(resumed.startAt);
+    }
     // First visit with projects in the browser: copy any from the old server store.
     void moveServerProjectsHere();
     setSelected('design');
+  }, []);
+
+  // The remembered column width; and a narrower window never squeezes the chat out.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
+    setDesignWidth(loadDesignWidth());
+    const onWindowResize = () => setDesignWidth((w) => clampDesignWidth(w));
+    window.addEventListener('resize', onWindowResize);
+    return () => window.removeEventListener('resize', onWindowResize);
   }, []);
 
   useEffect(() => {
@@ -306,6 +443,92 @@ export default function AgentStudioPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [messages, busy]);
+
+  // The number buttons in "Describe the conversation": one per scene of the
+  // sheet in use, in scene-number order. Re-read whenever scenes may have
+  // changed (a scene opened or saved, the Scenes dialog closed, an import).
+  const activeSheetId = saved?.activeSheetId ?? null;
+  const openSceneId = saved?.projectId ?? null;
+  useEffect(() => {
+    let stale = false;
+    void (async () => {
+      const all = activeSheetId ? await listProjects().catch(() => [] as AgentProject[]) : [];
+      const ofSheet = all
+        // Archived scenes are put away: no number button (they're still in Scenes).
+        .filter((p) => p.sheet?.sheetId === activeSheetId && !p.archived)
+        .sort((a, b) => compareSceneNumbers(a.sheet!.number, b.sheet!.number));
+      if (!stale) setSheetScenes(ofSheet);
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [activeSheetId, openSceneId, projectsOpen, sheetScenesVersion]);
+
+  // Cross-scene memory: the patients, and what the open scene may use from
+  // the selected patient's earlier scenes. Restrictions ("cannot use") are
+  // checked once per scene and set of memories, then reused for every turn;
+  // if the check can't be done, nothing from earlier scenes is used.
+  const activePatient = saved ? (patients.find((p) => p.id === saved.activePatientId) ?? null) : null;
+  const sceneNow: SceneRef | null = saved
+    ? { id: saved.projectId ?? 'unsaved', number: saved.sceneSheet?.number ?? '', name: saved.projectName }
+    : null;
+  const earlierItems = sceneNow ? earlierMemory(activePatient, sceneNow) : [];
+  const cannotUseNow = saved?.flow.cannotUse?.trim() ?? '';
+  const memoryKey = JSON.stringify([cannotUseNow, earlierItems.map((it) => [it.id, it.label, it.value])]);
+  const checkMemory = (key: string, cannotUse: string, items: MemoryItem[], apiKey: string): Promise<MemoryCheck> => {
+    let pending = memoryChecks.current.get(key);
+    if (!pending) {
+      pending = (async (): Promise<MemoryCheck> => {
+        if (!cannotUse || items.length === 0) return { allowed: items, blocked: [] };
+        try {
+          const res = await fetch('/api/agent/memory-filter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ cannotUse, items: items.map(toRemembered), anthropicApiKey: apiKey }),
+          });
+          const data = (await res.json()) as { blocked: number[] } | { error: string };
+          if ('error' in data) throw new Error(data.error);
+          const blocked = new Set(data.blocked);
+          return { allowed: items.filter((_, i) => !blocked.has(i)), blocked: items.filter((_, i) => blocked.has(i)) };
+        } catch (err) {
+          memoryChecks.current.delete(key); // try again next time
+          return {
+            allowed: [],
+            blocked: items,
+            error: `Couldn’t check this scene’s restrictions (${err instanceof Error ? err.message : 'error'}) — nothing from earlier scenes is being used.`,
+          };
+        }
+      })();
+      memoryChecks.current.set(key, pending);
+    }
+    return pending;
+  };
+  useEffect(() => {
+    if (!saved) return;
+    let stale = false;
+    void checkMemory(memoryKey, cannotUseNow, earlierItems, saved.anthropicApiKey).then((result) => {
+      if (!stale) setMemoryCheck({ key: memoryKey, result });
+    });
+    return () => {
+      stale = true;
+    };
+  }, [memoryKey]); // eslint-disable-line react-hooks/exhaustive-deps -- the key covers everything the check depends on
+  useEffect(() => {
+    void listPatients()
+      .then(setPatients)
+      .catch(() => {});
+  }, [memoryVersion]);
+
+  const sceneKey = saved?.projectId ?? 'unsaved';
+  useEffect(() => {
+    if (!session) return;
+    const store = conversations.current;
+    conversations.current = {
+      threads: { ...store.threads, [threadKey(sceneKey, startAt)]: { session, messages, log, cueLog, startAt } },
+      lastStart: { ...store.lastStart, [sceneKey]: startAt },
+    };
+    storeConversations(conversations.current);
+  }, [session, messages, log, cueLog, startAt]); // eslint-disable-line react-hooks/exhaustive-deps -- saved under the scene and starting point they belong to at the time
 
   if (!saved || !session) return null;
   const flow = saved.flow;
@@ -336,7 +559,7 @@ export default function AgentStudioPage() {
         .map((s) => ({ ...s, exits: s.exits.map((e) => ({ ...e, to: unlink(e.to) })) })),
       globalExits: flow.globalExits.map((e) => ({ ...e, to: unlink(e.to) })),
     });
-    setSelected('master');
+    setSelected('design');
   };
 
   const addStage = () => {
@@ -356,6 +579,38 @@ export default function AgentStudioPage() {
     setSpeaking(false);
   };
 
+  // "Complete restart": every scene's conversations are cleared, and this one starts afresh.
+  const completeRestart = () => {
+    conversations.current = { threads: {}, lastStart: {} };
+    storeConversations(conversations.current);
+    setStartAt('');
+    restart('');
+  };
+
+  // Shows a scene's conversation for a starting point: the one kept from
+  // before if there is one (and it still fits the flow), otherwise a fresh one.
+  const showConversation = (scene: string, target: AgentFlow, start: string) => {
+    const from = start && target.stages.some((st) => st.code === start) ? start : '';
+    const kept = conversations.current.threads[threadKey(scene, from)];
+    const c = fitsFlow(kept, target)
+      ? kept
+      : { session: initialState(target, from || undefined), messages: [], log: [], cueLog: [], startAt: from };
+    setSession(c.session);
+    setMessages(c.messages);
+    setLog(c.log);
+    setCueLog(c.cueLog);
+    setStartAt(c.startAt);
+  };
+
+  // "Start at": moves to that starting point's conversation (the one being
+  // left is kept, and comes back when its starting point is chosen again).
+  const changeStart = (start: string) => {
+    if (busy) return setError('Wait for the agent to finish replying, then change the starting point.');
+    stopAudio();
+    showConversation(sceneKey, flow, start);
+  };
+
+  // "Refresh this scene": just the open scene's conversation starts again.
   const restart = (code = startAt) => {
     stopAudio();
     musicRef.current?.stop();
@@ -370,7 +625,7 @@ export default function AgentStudioPage() {
   // a fresh conversation against it.
   const loadFlow = (next: AgentFlow, select?: string) => {
     setFlow(next);
-    setSelected(select ?? sortStages(next.stages)[0]?.id ?? 'master');
+    setSelected(select ?? 'design');
     setStartAt('');
     stopAudio();
     musicRef.current?.stop();
@@ -389,6 +644,7 @@ export default function AgentStudioPage() {
     flow,
     brief: saved.brief,
     generatedBrief: saved.generatedBrief,
+    figjamFlow: saved.figjamFlow,
     boardUrl: saved.boardUrl,
     voice: voiceOf(saved),
     music: musicOf(saved),
@@ -403,7 +659,8 @@ export default function AgentStudioPage() {
     !dirty || window.confirm(`"${saved.projectName}" has unsaved changes. Continue without saving them?`);
 
   // Records `project` as what's on disk. (Projects saved before voices were
-  // part of a project keep whatever voice is set up now.)
+  // part of a project keep whatever voice is set up now; so do scenes from a
+  // sheet, which share one voice and one FigJam board.)
   const markSaved = (project: AgentProject) =>
     setSaved((s) =>
       s
@@ -411,21 +668,26 @@ export default function AgentStudioPage() {
             ...s,
             projectId: project.id,
             projectName: project.name,
+            sceneSheet: project.sheet ?? null,
             savedSnapshot: snapshotOf({
               flow: project.flow,
               brief: project.brief,
-              boardUrl: project.boardUrl,
-              voice: project.voice ?? voiceOf(s),
+              boardUrl: project.sheet ? s.boardUrl : project.boardUrl,
+              voice: project.sheet ? voiceOf(s) : (project.voice ?? voiceOf(s)),
               music: project.music ?? null,
             }),
           }
         : s,
     );
 
-  const openProject = (project: AgentProject) => {
-    if (!okToLeave()) return;
+  // Puts a saved scene in the studio. A scene from a sheet keeps the voice
+  // and FigJam board in use (they're shared across the sheet's scenes).
+  const openScene = (project: AgentProject) => {
     loadFlow(project.flow, 'design');
-    const voice = project.voice;
+    // Pick its conversation up where it was left, at the starting point it was on.
+    showConversation(project.id, project.flow, conversations.current.lastStart[project.id] ?? '');
+    const shared = Boolean(project.sheet);
+    const voice = shared ? undefined : project.voice;
     const music = project.music ?? null;
     setSaved((s) =>
       s
@@ -434,7 +696,9 @@ export default function AgentStudioPage() {
             brief: project.brief,
             // Scenes saved before generation was tracked: assume their flow came from their description.
             generatedBrief: project.generatedBrief !== undefined ? project.generatedBrief : project.brief || null,
-            boardUrl: project.boardUrl,
+            figjamFlow: project.figjamFlow ?? null,
+            ...(project.sheet && { activeSheetId: project.sheet.sheetId }),
+            boardUrl: shared ? s.boardUrl : project.boardUrl,
             ...(voice && {
               voices: voice.voices,
               activeVoice: voice.activeVoice,
@@ -449,7 +713,171 @@ export default function AgentStudioPage() {
         : s,
     );
     markSaved(project);
+  };
+
+  const openProject = (project: AgentProject) => {
+    if (!okToLeave()) return;
+    openScene(project);
     setProjectsOpen(false);
+  };
+
+  const refreshSheetScenes = () => setSheetScenesVersion((v) => v + 1);
+
+  // Keeps what a conversation picked up, for the selected patient (one is
+  // made, "Patient 1", if none is selected yet).
+  const rememberForPatient = async (scene: SceneRef, sheet: SheetSource | null, items: { label: string; value: string }[]) => {
+    try {
+      let patientId = saved.activePatientId && patients.some((p) => p.id === saved.activePatientId) ? saved.activePatientId : null;
+      if (!patientId) {
+        const created = await createPatient(`Patient ${patients.length + 1}`);
+        patientId = created.id;
+        setSaved((s) => (s ? { ...s, activePatientId: created.id } : s));
+      }
+      const patient = await saveToMemory(patientId, scene, items);
+      setMemoryVersion((v) => v + 1);
+      if (patient) writeSavedToSheet(scene.id, sheet, patient);
+    } catch {
+      setError('Couldn’t save what this conversation picked up for the patient (this browser’s storage may be blocked).');
+    }
+  };
+
+  // Row 7 of the scene's column in the Google Sheet mirrors what the scene
+  // has saved for the patient (through the sheet's Apps Script). Saves that
+  // come close together are sent as one.
+  const writeSavedToSheet = (sceneId: string, sheet: SheetSource | null, patient: Patient) => {
+    const scriptUrl = saved.sheetScriptUrl.trim();
+    if (!sheet || !isScriptUrl(scriptUrl)) return;
+    const entries = savedInScene(patient, sceneId).map((it) => ({ label: displayLabel(it.label), value: it.value }));
+    if (entries.length === 0) return;
+    const status = (next: Omit<SheetSync, 'column'>) =>
+      setSheetSync((all) => ({ ...all, [sceneId]: { ...next, column: sheet.column } }));
+    const run = async () => {
+      status({ state: 'saving', at: Date.now() });
+      try {
+        const res = await fetch('/api/sheets/saved', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scriptUrl, spreadsheetId: sheet.sheetId, gid: sheet.gid, column: sheet.column, patient: patient.name, entries }),
+        });
+        const data = (await res.json()) as { ok: boolean; error?: string };
+        status(data.ok ? { state: 'saved', at: Date.now() } : { state: 'error', message: data.error ?? 'The sheet didn’t save it.', at: Date.now() });
+      } catch {
+        status({ state: 'error', message: 'Couldn’t reach the sheet — check the internet connection.', at: Date.now() });
+      }
+    };
+    clearTimeout(sheetWrites.current.get(sceneId));
+    sheetWrites.current.set(
+      sceneId,
+      setTimeout(() => {
+        sheetWrites.current.delete(sceneId);
+        void run();
+      }, 800),
+    );
+  };
+
+  // Moving to another scene saves the open one first, so nothing is lost.
+  const switchScene = async (id: string) => {
+    if (id === saved.projectId) return;
+    if (busy) return setError('Wait for the agent to finish replying, then switch scenes.');
+    if (saved.projectId && dirty) {
+      try {
+        markSaved(await saveProjectRequest(current, saved.projectName, false));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Couldn’t save this scene before switching.');
+        return;
+      }
+    } else if (!okToLeave()) {
+      return;
+    }
+    const project = await getProject(id);
+    if (!project) return setError('That scene couldn’t be found — it may have been deleted.');
+    openScene(project);
+    void refreshSheetScenes();
+  };
+
+  // "Generate Scenes": reads the sheet and creates (or updates) its scenes.
+  const importSheet = async (url: string): Promise<SheetImportOutcome> => {
+    // Save the open scene first, so edits in it count as edits (not something to overwrite).
+    if (saved.projectId && dirty) markSaved(await saveProjectRequest(current, saved.projectName, false));
+    const res = await fetch('/api/sheets/scenes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    });
+    const data = (await res.json()) as { sheetId: string; gid: string; scenes: SheetScene[] } | { error: string };
+    if ('error' in data) return { error: data.error };
+    if (data.scenes.length === 0) return { error: 'No scenes found — every column after A is empty in rows 2 to 6 of that tab.' };
+    const result = await importSheetScenes(data.sheetId, data.gid, data.scenes);
+    setSaved((s) => (s ? { ...s, activeSheetId: data.sheetId, sheetUrl: url } : s));
+    // Show the sheet's first scene, unless one of its scenes is already open.
+    const all = await listProjects();
+    const ofSheet = all
+      .filter((p) => p.sheet?.sheetId === data.sheetId && !p.archived)
+      .sort((a, b) => compareSceneNumbers(a.sheet!.number, b.sheet!.number));
+    const open = all.find((p) => p.id === saved.projectId);
+    if (open?.sheet?.sheetId === data.sheetId) openScene(open);
+    else if (ofSheet[0] && okToLeave()) openScene(ofSheet[0]);
+    refreshSheetScenes();
+    return { result };
+  };
+
+  // "Update This Scene", first step: reads the open scene's column from the
+  // sheet again and takes its name, description and rows 4–6 — asking first
+  // if they've been edited here. Returns what generating should use; null for
+  // a scene that isn't from a sheet, 'cancelled' if the edits are kept.
+  const refreshSceneFromSheet = async (): Promise<{ brief: string; flow: AgentFlow } | 'cancelled' | null> => {
+    const sheet = saved.sceneSheet;
+    if (!sheet || !saved.projectId) return null;
+    const res = await fetch('/api/sheets/scenes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: `https://docs.google.com/spreadsheets/d/${sheet.sheetId}/edit#gid=${sheet.gid}` }),
+    });
+    const data = (await res.json()) as { scenes: SheetScene[] } | { error: string };
+    if ('error' in data) throw new Error(data.error);
+    const scene = data.scenes.find((sc) => sc.number === sheet.number) ?? data.scenes.find((sc) => sc.column === sheet.column);
+    if (!scene) throw new Error(`Scene ${sheet.number} isn’t in the sheet any more.`);
+    const same = (a: string | undefined, b: string | undefined) => (a ?? '').trim() === (b ?? '').trim();
+    const now = [saved.projectName, saved.brief, flow.knowledge, flow.saveInfo, flow.cannotUse];
+    const imported = [sheet.importedName, sheet.importedBrief, sheet.importedKnowledge, sheet.importedSaveInfo, sheet.importedCannotUse];
+    const fromSheet = [scene.name, scene.description, scene.knowledge, scene.saveInfo, scene.cannotUse];
+    const editedHere = now.some((v, i) => imported[i] !== undefined && !same(v, imported[i]));
+    const differs = now.some((v, i) => !same(v, fromSheet[i]));
+    if (
+      editedHere &&
+      differs &&
+      !window.confirm('This scene has been edited here since it came from the sheet. Replace those edits with what the sheet says now?')
+    ) {
+      return 'cancelled';
+    }
+    // The stored scene takes the sheet's version as its new baseline, so it doesn't count as edited.
+    const stored = await getProject(saved.projectId);
+    const updated = stored ? await applySheetScene(stored, scene) : null;
+    const nextFlow: AgentFlow = { ...flow, knowledge: scene.knowledge, saveInfo: scene.saveInfo, cannotUse: scene.cannotUse, canUse: '' };
+    setSaved((s) =>
+      s
+        ? {
+            ...s,
+            projectName: scene.name,
+            brief: scene.description,
+            flow: nextFlow,
+            sceneSheet: updated?.sheet ?? s.sceneSheet,
+          }
+        : s,
+    );
+    refreshSheetScenes();
+    return { brief: scene.description, flow: nextFlow };
+  };
+
+  // "Keep mine" / "Use the sheet" for a scene edited in both places.
+  const resolveSheetConflict = async (conflict: SheetConflict, useSheet: boolean) => {
+    if (useSheet) {
+      const updated = await applySheetScene(conflict.project, conflict.scene);
+      if (updated.id === saved.projectId) openScene(updated);
+    } else {
+      await keepSceneEdits(conflict.project, conflict.scene);
+    }
+    void refreshSheetScenes();
   };
 
   // A fresh, unsaved scene. The Scenes dialog stays open to name and save it;
@@ -469,6 +897,8 @@ export default function AgentStudioPage() {
             projectName: 'Untitled scene',
             savedSnapshot: '',
             musicTrack: null,
+            sceneSheet: null,
+            figjamFlow: null,
           }
         : s,
     );
@@ -612,6 +1042,8 @@ export default function AgentStudioPage() {
       headStarts.set(text, requestAudio(text, '', Boolean(state.expressive)).catch(() => null));
     };
     const done = (async (): Promise<TurnResponse> => {
+      // Only what this scene may use from the patient's earlier scenes ever goes to the agent.
+      const allowed = (await checkMemory(memoryKey, cannotUseNow, earlierItems, saved.anthropicApiKey)).allowed;
       const res = await fetch('/api/agent/turn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -623,6 +1055,8 @@ export default function AgentStudioPage() {
           anthropicApiKey: saved.anthropicApiKey,
           // "When spoken" cues are held by the server and sent by the app as the reply is heard.
           holdCues: options.holdCues || cuesWhenSpoken,
+          memory: allowed.map(toRemembered),
+          savedHere: savedInScene(activePatient, sceneNow?.id ?? null).map((it) => ({ label: displayLabel(it.label), value: it.value })),
         }),
         signal: options.signal,
       });
@@ -900,6 +1334,8 @@ export default function AgentStudioPage() {
       const events = data.events.map((e) =>
         e.type === 'cue' ? { ...e, status: cueStatusRef.current.get(e.id) ?? e.status } : e,
       );
+      const toSave = data.events.flatMap((e) => (e.type === 'saved' ? [{ label: e.label, value: e.value }] : []));
+      if (toSave.length > 0 && sceneNow) void rememberForPatient(sceneNow, saved.sceneSheet, toSave);
       clock.server = data.timings;
       // Normally the voice has started by now; if not, the wait is filled in when it does.
       const voiceDone = clock.voice !== null || !queue || queue.idle;
@@ -981,13 +1417,71 @@ export default function AgentStudioPage() {
 
   const orderedStages = sortStages(flow.stages);
   const selectedStage = flow.stages.find((s) => s.id === selected);
+
+  // The open scene's stages, under its scene buttons in "Describe the
+  // conversation": Master, each stage (● = where the live conversation is),
+  // + Stage. Clicking one opens its card right below; clicking it again closes it.
+  const stageChip = (active: boolean) =>
+    `px-2 py-1 font-label text-[11px] uppercase tracking-wide ${active ? 'bg-ink text-paper' : 'text-ink hover:bg-muted'}`;
+  const toggleCard = (id: string) => setSelected((current) => (current === id ? 'design' : id));
+  const stageArea = (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-1" role="group" aria-label="This scene's stages">
+        <button onClick={() => toggleCard('master')} aria-pressed={selected === 'master'} className={stageChip(selected === 'master')}>
+          Master
+        </button>
+        {orderedStages.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => toggleCard(s.id)}
+            aria-pressed={selected === s.id}
+            title={s.name}
+            className={stageChip(selected === s.id)}
+          >
+            {s.code}
+            {session.stageCode === s.code && !session.ended ? ' ●' : ''}
+          </button>
+        ))}
+        <button onClick={addStage} className={stageChip(false)}>
+          + Stage
+        </button>
+      </div>
+      {(selectedStage || selected === 'master') && (
+        <div className="flex flex-col gap-2 border-2 border-ink p-3">
+          <div className="flex items-center justify-between gap-2">
+            <p className="font-display text-base text-ink">
+              {selectedStage ? `${selectedStage.code} · ${selectedStage.name}` : 'Master card'}
+            </p>
+            <button
+              onClick={() => setSelected('design')}
+              className="text-lg leading-none text-ink hover:text-muted-ink"
+              aria-label="Close this card"
+            >
+              ×
+            </button>
+          </div>
+          {selectedStage ? (
+            <StageEditor
+              key={selectedStage.id}
+              stage={selectedStage}
+              flow={flow}
+              onChange={(patch) => updateStage(selectedStage.id, patch)}
+              onDelete={() => deleteStage(selectedStage.id)}
+            />
+          ) : (
+            <MasterEditor flow={flow} onChange={(patch) => setFlow({ ...flow, ...patch })} />
+          )}
+        </div>
+      )}
+    </div>
+  );
   const firstStage = startStage(flow);
 
   return (
     <main className="flex min-h-screen flex-col bg-paper lg:h-screen">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-ink px-5 py-3">
         <div className="min-w-0">
-          <h1 className="font-display text-2xl leading-none tracking-tight text-ink">Goal Agent Studio</h1>
+          <h1 className="font-display text-2xl leading-none tracking-tight text-ink">Chatbot Designer</h1>
           <p className="mt-1 truncate font-label text-[10px] uppercase tracking-widest text-muted-ink">
             <span className="text-ink">{saved.projectName}</span>
             {dirty ? ' · unsaved changes' : ' · saved'}
@@ -1050,72 +1544,75 @@ export default function AgentStudioPage() {
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[400px_minmax(0,1fr)_auto]">
+      <div
+        className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[var(--design-width)_minmax(0,1fr)_auto]"
+        style={{ '--design-width': `${designWidth}px` } as CSSProperties}
+      >
         {/* Flow editor */}
-        <section className="flex min-h-0 flex-col border-b-2 border-ink lg:border-b-0 lg:border-r-2">
-          <div className="flex flex-wrap gap-1 border-b-2 border-ink p-2">
-            <button
-              onClick={() => setSelected('design')}
-              className={`px-2 py-1 font-label text-[11px] uppercase tracking-wide ${selected === 'design' ? 'bg-ink text-paper' : 'text-ink hover:bg-muted'}`}
-            >
-              Design
-            </button>
-            <button
-              onClick={() => setSelected('master')}
-              className={`px-2 py-1 font-label text-[11px] uppercase tracking-wide ${selected === 'master' ? 'bg-ink text-paper' : 'text-ink hover:bg-muted'}`}
-            >
-              Master
-            </button>
-            {orderedStages.map((s) => (
-              <button
-                key={s.id}
-                onClick={() => setSelected(s.id)}
-                title={s.name}
-                className={`px-2 py-1 font-label text-[11px] uppercase tracking-wide ${selected === s.id ? 'bg-ink text-paper' : 'text-ink hover:bg-muted'}`}
-              >
-                {s.code}
-                {session.stageCode === s.code && !session.ended ? ' ●' : ''}
-              </button>
-            ))}
-            <button onClick={addStage} className="px-2 py-1 font-label text-[11px] uppercase tracking-wide text-ink hover:bg-muted">
-              + Stage
-            </button>
-          </div>
+        <section className="relative flex min-h-0 flex-col border-b-2 border-ink lg:border-b-0 lg:border-r-2">
+          <DesignResizeHandle width={designWidth} onResize={resizeDesign} onReset={() => resizeDesign(DESIGN_WIDTH.standard)} />
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            <p className="mb-1 font-display text-lg text-ink">
-              {selectedStage ? `${selectedStage.code} · ${selectedStage.name}` : selected === 'design' ? 'Design Process' : 'Master card'}
-            </p>
-            {/* Always mounted (just hidden) so a draw/import in progress — and its
-                messages — survive switching to another tab. */}
-            <div className={selected === 'design' ? '' : 'hidden'}>
+            <p className="mb-1 font-display text-lg text-ink">Design Process</p>
+            <div>
               <DesignPanel
                 flow={flow}
                 brief={saved.brief}
                 generatedBrief={saved.generatedBrief}
                 onGenerated={(used) => setSaved((s) => (s ? { ...s, generatedBrief: used } : s))}
+                sheetUrl={saved.sheetUrl}
+                onSheetUrlChange={(sheetUrl) => setSaved({ ...saved, sheetUrl })}
+                sheetScriptUrl={saved.sheetScriptUrl}
+                onSheetScriptUrlChange={(sheetScriptUrl) => setSaved({ ...saved, sheetScriptUrl })}
+                sheetSync={saved.projectId ? sheetSync[saved.projectId] : undefined}
+                sceneSheet={saved.sceneSheet}
+                onImportSheet={importSheet}
+                onResolveConflict={resolveSheetConflict}
+                sheetScenes={sheetScenes.map((p) => ({ id: p.id, number: p.sheet!.number, name: p.name }))}
+                currentSceneId={saved.projectId}
+                onSwitchScene={(id) => void switchScene(id)}
+                scene={{
+                  key: saved.projectId,
+                  number: saved.sceneSheet?.number ?? '',
+                  heading: saved.sceneSheet ? `Scene ${saved.sceneSheet.number} · ${saved.projectName}` : saved.projectName,
+                  fromSheet: Boolean(saved.sceneSheet),
+                }}
+                figjamFlow={saved.figjamFlow}
+                onWrittenToFigjam={(fingerprint) => {
+                  setSaved((s) => (s ? { ...s, figjamFlow: fingerprint } : s));
+                  if (saved.projectId) void markWrittenToFigjam(saved.projectId, fingerprint);
+                }}
                 boardUrl={saved.boardUrl}
                 anthropicApiKey={saved.anthropicApiKey}
                 onBriefChange={(brief) => setSaved({ ...saved, brief })}
                 onBoardUrlChange={(boardUrl) => setSaved({ ...saved, boardUrl })}
                 onFlowLoaded={(next) => loadFlow(next, 'design')}
                 onKnowledgeChange={(knowledge) => setFlow({ ...flow, knowledge })}
+                onSaveInfoChange={(saveInfo) => setFlow({ ...flow, saveInfo })}
+                onMergeCanUse={() =>
+                  setFlow({
+                    ...flow,
+                    knowledge: [flow.knowledge?.trim(), flow.canUse?.trim()].filter(Boolean).join('\n\n'),
+                    canUse: '',
+                  })
+                }
+                onCannotUseChange={(cannotUse) => setFlow({ ...flow, cannotUse })}
+                memory={{
+                  patientName: activePatient?.name ?? null,
+                  available: memoryCheck?.key === memoryKey ? memoryCheck.result.allowed : [],
+                  blocked: memoryCheck?.key === memoryKey ? memoryCheck.result.blocked : [],
+                  savedHere: savedInScene(activePatient, saved.projectId ?? 'unsaved'),
+                  checking: memoryCheck?.key !== memoryKey && earlierItems.length > 0,
+                  error: memoryCheck?.key === memoryKey ? memoryCheck.result.error : undefined,
+                }}
+                onClearConversation={() => restart()}
+                onRefreshFromSheet={refreshSceneFromSheet}
                 onNeedKey={() => {
                   setError('Add your Anthropic API key first (Keys, top right).');
                   setKeysOpen(true);
                 }}
+                stages={stageArea}
               />
             </div>
-            {selected === 'design' ? null : selectedStage ? (
-              <StageEditor
-                key={selectedStage.id}
-                stage={selectedStage}
-                flow={flow}
-                onChange={(patch) => updateStage(selectedStage.id, patch)}
-                onDelete={() => deleteStage(selectedStage.id)}
-              />
-            ) : (
-              <MasterEditor flow={flow} onChange={(patch) => setFlow({ ...flow, ...patch })} />
-            )}
           </div>
         </section>
 
@@ -1125,17 +1622,27 @@ export default function AgentStudioPage() {
               top, its sound below — with room on each row for more later. */}
           <div className="flex flex-col gap-2 border-b-2 border-ink px-3 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
-              <button onClick={() => restart()} disabled={busy} className={`h-10 ${restartButton}`}>
-                Restart
+              <button
+                onClick={() => setConfirmCompleteRestart(true)}
+                disabled={busy}
+                className={`h-10 ${restartButton}`}
+                title="Clear the conversations in every scene and start this one afresh"
+              >
+                Complete restart
+              </button>
+              <button
+                onClick={() => restart()}
+                disabled={busy}
+                className={`h-10 ${buttonOutline}`}
+                title="Start this scene's conversation again (other scenes keep theirs)"
+              >
+                Refresh this scene
               </button>
               <span className={`ml-2 ${fieldLabel}`}>Start at</span>
               <select
                 value={startAt}
-                onChange={(e) => {
-                  setStartAt(e.target.value);
-                  restart(e.target.value);
-                }}
-                className="h-10 cursor-pointer appearance-none bg-transparent pl-2 pr-7 font-label text-[12px] text-ink hover:bg-muted/60"
+                onChange={(e) => changeStart(e.target.value)}
+                className="h-10 cursor-pointer appearance-none border border-ink bg-transparent pl-2 pr-7 font-label text-[12px] text-ink hover:bg-muted/60"
               >
                 <option value="">{firstStage ? `${firstStage.code} ${firstStage.name} (first)` : '—'}</option>
                 {orderedStages.slice(1).map((s) => (
@@ -1154,6 +1661,30 @@ export default function AgentStudioPage() {
                   ✦ Expressive voice
                 </span>
               )}
+              <span className="ml-auto" />
+              <PatientMenu
+                patients={patients}
+                activeId={saved.activePatientId}
+                onSelect={(id) => {
+                  setSaved({ ...saved, activePatientId: id });
+                  // Row 7 shows the selected patient: switching patients rewrites this scene's cell.
+                  const patient = patients.find((p) => p.id === id);
+                  if (patient && sceneNow) writeSavedToSheet(sceneNow.id, saved.sceneSheet, patient);
+                }}
+                onCreate={(name) =>
+                  void createPatient(name).then((p) => {
+                    setSaved((s) => (s ? { ...s, activePatientId: p.id } : s));
+                    setMemoryVersion((v) => v + 1);
+                  })
+                }
+                onClear={(id) => void clearMemory(id).then(() => setMemoryVersion((v) => v + 1))}
+                onDelete={(id) =>
+                  void deletePatient(id).then(() => {
+                    setSaved((s) => (s && s.activePatientId === id ? { ...s, activePatientId: null } : s));
+                    setMemoryVersion((v) => v + 1);
+                  })
+                }
+              />
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="ml-auto" />
@@ -1414,6 +1945,20 @@ export default function AgentStudioPage() {
           </div>
         </section>
       </div>
+      {confirmCompleteRestart && (
+        <ConfirmDialog
+          title="Complete restart?"
+          message={`The conversations in every scene will be cleared, and this scene will start afresh. ${
+            activePatient ? `What ${activePatient.name}'s scenes have saved is kept (clear it from the Patient menu).` : ''
+          }`}
+          confirmLabel="Complete restart"
+          onConfirm={() => {
+            setConfirmCompleteRestart(false);
+            completeRestart();
+          }}
+          onCancel={() => setConfirmCompleteRestart(false)}
+        />
+      )}
       {projectsOpen && (
         <ProjectsMenu
           current={current}

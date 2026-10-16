@@ -9,6 +9,7 @@ import {
   moveServerProjectsHere,
   saveOrder,
   saveProject,
+  setArchived,
 } from '@/lib/agent/localProjects';
 import type { AgentProject, ProjectMusic, ProjectVoice } from '@/lib/agent/projectStore';
 import type { AgentFlow } from '@/lib/agent/types';
@@ -45,6 +46,8 @@ export type CurrentProject = {
   music: ProjectMusic | null;
   /** The music file itself, if this browser has it. */
   musicBlob: () => Promise<Blob | null>;
+  /** Fingerprint of the flow as last written to FigJam (null = not written). */
+  figjamFlow: string | null;
 };
 
 export function saveProjectRequest(current: CurrentProject, name: string, asNew: boolean): Promise<AgentProject> {
@@ -54,6 +57,7 @@ export function saveProjectRequest(current: CurrentProject, name: string, asNew:
     flow: current.flow,
     brief: current.brief,
     generatedBrief: current.generatedBrief,
+    figjamFlow: asNew ? null : current.figjamFlow,
     boardUrl: current.boardUrl,
     voice: current.voice,
     music: current.music,
@@ -76,7 +80,9 @@ export function ProjectsMenu({
   onNew: () => boolean;
   onClose: () => void;
 }) {
+  // The scenes in the main list (reorderable), and the archived ones below it.
   const [projects, setProjects] = useState<AgentProject[] | null>(null);
+  const [archived, setArchivedScenes] = useState<AgentProject[]>([]);
   const [name, setName] = useState(current.name);
   const nameRef = useRef<HTMLInputElement | null>(null);
   // Where the not-yet-saved scene sits in the list (it's saved there).
@@ -98,7 +104,9 @@ export function ProjectsMenu({
   const refresh = async () => {
     try {
       await moveServerProjectsHere();
-      setProjects(await listProjects());
+      const all = await listProjects();
+      setProjects(all.filter((p) => !p.archived));
+      setArchivedScenes(all.filter((p) => p.archived));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Couldn’t load scenes.');
       setProjects([]);
@@ -164,6 +172,18 @@ export function ProjectsMenu({
     setToDelete(null);
     await deleteProject(project.id);
     await refresh();
+  };
+
+  // Archived scenes sit in their own section and are never changed by a sheet
+  // import; unarchiving one puts it back at the bottom of the list.
+  const archive = async (project: AgentProject, archive: boolean) => {
+    await setArchived(project.id, archive);
+    await refresh();
+    setNotice(
+      archive
+        ? `Archived "${project.name}" — a Google Sheet import won't change it.`
+        : `Unarchived "${project.name}" — it's at the bottom of the list.`,
+    );
   };
 
   const importFile = async (file: File | undefined) => {
@@ -448,7 +468,8 @@ export function ProjectsMenu({
                   {handle(shownName)}
                   <div className="min-w-[10rem] flex-1 select-none">
                     <p className="font-label text-[10px] uppercase tracking-widest text-muted-ink tabular-nums">
-                      Scene {numberOf(i)}
+                      {/* A scene from a sheet keeps the sheet's number wherever it's dragged. */}
+                      {p.sheet ? `Scene ${p.sheet.number} · sheet column ${p.sheet.column}` : `Scene ${numberOf(i)}`}
                       {p.id === current.id && ' · open now'}
                     </p>
                     <p className="truncate font-display text-base text-ink">{shownName}</p>
@@ -476,6 +497,13 @@ export function ProjectsMenu({
                     Export
                   </button>
                   <button
+                    onClick={() => void archive(p, true)}
+                    className={buttonOutline}
+                    title="Move to Archived: kept, but protected from Google Sheet imports"
+                  >
+                    Archive
+                  </button>
+                  <button
                     onClick={() => setToDelete(p)}
                     className="font-label text-[11px] uppercase tracking-widest text-[#b91c1c] hover:underline"
                   >
@@ -485,6 +513,40 @@ export function ProjectsMenu({
               );
             })}
           </div>
+          {archived.length > 0 && (
+            <div className="mt-2 flex flex-col">
+              <p className={fieldLabel}>Archived · protected from Google Sheet imports</p>
+              <div className="border-t-2 border-hair">
+                {archived.map((p) => (
+                  <div key={p.id} className="flex flex-wrap items-center gap-3 border-b border-hair py-2.5 text-muted-ink">
+                    <div className="min-w-[10rem] flex-1">
+                      <p className="font-label text-[10px] uppercase tracking-widest tabular-nums">
+                        {p.sheet ? `Scene ${p.sheet.number} · sheet column ${p.sheet.column} · ` : ''}Archived
+                        {p.id === current.id && ' · open now'}
+                      </p>
+                      <p className="truncate font-display text-base">{p.id === current.id ? name.trim() || p.name : p.name}</p>
+                    </div>
+                    <button onClick={() => onOpen(p)} disabled={p.id === current.id && !current.dirty} className={buttonOutline}>
+                      Open
+                    </button>
+                    <button
+                      onClick={() => void archive(p, false)}
+                      className={buttonOutline}
+                      title="Back into the list, at the bottom"
+                    >
+                      Unarchive
+                    </button>
+                    <button
+                      onClick={() => setToDelete(p)}
+                      className="font-label text-[11px] uppercase tracking-widest text-[#b91c1c] hover:underline"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
 
         <div className="flex flex-wrap gap-2 border-t-2 border-ink pt-4">
