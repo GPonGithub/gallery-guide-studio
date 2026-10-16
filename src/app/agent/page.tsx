@@ -59,6 +59,8 @@ import { buttonIcon, buttonOutline, buttonPrimary, buttonSaved, buttonUnsaved, f
 // middle, the agent's reasoning in the inspector on the right.
 
 const STORAGE_KEY = 'gallery-guide-agent:v1';
+/** Set once Onboard Me has been clicked: it stops pulsing for good. */
+const ONBOARD_SEEN_KEY = 'chatbot-designer-onboard-seen';
 const LEGACY_STUDIO_KEY = 'gallery-guide-studio:v1';
 
 
@@ -276,6 +278,27 @@ export default function AgentStudioPage() {
   const [cueLog, setCueLog] = useState<SentCue[]>([]);
   const conversations = useRef<ConversationStore>({ threads: {}, lastStart: {} });
   const hosting = useHosting();
+
+  // Onboard Me pulses until it's first clicked — then never again in this browser.
+  const [onboardPulse, setOnboardPulse] = useState(false);
+  useEffect(() => {
+    try {
+      // (Someone who already took the tour, before the pulse existed, counts as having clicked it.)
+      const seen = window.localStorage.getItem(ONBOARD_SEEN_KEY) || window.localStorage.getItem('chatbot-designer-onboarding');
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
+      if (!seen) setOnboardPulse(true);
+    } catch {
+      // Storage blocked: no pulse, rather than one that could never be switched off.
+    }
+  }, []);
+  const stopOnboardPulse = () => {
+    setOnboardPulse(false);
+    try {
+      window.localStorage.setItem(ONBOARD_SEEN_KEY, '1');
+    } catch {
+      // As above.
+    }
+  };
   // Row 7 of the sheet, per scene: how the last write of its saved information went.
   const [sheetSync, setSheetSync] = useState<Record<string, SheetSync>>({});
   const sheetWrites = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -1488,7 +1511,14 @@ export default function AgentStudioPage() {
           {/* The guided tour of the interface (see onboardingSteps.tsx). */}
           <OnboardingTour steps={ONBOARDING_STEPS}>
             {(start) => (
-              <button onClick={start} className={`shrink-0 ${buttonOutline}`} title="A guided tour of Chatbot Designer">
+              <button
+                onClick={() => {
+                  stopOnboardPulse();
+                  start();
+                }}
+                className={`shrink-0 ${buttonOutline} ${onboardPulse ? 'onboard-pulse' : ''}`}
+                title="A guided tour of Chatbot Designer"
+              >
                 Onboard Me
               </button>
             )}
