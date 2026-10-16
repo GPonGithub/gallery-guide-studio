@@ -6,6 +6,9 @@
  * it refuses unless cell A7 is the "saved information" row label, and never
  * touches rows 1–6 or the "All scenes" column.
  *
+ * It can also empty row 7 — one scene's cell ("Refresh this scene") or every
+ * scene's ("Complete restart").
+ *
  * The cell holds one "Label: value" line per item, under a "Patient: …"
  * line. A save updates the lines it has labels for and keeps every other
  * line; a different patient's save replaces the cell, so two patients'
@@ -41,11 +44,12 @@ function doPost(e) {
     }
     var sheet = ss.getSheets().filter(function (s) { return String(s.getSheetId()) === String(req.gid); })[0];
     if (!sheet) return reply({ ok: false, error: 'The scenes’ tab wasn’t found in this sheet.' });
-    if (!/^[B-Z]$/.test(String(req.column))) return reply({ ok: false, error: 'Not a scene column: ' + req.column });
-    var col = req.column.charCodeAt(0) - 64;
     if (!ROW_LABEL.test(sheet.getRange(SAVED_ROW, 1).getDisplayValue())) {
       return reply({ ok: false, error: 'Cell A7 must be the row label “List of Saved Information from this scene” — row 7 is the only row this script writes to.' });
     }
+    if (req.action === 'clear') return reply({ ok: true, cleared: clearRow(sheet, String(req.clearColumn)) });
+    if (!/^[B-Z]$/.test(String(req.column))) return reply({ ok: false, error: 'Not a scene column: ' + req.column });
+    var col = req.column.charCodeAt(0) - 64;
     if (/all\s*scenes/i.test(sheet.getRange(1, col).getDisplayValue())) {
       return reply({ ok: false, error: 'Column ' + req.column + ' is the “All scenes” column, not a scene.' });
     }
@@ -59,6 +63,25 @@ function doPost(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+// Empties row 7 in one scene column ("C"), or in every scene column ("*") —
+// never in the "All scenes" column. Returns the columns it emptied.
+function clearRow(sheet, column) {
+  var last = Math.min(sheet.getLastColumn(), 26);
+  var cols = [];
+  if (column === '*') {
+    for (var c = 2; c <= last; c++) cols.push(c);
+  } else if (/^[B-Z]$/.test(column)) {
+    cols.push(column.charCodeAt(0) - 64);
+  }
+  var cleared = [];
+  cols.forEach(function (c) {
+    if (/all\s*scenes/i.test(sheet.getRange(1, c).getDisplayValue())) return;
+    sheet.getRange(SAVED_ROW, c).setValue('');
+    cleared.push(String.fromCharCode(64 + c));
+  });
+  return cleared;
 }
 
 // Updates the lines it has labels for and keeps the rest — unless the cell

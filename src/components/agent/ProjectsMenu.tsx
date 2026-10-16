@@ -349,6 +349,7 @@ export function ProjectsMenu({
       <div
         className={`flex w-full max-w-[84rem] flex-col gap-4 overflow-y-auto border-2 border-ink bg-paper p-6 ${expanded ? 'h-full' : 'max-h-[84vh]'}`}
         onClick={(e) => e.stopPropagation()}
+        data-tour="scenes-dialog"
       >
         <div className="flex items-center justify-between gap-3 border-b-2 border-ink pb-3">
           <h2 className="font-display text-xl tracking-tight text-ink">Scenes</h2>
@@ -380,11 +381,13 @@ export function ProjectsMenu({
               onKeyDown={(e) => e.key === 'Enter' && save(false)}
               placeholder="Scene name"
               aria-label="Scene name"
+              data-tour="scene-name"
               className={`min-w-[220px] flex-1 ${fieldInput}`}
             />
             <button
               onClick={() => save(false)}
               disabled={saving}
+              data-tour="scene-save"
               className={unsaved ? buttonUnsaved : buttonSaved}
               title={unsaved ? 'Save the scene' : 'Everything is saved — click to save again'}
             >
@@ -440,7 +443,7 @@ export function ProjectsMenu({
               if (row.kind === 'draft') {
                 const draftName = name.trim() || 'Untitled scene';
                 return (
-                  <div key="draft" ref={setRef} style={rowStyle(i)} className={`${rowClass} bg-[#fff6cc]`}>
+                  <div key="draft" ref={setRef} style={rowStyle(i)} className={`${rowClass} bg-[#fff6cc]`} data-scene-draft>
                     {handle(draftName)}
                     <div className="min-w-[10rem] flex-1 select-none">
                       <p className="font-label text-[10px] uppercase tracking-widest text-muted-ink tabular-nums">
@@ -464,6 +467,8 @@ export function ProjectsMenu({
                   ref={setRef}
                   style={rowStyle(i)}
                   className={`${rowClass} bg-paper`}
+                  // Found by name in the onboarding tour's scenes demo.
+                  data-scene-row={shownName}
                 >
                   {handle(shownName)}
                   <div className="min-w-[10rem] flex-1 select-none">
@@ -499,6 +504,7 @@ export function ProjectsMenu({
                   <button
                     onClick={() => void archive(p, true)}
                     className={buttonOutline}
+                    data-scene-archive
                     title="Move to Archived: kept, but protected from Google Sheet imports"
                   >
                     Archive
@@ -514,11 +520,11 @@ export function ProjectsMenu({
             })}
           </div>
           {archived.length > 0 && (
-            <div className="mt-2 flex flex-col">
+            <div className="mt-2 flex flex-col" data-tour="scenes-archived">
               <p className={fieldLabel}>Archived · protected from Google Sheet imports</p>
               <div className="border-t-2 border-hair">
                 {archived.map((p) => (
-                  <div key={p.id} className="flex flex-wrap items-center gap-3 border-b border-hair py-2.5 text-muted-ink">
+                  <div key={p.id} className="flex flex-wrap items-center gap-3 border-b border-hair py-2.5 text-muted-ink" data-scene-archived={p.name}>
                     <div className="min-w-[10rem] flex-1">
                       <p className="font-label text-[10px] uppercase tracking-widest tabular-nums">
                         {p.sheet ? `Scene ${p.sheet.number} · sheet column ${p.sheet.column} · ` : ''}Archived
@@ -550,7 +556,7 @@ export function ProjectsMenu({
         </section>
 
         <div className="flex flex-wrap gap-2 border-t-2 border-ink pt-4">
-          <button onClick={startNew} className={buttonOutline}>
+          <button onClick={startNew} className={buttonOutline} data-tour="scene-new">
             New blank scene
           </button>
           <button

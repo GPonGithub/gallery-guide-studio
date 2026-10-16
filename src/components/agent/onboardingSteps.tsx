@@ -156,6 +156,72 @@ export const ONBOARDING_STEPS: TourStep[] = [
     ),
   },
 
+  // --- Scenes (a demonstration) ------------------------------------------
+  // The pointer does each action in the real Scenes window. Your own open work
+  // is put aside first and comes back untouched; the demo scenes are deleted
+  // when you move on (see sceneDemo.ts).
+  {
+    title: 'Scenes: name and save',
+    group: 'scenes-demo',
+    run: 'scenes-name',
+    body: (
+      <>
+        <p>
+          Each conversation you build is a <b>Scene</b>. Watch: the Scenes window opens, the scene is named{' '}
+          <b>Test Scene Number 1</b>, and Save keeps it.
+        </p>
+        <p className="text-xs text-muted-ink">
+          This is only a demonstration — your own work is put aside, and the test scenes are removed when you move on.
+        </p>
+      </>
+    ),
+  },
+  {
+    title: 'Start another scene',
+    group: 'scenes-demo',
+    run: 'scenes-new',
+    body: (
+      <>
+        <p>
+          <b>New blank scene</b> starts a fresh one. Here it&rsquo;s named <b>Test Scene Number 2</b> and saved.
+        </p>
+        <p>
+          New scenes appear at the top of the list. Before saving, the <b>↓</b> key on its ⋮⋮ handle moves it down one
+          place — the arrow keys are one way to reorder.
+        </p>
+      </>
+    ),
+  },
+  {
+    title: 'Put scenes in order',
+    group: 'scenes-demo',
+    run: 'scenes-reorder',
+    body: (
+      <>
+        <p>
+          Scenes are numbered in list order. To change it, drag a scene by its <b>⋮⋮</b> handle. Watch{' '}
+          <b>Test Scene Number 2</b> being dragged above <b>Test Scene Number 1</b>.
+        </p>
+        <p className="text-xs text-muted-ink">Scenes from a Google Sheet keep the sheet&rsquo;s numbers wherever they&rsquo;re dragged.</p>
+      </>
+    ),
+  },
+  {
+    title: 'Archive a scene',
+    group: 'scenes-demo',
+    run: 'scenes-archive',
+    body: (
+      <>
+        <p>
+          <b>Archive</b> moves a scene to the Archived list. It&rsquo;s kept, and you can still open or unarchive it —
+          but generating scenes from your Google Sheet will never change it.
+        </p>
+        <p>Use it for a scene you want to keep exactly as it is. Watch <b>Test Scene Number 1</b> being archived.</p>
+        <p className="text-xs text-muted-ink">When you click Next, the test scenes are removed and your own work comes back.</p>
+      </>
+    ),
+  },
+
   // --- Design Process ---------------------------------------------------
   {
     title: 'Import your Scenes',

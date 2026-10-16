@@ -65,6 +65,12 @@ export async function clearMemory(id: string): Promise<void> {
   if (patient) await putPatient({ ...patient, items: [] });
 }
 
+/** Forgets what one scene saved for a patient; other scenes' saves stay. */
+export async function clearSceneMemory(id: string, sceneId: string): Promise<void> {
+  const patient = await getPatient(id);
+  if (patient) await putPatient({ ...patient, items: patient.items.filter((it) => it.sceneId !== sceneId) });
+}
+
 const sameLabel = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 /**

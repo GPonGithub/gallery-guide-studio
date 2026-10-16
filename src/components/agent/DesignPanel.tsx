@@ -12,6 +12,7 @@ import { validateFlow } from '@/lib/agent/validate';
 import { buttonBusy, buttonDone, buttonOutline, buttonPrimary, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
 import { BoardPicker } from './BoardPicker';
 import { CollapsiblePanel } from './CollapsiblePanel';
+import { SceneButtons } from './SceneButtons';
 import { SheetSaving } from './SheetSaving';
 import { connectionCode, useHosting } from '@/lib/agent/hosting';
 import { Spinner } from './Spinner';
@@ -156,7 +157,7 @@ function SavedFromScene({
       )}
       <p
         className={`font-label text-[10px] uppercase tracking-wide ${
-          sync?.state === 'error' ? 'text-[#b91c1c]' : sync?.state === 'saved' ? 'text-[#15803d]' : 'text-muted-ink'
+          sync?.state === 'error' ? 'text-[#b91c1c]' : sync?.state === 'saved' || sync?.state === 'cleared' ? 'text-[#15803d]' : 'text-muted-ink'
         }`}
       >
         {!sheetColumn
@@ -169,6 +170,8 @@ function SavedFromScene({
                 ? `Saving to row 7, column ${sync.column}…`
                 : sync.state === 'saved'
                   ? `✓ Saved to row 7, column ${sync.column} at ${time(sync.at)}`
+                  : sync.state === 'cleared'
+                    ? `✓ Row 7, column ${sync.column} cleared at ${time(sync.at)}`
                   : `✗ Not saved to the sheet: ${sync.message}`}
       </p>
     </div>
@@ -194,7 +197,7 @@ export type MemoryView = {
 };
 
 /** How the last write of a scene's saved information into row 7 of the sheet went. */
-export type SheetSync = { state: 'saving' | 'saved' | 'error'; column: string; message?: string; at: number };
+export type SheetSync = { state: 'saving' | 'saved' | 'cleared' | 'error'; column: string; message?: string; at: number };
 
 /** What "Generate Scenes" reports back: the import, or why it couldn't happen. */
 export type SheetImportOutcome = { result: SheetImport } | { error: string };
@@ -577,27 +580,13 @@ export function DesignPanel({
       </CollapsiblePanel>
 
       <CollapsiblePanel title="2 · Describe the conversation" tourId="design-2">
-        {sheetScenes.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Scenes from the sheet" data-tour="scene-buttons">
-            {sheetScenes.map((s) => {
-              const selected = s.id === currentSceneId;
-              return (
-                <button
-                  key={s.id}
-                  onClick={() => onSwitchScene(s.id)}
-                  disabled={busy !== null}
-                  aria-pressed={selected}
-                  title={`Scene ${s.number} · ${s.name}`}
-                  className={`h-9 min-w-9 border-2 px-2 font-label text-[12px] tabular-nums transition-colors ${
-                    selected ? 'border-ink bg-ink text-paper' : 'border-ink bg-paper text-ink hover:bg-muted'
-                  } disabled:opacity-50`}
-                >
-                  {s.number}
-                </button>
-              );
-            })}
-          </div>
-        )}
+        <SceneButtons
+          scenes={sheetScenes}
+          currentId={currentSceneId}
+          onSwitch={onSwitchScene}
+          disabled={busy !== null}
+          tourId="scene-buttons"
+        />
         {scene.fromSheet && <p className="font-display text-base text-ink">{scene.heading}</p>}
         {stages}
         <p className="font-body text-xs italic text-muted-ink">

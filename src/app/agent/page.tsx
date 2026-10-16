@@ -10,9 +10,11 @@ import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
 import { DropdownArrow } from '@/components/agent/DropdownArrow';
 import { PatientMenu } from '@/components/agent/PatientMenu';
+import { SceneButtons } from '@/components/agent/SceneButtons';
 import { OnboardingTour } from '@/components/agent/OnboardingTour';
 import { useHosting } from '@/lib/agent/hosting';
 import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
+import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { CueMarker, CueMonitor, type SentCue } from '@/components/agent/CueMonitor';
@@ -23,6 +25,7 @@ import {
   getProjectMusic,
   importSheetScenes,
   keepSceneEdits,
+  deleteProject,
   listProjects,
   markWrittenToFigjam,
   moveServerProjectsHere,
@@ -32,6 +35,7 @@ import { compareSceneNumbers, type SheetScene } from '@/lib/agent/sheetScenes';
 import { displayLabel, isScriptUrl } from '@/lib/agent/sheetScript';
 import {
   clearMemory,
+  clearSceneMemory,
   createPatient,
   deletePatient,
   earlierMemory,
@@ -61,6 +65,20 @@ import { buttonIcon, buttonOutline, buttonPrimary, buttonSaved, buttonUnsaved, f
 const STORAGE_KEY = 'gallery-guide-agent:v1';
 /** Set once Onboard Me has been clicked: it stops pulsing for good. */
 const ONBOARD_SEEN_KEY = 'chatbot-designer-onboard-seen';
+
+// The onboarding tour's Scenes demo (see sceneDemo.ts) runs in a sandbox:
+// the open work and conversations are put aside here — in this browser too,
+// so closing the page mid-demo loses nothing — and come back afterwards.
+const DEMO_BACKUP_KEY = 'chatbot-designer-scenes-demo';
+type DemoBackup = { saved: Saved; conversations: ConversationStore; ids: string[] };
+
+/** Deletes the demo's scenes (archived ones too) — never one that was there before the demo. */
+async function removeDemoScenes(before: string[]) {
+  const names: readonly string[] = DEMO_SCENE_NAMES;
+  for (const p of await listProjects()) {
+    if (!before.includes(p.id) && names.includes(p.name)) await deleteProject(p.id);
+  }
+}
 const LEGACY_STUDIO_KEY = 'gallery-guide-studio:v1';
 
 
@@ -277,6 +295,8 @@ export default function AgentStudioPage() {
   // Every TouchDesigner cue of this conversation, as it went out (see CueMonitor).
   const [cueLog, setCueLog] = useState<SentCue[]>([]);
   const conversations = useRef<ConversationStore>({ threads: {}, lastStart: {} });
+  /** The work put aside while the onboarding's Scenes demo runs (null = no demo). */
+  const sceneDemo = useRef<DemoBackup | null>(null);
   const hosting = useHosting();
 
   // Onboard Me pulses until it's first clicked — then never again in this browser.
@@ -426,6 +446,28 @@ export default function AgentStudioPage() {
   }, [session?.ended, speaking]);
 
   useEffect(() => {
+    // A Scenes demo the page was closed in the middle of: put the work back first.
+    let demoLeftOver: DemoBackup | null = null;
+    try {
+      const raw = window.localStorage.getItem(DEMO_BACKUP_KEY);
+      if (raw) {
+        demoLeftOver = JSON.parse(raw) as DemoBackup;
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(demoLeftOver.saved));
+        storeConversations(demoLeftOver.conversations);
+      }
+    } catch {
+      demoLeftOver = null;
+    }
+    if (demoLeftOver) {
+      const ids = demoLeftOver.ids;
+      void removeDemoScenes(ids).finally(() => {
+        try {
+          window.localStorage.removeItem(DEMO_BACKUP_KEY);
+        } catch {
+          // Storage blocked.
+        }
+      });
+    }
     const loaded = loadSaved();
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
     setSaved(loaded);
@@ -494,6 +536,8 @@ export default function AgentStudioPage() {
   // checked once per scene and set of memories, then reused for every turn;
   // if the check can't be done, nothing from earlier scenes is used.
   const activePatient = saved ? (patients.find((p) => p.id === saved.activePatientId) ?? null) : null;
+  /** The sheet's scenes as number buttons (in "Describe the conversation" and above the chat). */
+  const sheetSceneList = sheetScenes.map((p) => ({ id: p.id, number: p.sheet!.number, name: p.name }));
   const sceneNow: SceneRef | null = saved
     ? { id: saved.projectId ?? 'unsaved', number: saved.sceneSheet?.number ?? '', name: saved.projectName }
     : null;
@@ -604,12 +648,111 @@ export default function AgentStudioPage() {
     setSpeaking(false);
   };
 
-  // "Complete restart": every scene's conversations are cleared, and this one starts afresh.
+  // The onboarding's Scenes demo: put the open work aside and start a blank
+  // scene (no questions, nothing saved over)…
+  const beginSceneDemo = async () => {
+    if (sceneDemo.current) return;
+    const backup: DemoBackup = {
+      saved: structuredClone(saved),
+      conversations: structuredClone(conversations.current),
+      ids: (await listProjects()).map((p) => p.id),
+    };
+    sceneDemo.current = backup;
+    try {
+      window.localStorage.setItem(DEMO_BACKUP_KEY, JSON.stringify(backup));
+    } catch {
+      // Storage blocked: the demo still tidies up when it's left normally.
+    }
+    loadFlow({ ...emptyFlow, stages: [blankStage('1')] }, 'design');
+    setSaved((s) =>
+      s
+        ? {
+            ...s,
+            brief: '',
+            generatedBrief: null,
+            boardUrl: '',
+            projectId: null,
+            projectName: 'Untitled scene',
+            savedSnapshot: '',
+            musicTrack: null,
+            sceneSheet: null,
+            figjamFlow: null,
+          }
+        : s,
+    );
+  };
+
+  // …and afterwards: delete only the demo's scenes, and bring the work back as it was.
+  const endSceneDemo = async () => {
+    const backup = sceneDemo.current;
+    if (!backup) return;
+    sceneDemo.current = null;
+    setProjectsOpen(false);
+    await removeDemoScenes(backup.ids);
+    conversations.current = backup.conversations;
+    storeConversations(backup.conversations);
+    setSaved(backup.saved);
+    const scene = backup.saved.projectId ?? 'unsaved';
+    showConversation(scene, backup.saved.flow, backup.conversations.lastStart[scene] ?? '');
+    refreshSheetScenes();
+    try {
+      window.localStorage.removeItem(DEMO_BACKUP_KEY);
+    } catch {
+      // As above.
+    }
+  };
+
+  // "Complete restart": every scene's conversations are cleared, and this one
+  // starts afresh — and everything the selected patient's scenes saved goes,
+  // here and in row 7 of every scene column in the sheet.
   const completeRestart = () => {
     conversations.current = { threads: {}, lastStart: {} };
     storeConversations(conversations.current);
     setStartAt('');
     restart('');
+    if (activePatient) void clearMemory(activePatient.id).then(() => setMemoryVersion((v) => v + 1));
+    const sheet = saved.sceneSheet ?? sheetScenes[0]?.sheet ?? null;
+    if (sheet) void clearSheetRow(sheet, '*', saved.projectId ?? 'unsaved');
+  };
+
+  // "Refresh this scene": its conversation starts again, and what it saved for
+  // the selected patient goes — here and in its row 7 cell. Other scenes keep theirs.
+  const refreshScene = () => {
+    restart();
+    const sceneId = saved.projectId ?? 'unsaved';
+    if (activePatient) void clearSceneMemory(activePatient.id, sceneId).then(() => setMemoryVersion((v) => v + 1));
+    if (saved.sceneSheet) void clearSheetRow(saved.sceneSheet, saved.sceneSheet.column, sceneId);
+  };
+
+  // Empties row 7 in one scene column, or every one ('*'), through the sheet's Apps Script.
+  const clearSheetRow = async (sheet: SheetSource, column: string, sceneId: string) => {
+    const scriptUrl = saved.sheetScriptUrl.trim();
+    if (!isScriptUrl(scriptUrl)) return;
+    // A save still waiting to go would fill the cell straight back in.
+    for (const [id, timer] of sheetWrites.current) {
+      if (column === '*' || id === sceneId) {
+        clearTimeout(timer);
+        sheetWrites.current.delete(id);
+      }
+    }
+    const shown = column === '*' ? (saved.sceneSheet?.column ?? 'all') : column;
+    try {
+      const res = await fetch('/api/sheets/saved', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scriptUrl, action: 'clear', spreadsheetId: sheet.sheetId, gid: sheet.gid, column }),
+      });
+      const data = (await res.json()) as { ok: boolean; error?: string };
+      if (!data.ok) throw new Error(data.error ?? 'The sheet didn’t clear row 7.');
+      setSheetSync((all) => ({
+        ...(column === '*' ? {} : all),
+        [sceneId]: { state: 'cleared', column: shown, at: Date.now() },
+      }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Couldn’t reach the sheet.';
+      setSheetSync((all) => ({ ...all, [sceneId]: { state: 'error', column: shown, message, at: Date.now() } }));
+      setError(`Row 7 wasn’t cleared: ${message}`);
+    }
   };
 
   // Shows a scene's conversation for a starting point: the one kept from
@@ -1507,7 +1650,11 @@ export default function AgentStudioPage() {
       <header className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-ink px-5 py-3">
         <div className="flex min-w-0 items-center gap-3">
           {/* The guided tour of the interface (see onboardingSteps.tsx). */}
-          <OnboardingTour steps={ONBOARDING_STEPS}>
+          <OnboardingTour
+            steps={ONBOARDING_STEPS}
+            actions={sceneDemoActions({ begin: beginSceneDemo })}
+            onLeaveGroup={(group) => (group === 'scenes-demo' ? endSceneDemo() : undefined)}
+          >
             {(start) => (
               <button
                 onClick={() => {
@@ -1538,7 +1685,7 @@ export default function AgentStudioPage() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button onClick={() => setProjectsOpen(true)} className={buttonOutline}>
+          <button onClick={() => setProjectsOpen(true)} className={buttonOutline} data-tour="scenes-button">
             Scenes
           </button>
           {/* Opens Scenes to save. Red "Not Saved" while anything (flow, brief,
@@ -1609,7 +1756,7 @@ export default function AgentStudioPage() {
                 sceneSheet={saved.sceneSheet}
                 onImportSheet={importSheet}
                 onResolveConflict={resolveSheetConflict}
-                sheetScenes={sheetScenes.map((p) => ({ id: p.id, number: p.sheet!.number, name: p.name }))}
+                sheetScenes={sheetSceneList}
                 currentSceneId={saved.projectId}
                 onSwitchScene={(id) => void switchScene(id)}
                 scene={{
@@ -1673,10 +1820,10 @@ export default function AgentStudioPage() {
                 Complete restart
               </button>
               <button
-                onClick={() => restart()}
+                onClick={refreshScene}
                 disabled={busy}
                 className={`h-10 ${buttonOutline}`}
-                title="Start this scene's conversation again (other scenes keep theirs)"
+                title="Start this scene's conversation again and clear what it saved (here and in row 7 of the sheet) — other scenes keep theirs"
               >
                 Refresh this scene
               </button>
@@ -1833,6 +1980,22 @@ export default function AgentStudioPage() {
               />
             </div>
           </div>
+
+          {/* The sheet's scenes, to switch without opening "Describe the conversation"
+              (the same buttons as there — both always show the open scene). */}
+          {sheetSceneList.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 border-b-2 border-ink px-3 py-2">
+              <span className={fieldLabel}>Scene</span>
+              <SceneButtons
+                scenes={sheetSceneList}
+                currentId={saved.projectId}
+                onSwitch={(id) => void switchScene(id)}
+                disabled={busy}
+                label="Switch scene"
+              />
+              {saved.sceneSheet && <span className="min-w-0 truncate font-body text-sm text-ink">{saved.projectName}</span>}
+            </div>
+          )}
 
           {/* Very light grey behind the dialogue, so the white chatbot boxes stand out. */}
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted p-4">
@@ -1993,8 +2156,8 @@ export default function AgentStudioPage() {
         <ConfirmDialog
           title="Complete restart?"
           message={`The conversations in every scene will be cleared, and this scene will start afresh. ${
-            activePatient ? `What ${activePatient.name}'s scenes have saved is kept (clear it from the Patient menu).` : ''
-          }`}
+            activePatient ? `Everything ${activePatient.name}'s scenes have saved will be deleted too` : 'Saved information will be deleted too'
+          }${saved.sheetScriptUrl.trim() ? ', and row 7 of the sheet emptied in every scene column' : ''}. This action cannot be undone.`}
           confirmLabel="Complete restart"
           onConfirm={() => {
             setConfirmCompleteRestart(false);

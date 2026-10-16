@@ -33,7 +33,33 @@ export type TourStep = {
    * control itself as soon as it appears.
    */
   fallback?: { target: string; open?: string[] };
+  /** A demonstration to play on this step (a key of the tour's `actions`). Next waits until it's done. */
+  run?: string;
+  /** Steps that belong together (e.g. a demo); leaving the group calls `onLeaveGroup`. */
+  group?: string;
 };
+
+/**
+ * What a demonstration can do: a visible pointer moves to each control, then
+ * clicks, types or drags — on the real interface, so it's exactly what the
+ * student would do. Each call stops if the student leaves the step.
+ */
+export type TourHelpers = {
+  /** Waits (up to ~3s) for an element to appear. */
+  find: (selector: string) => Promise<HTMLElement>;
+  point: (el: HTMLElement) => Promise<void>;
+  click: (el: HTMLElement) => Promise<void>;
+  type: (el: HTMLInputElement, text: string) => Promise<void>;
+  /** Presses a key (e.g. 'ArrowDown') on an element, shown as a little key label by the pointer. */
+  press: (el: HTMLElement, key: string) => Promise<void>;
+  /** Drags `handle` (a pointer-driven drag handle) up or down until it's just above `above`. */
+  drag: (handle: HTMLElement, above: HTMLElement) => Promise<void>;
+  /** Outlines this element (instead of the step's target) and puts the card beside it. */
+  show: (el: HTMLElement | null) => void;
+  wait: (ms: number) => Promise<void>;
+};
+
+class Stopped extends Error {}
 
 const PROGRESS_KEY = 'chatbot-designer-onboarding';
 const CARD_WIDTH = 360;
@@ -115,8 +141,36 @@ function layoutFor(rect: DOMRect | null, cardHeight: number): Layout {
   return { rect, placement, left, top, arrowAt: clamp(midX - left, 18, width - 18) };
 }
 
-export function OnboardingTour({ steps, children }: { steps: TourStep[]; children: (start: () => void) => ReactNode }) {
+export function OnboardingTour({
+  steps,
+  actions,
+  onLeaveGroup,
+  children,
+}: {
+  steps: TourStep[];
+  /** Demonstrations steps can play (see TourStep.run). */
+  actions?: Record<string, (h: TourHelpers) => Promise<void>>;
+  /** Called when the tour leaves a group of steps (by Next, Go back, closing or finishing) — to tidy up after a demo. */
+  onLeaveGroup?: (group: string) => Promise<void> | void;
+  children: (start: () => void) => ReactNode;
+}) {
   const [step, setStep] = useState<number | null>(null);
+  /** A demonstration is playing: Next and Go back wait for it. */
+  const [running, setRunning] = useState(false);
+  const [demoProblem, setDemoProblem] = useState<string | null>(null);
+  /** The demo's pointer: where it is, whether it's pressed, and whether to glide or jump there. */
+  const [pointer, setPointer] = useState<{ x: number; y: number; pressed: boolean; glide: boolean; key?: string } | null>(null);
+  /** What a demo is outlining right now (instead of the step's target). */
+  const shown = useRef<HTMLElement | null>(null);
+  /** The group of steps the tour is in. */
+  const group = useRef<string | null>(null);
+  // The page's latest demo actions and tidy-up, without restarting a step every time the page re-renders.
+  const actionsRef = useRef(actions);
+  const onLeaveRef = useRef(onLeaveGroup);
+  useEffect(() => {
+    actionsRef.current = actions;
+    onLeaveRef.current = onLeaveGroup;
+  });
   const [offerResume, setOfferResume] = useState<number | null>(null);
   const [layout, setLayout] = useState<Layout | null>(null);
   const [targetFound, setTargetFound] = useState(true);
@@ -142,8 +196,17 @@ export function OnboardingTour({ steps, children }: { steps: TourStep[]; childre
     }
   }, []);
 
+  const leaveGroup = useCallback(async () => {
+    const left = group.current;
+    group.current = null;
+    if (left) await onLeaveRef.current?.(left);
+  }, []);
+
   const end = useCallback(
     (finished: boolean) => {
+      void leaveGroup();
+      setPointer(null);
+      setRunning(false);
       void closePanels([]);
       setStep((current) => {
         if (current !== null) writeProgress({ step: finished ? 0 : current, finished });
@@ -151,8 +214,104 @@ export function OnboardingTour({ steps, children }: { steps: TourStep[]; childre
       });
       setLayout(null);
     },
-    [closePanels],
+    [closePanels, leaveGroup],
   );
+
+  // The demonstration's hands. `stopped` says the student has moved on.
+  const helpers = useCallback((stopped: () => boolean): TourHelpers => {
+    const check = () => {
+      if (stopped()) throw new Stopped();
+    };
+    const wait = async (ms: number) => {
+      await new Promise((r) => setTimeout(r, ms));
+      check();
+    };
+    const centre = (el: HTMLElement) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.left + Math.min(r.width / 2, 60), y: r.top + r.height / 2 };
+    };
+    const point = async (el: HTMLElement) => {
+      check();
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      await wait(60);
+      setPointer({ ...centre(el), pressed: false, glide: true });
+      await wait(700);
+    };
+    return {
+      wait,
+      point,
+      show: (el) => {
+        shown.current = el;
+      },
+      find: async (selector) => {
+        for (let tries = 0; tries < 60; tries++) {
+          const el = document.querySelector<HTMLElement>(selector);
+          if (el) return el;
+          await wait(50);
+        }
+        throw new Error('Part of the screen this demonstration uses didn’t appear.');
+      },
+      click: async (el) => {
+        await point(el);
+        setPointer((p) => p && { ...p, pressed: true });
+        await wait(160);
+        el.click();
+        setPointer((p) => p && { ...p, pressed: false });
+        await wait(450);
+      },
+      press: async (el, key) => {
+        await point(el);
+        el.focus();
+        setPointer((p) => p && { ...p, pressed: true, key: key.replace('Arrow', '') });
+        await wait(200);
+        el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+        await wait(500);
+        setPointer((p) => p && { ...p, pressed: false, key: undefined });
+        await wait(300);
+      },
+      type: async (el, text) => {
+        await point(el);
+        el.focus();
+        // React only sees a typed value through the input's own setter and an input event.
+        const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+        const put = (value: string) => {
+          setValue.call(el, value);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+        put('');
+        for (let i = 1; i <= text.length; i++) {
+          await wait(70);
+          put(text.slice(0, i));
+        }
+        await wait(400);
+      },
+      drag: async (handle, above) => {
+        await point(handle);
+        const from = centre(handle);
+        const to = above.getBoundingClientRect().top + 6;
+        const fire = (type: string, y: number) =>
+          handle.dispatchEvent(
+            new PointerEvent(type, { bubbles: true, clientX: from.x, clientY: y, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }),
+          );
+        setPointer({ ...from, pressed: true, glide: false });
+        fire('pointerdown', from.y);
+        await wait(200);
+        const moves = 28;
+        for (let i = 1; i <= moves; i++) {
+          // Eased, so it starts and ends gently.
+          const t = i / moves;
+          const y = from.y + (to - from.y) * (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
+          setPointer({ x: from.x, y, pressed: true, glide: false });
+          fire('pointermove', y);
+          await wait(35);
+        }
+        await wait(250);
+        fire('pointerup', to);
+        setPointer({ x: from.x, y: to, pressed: false, glide: false });
+        await wait(600);
+      },
+    };
+  }, []);
 
   // Entering a step: open its panels (one at a time — an inner one only exists once the outer is open), then bring the control into view.
   useEffect(() => {
@@ -160,7 +319,14 @@ export function OnboardingTour({ steps, children }: { steps: TourStep[]; childre
     writeProgress({ step, finished: false });
     const current = steps[step];
     let cancelled = false;
+    shown.current = null;
     void (async () => {
+      // Leaving a group (e.g. the scenes demo) tidies it up before anything else happens.
+      if ((current.group ?? null) !== group.current) {
+        await leaveGroup();
+        group.current = current.group ?? null;
+      }
+      if (!current.run) setPointer(null);
       const wanted = current.open ?? [];
       await closePanels(wanted);
       for (const marker of wanted) {
@@ -175,6 +341,20 @@ export function OnboardingTour({ steps, children }: { steps: TourStep[]; childre
           if (!openedByTour.current.includes(marker)) openedByTour.current.push(marker);
         }
         await nextFrame();
+      }
+      const action = current.run ? actionsRef.current?.[current.run] : undefined;
+      if (action && !cancelled) {
+        setRunning(true);
+        try {
+          await action(helpers(() => cancelled));
+        } catch (err) {
+          if (!(err instanceof Stopped) && !cancelled) {
+            setDemoProblem(err instanceof Error ? err.message : 'The demonstration couldn’t finish.');
+          }
+        } finally {
+          if (!cancelled) setRunning(false);
+        }
+        return;
       }
       if (cancelled || !current.target) return;
       let target: HTMLElement | null = null;
@@ -200,7 +380,8 @@ export function OnboardingTour({ steps, children }: { steps: TourStep[]; childre
     return () => {
       cancelled = true;
     };
-  }, [step, steps, closePanels]);
+  }, [step, steps, closePanels, leaveGroup, helpers]);
+
 
   // Follow the control as things move: panels opening, scrolling, the window resizing.
   useLayoutEffect(() => {
@@ -211,14 +392,15 @@ export function OnboardingTour({ steps, children }: { steps: TourStep[]; childre
       const marker = steps[step].target;
       const own = marker ? find(marker) : null;
       const fallback = steps[step].fallback;
-      const el = own ?? (fallback ? find(fallback.target) : null);
+      const demo = shown.current?.isConnected ? shown.current : null;
+      const el = demo ?? own ?? (fallback ? find(fallback.target) : null);
       const rect = el ? el.getBoundingClientRect() : null;
       const next = layoutFor(rect, cardRef.current?.offsetHeight ?? 260);
       const key = JSON.stringify([next.placement, Math.round(next.left), Math.round(next.top), Math.round(next.arrowAt), rect && [rect.left, rect.top, rect.width, rect.height].map(Math.round)]);
       if (key !== last) {
         last = key;
         setLayout(next);
-        setTargetFound(!marker || Boolean(own && own.getBoundingClientRect().width > 0));
+        setTargetFound(Boolean(demo) || !marker || Boolean(own && own.getBoundingClientRect().width > 0));
       }
       frame = requestAnimationFrame(tick);
     };
@@ -327,9 +509,18 @@ export function OnboardingTour({ steps, children }: { steps: TourStep[]; childre
                 <p className="border-l-4 border-[#b45309] pl-2 text-xs">{current.missing}</p>
               )}
               {current.body}
+              {demoProblem && <p className="border-l-4 border-[#b91c1c] pl-2 text-xs">{demoProblem} You can carry on with Next.</p>}
+              {running && <p className="font-label text-[10px] uppercase tracking-widest text-muted-ink">Watch… (Next is ready when it’s done)</p>}
             </div>
             <div className="flex items-center justify-between gap-2 border-t-2 border-ink pt-3">
-              <button onClick={() => setStep((s) => (s ? s - 1 : s))} disabled={step === 0} className={`${buttonOutline} disabled:invisible`}>
+              <button
+                onClick={() => {
+                  setDemoProblem(null);
+                  setStep((s) => (s ? s - 1 : s));
+                }}
+                disabled={step === 0 || running}
+                className={`${buttonOutline} ${step === 0 ? 'disabled:invisible' : ''}`}
+              >
                 Go back
               </button>
               {isLast ? (
@@ -337,12 +528,45 @@ export function OnboardingTour({ steps, children }: { steps: TourStep[]; childre
                   Finish onboarding
                 </button>
               ) : (
-                <button onClick={() => setStep((s) => (s === null ? s : s + 1))} className={buttonPrimary}>
+                <button
+                  onClick={() => {
+                    setDemoProblem(null);
+                    setStep((s) => (s === null ? s : s + 1));
+                  }}
+                  disabled={running} className={`${buttonPrimary} disabled:opacity-50`}>
                   Next
                 </button>
               )}
             </div>
           </div>
+
+          {/* The demonstration's pointer. */}
+          {pointer && (
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              width="28"
+              height="28"
+              className="absolute drop-shadow-[0_2px_2px_rgba(0,0,0,0.35)]"
+              style={{
+                left: pointer.x - 4,
+                top: pointer.y - 2,
+                transform: `scale(${pointer.pressed ? 0.82 : 1})`,
+                transformOrigin: '4px 2px',
+                transition: pointer.glide ? 'left 650ms ease-in-out, top 650ms ease-in-out, transform 120ms' : 'transform 120ms',
+              }}
+            >
+              <path d="M4 2 L4 20 L9 15 L12.5 22 L15.5 20.5 L12 14 L19 14 Z" fill="#000" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" />
+            </svg>
+          )}
+          {pointer?.key && (
+            <span
+              className="absolute border-2 border-ink bg-paper px-1.5 py-0.5 font-label text-[11px] uppercase tracking-widest text-ink shadow"
+              style={{ left: pointer.x + 22, top: pointer.y + 14 }}
+            >
+              {pointer.key === 'Down' ? '↓' : pointer.key === 'Up' ? '↑' : pointer.key}
+            </span>
+          )}
         </div>
       )}
     </>
