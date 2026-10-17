@@ -227,6 +227,7 @@ export function boardToFlow(
     saveInfo?: string;
     canUse?: string;
     cannotUse?: string;
+    designedFrom?: string;
   } = {},
 ): { flow: AgentFlow; warnings: string[] } {
   const warnings: string[] = [];
@@ -245,6 +246,8 @@ export function boardToFlow(
     saveInfo: keep.saveInfo,
     canUse: keep.canUse,
     cannotUse: keep.cannotUse,
+    // So the next update revises the design as edited on the board, rather than starting again.
+    designedFrom: keep.designedFrom,
   };
   let sawMaster = false;
   let sawKnowledge = false;

@@ -398,6 +398,42 @@ export async function applySheetScene(project: AgentProject, scene: SheetScene):
   return updated;
 }
 
+/**
+ * After one scene is updated from the sheet: bring every *other* scene from
+ * the same sheet up to date with it too — chiefly so a change to the shared
+ * "All scenes" column reaches them all. Same rules as Generate Scenes:
+ * scenes edited in the app since their import, and archived ones, are left
+ * alone; no new scenes are made. Their conversations aren't regenerated
+ * here (their Generate button turns red; the next update revises them).
+ */
+export async function refreshOtherSheetScenes(
+  sheetId: string,
+  scenes: SheetScene[],
+  exceptId: string,
+): Promise<{ updated: number; keptEdits: number }> {
+  const result = { updated: 0, keptEdits: 0 };
+  for (const project of await listProjects()) {
+    if (project.id === exceptId || project.archived || project.sheet?.sheetId !== sheetId) continue;
+    const scene = scenes.find((s) => s.number === project.sheet!.number) ?? scenes.find((s) => s.column === project.sheet!.column);
+    if (!scene) continue;
+    const s = project.sheet;
+    const changed =
+      s.importedName !== scene.name ||
+      s.importedBrief !== scene.description ||
+      (s.importedKnowledge ?? s.importedCanUse ?? '') !== scene.knowledge ||
+      (s.importedSaveInfo ?? '') !== scene.saveInfo ||
+      (s.importedCannotUse ?? '') !== scene.cannotUse;
+    if (!changed) continue;
+    if (editedSinceImport(project)) {
+      result.keptEdits++;
+      continue;
+    }
+    await applySheetScene(project, scene);
+    result.updated++;
+  }
+  return result;
+}
+
 /** "Keep mine": the scene stays as edited; the sheet's current version becomes the new baseline. */
 export async function keepSceneEdits(project: AgentProject, scene: SheetScene): Promise<void> {
   const source = project.sheet!;

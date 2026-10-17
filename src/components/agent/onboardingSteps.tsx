@@ -12,7 +12,7 @@ const link = (href: string, text: string) => (
 const ANTHROPIC = 'https://console.anthropic.com/';
 const ELEVENLABS = 'https://elevenlabs.io/';
 
-export const ONBOARDING_STEPS: TourStep[] = [
+const STEPS: TourStep[] = [
   {
     title: 'Welcome to Chatbot Designer',
     body: (
@@ -335,20 +335,24 @@ export const ONBOARDING_STEPS: TourStep[] = [
     open: ['design-2'],
     body: (
       <>
-        <p>
-          Click Generate New Conversation to turn the description into a conversation you can talk to. It takes one to
-          two minutes.
-        </p>
+        <p>Three buttons sit under the description:</p>
         <ul>
           <li>
-            <b>Red — Generate New Conversation:</b> not generated yet, or the description has changed since.
+            <b>Generate New Conversation</b> turns the description into a conversation you can talk to. Red means it
+            needs generating (or the description changed); green — <b>Conversation Generated</b> — means it&rsquo;s up to
+            date.
           </li>
           <li>
-            <b>Green — Conversation Generated:</b> up to date.
+            <b>Update This Scene</b> re-reads the scene from your Google Sheet and updates the conversation — only the
+            parts that changed are redone, so it&rsquo;s quick. The line along the button shows its progress.
+          </li>
+          <li>
+            <b>Draw it on my FigJam board</b> draws the conversation as a flowchart on your FigJam board.
           </li>
         </ul>
         <p className="text-xs text-muted-ink">
-          Update This Scene does it all again: it re-reads the sheet, regenerates, and redraws in FigJam.
+          Drawing in FigJam is optional, and only ever happens when you click that button — generating and updating
+          never draw anything by themselves.
         </p>
       </>
     ),
@@ -440,20 +444,57 @@ export const ONBOARDING_STEPS: TourStep[] = [
     ),
   },
   {
+    title: 'Install the FigJam plugin',
+    target: 'plugin-download',
+    open: ['design-6', 'plugin-setup'],
+    body: (
+      <>
+        <p>
+          To draw in FigJam, Chatbot Designer needs its FigJam plugin running. You set it up once, in the{' '}
+          <b>Figma desktop app</b> (plugins in development don&rsquo;t run in the browser).
+        </p>
+        <ol>
+          <li>
+            Click <b>Download the FigJam plugin</b> (outlined) — the plugin goes into your Downloads folder as a zip
+            file. Unzip it.
+          </li>
+          <li>
+            In Figma desktop, open any FigJam board, then <b>Plugins → Development → Import plugin from manifest…</b> and
+            choose <b>manifest.json</b> in the unzipped folder.
+          </li>
+          <li>
+            To launch it: open your board, then <b>Plugins → Development</b> (or the <b>Resources</b> button in the
+            toolbar → <b>Plugins → Development</b>) and click <b>Chatbot Designer — FigJam</b>.
+          </li>
+          <li>
+            Leave its panel open with <b>Listen for requests</b> ticked (and type the connection code here, if one is
+            shown).
+          </li>
+        </ol>
+        <p className="text-xs text-muted-ink">
+          The same steps are listed under the button. The dot above them turns green — &ldquo;FigJam plugin:
+          listening ✓&rdquo; — once it&rsquo;s running.
+        </p>
+      </>
+    ),
+  },
+  {
     title: 'Draw the flowchart',
     target: 'figjam-actions',
     open: ['design-6'],
     body: (
       <>
-        <p>Once a Scene&rsquo;s conversation is generated, click Write to FigJam to draw it on the board.</p>
+        <p>
+          Once a Scene&rsquo;s conversation is generated, click <b>Write to FigJam</b> here (or{' '}
+          <b>Draw it on my FigJam board</b> in step 2) to draw it on the board.
+        </p>
         <ul>
           <li>Each Scene gets its own flowchart, placed so they don&rsquo;t overlap.</li>
           <li>It shows the stages and how they connect.</li>
           <li>View in FigJam opens the board in a new tab.</li>
         </ul>
         <p className="text-xs text-muted-ink">
-          Drawing needs the FigJam plugin running in the Figma desktop app — the dot below says whether it is, and
-          &ldquo;First time?&rdquo; explains how to start it.
+          Drawing needs the FigJam plugin running (the previous step) — the dot below says whether it is.
         </p>
       </>
     ),
@@ -472,3 +513,14 @@ export const ONBOARDING_STEPS: TourStep[] = [
     ),
   },
 ];
+
+// Steps 1–7 sit inside the "Chatbot Generation Process" group: any step that
+// opens one of them opens the group first.
+const inGroup = (open?: string[]) =>
+  open?.some((m) => m.startsWith('design-')) ? ['process-chatbot', ...open] : open;
+
+export const ONBOARDING_STEPS: TourStep[] = STEPS.map((step) => ({
+  ...step,
+  open: inGroup(step.open),
+  ...(step.fallback && { fallback: { ...step.fallback, open: inGroup(step.fallback.open) } }),
+}));

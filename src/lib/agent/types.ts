@@ -109,6 +109,13 @@ export type AgentFlow = {
    * Kept like `knowledge` when a flow is generated or imported.
    */
   cannotUse?: string;
+  /**
+   * The exact text this design was generated from (description plus the
+   * scene's information rules). With it, the next generation only revises
+   * what the changes in that text call for, instead of redesigning — see
+   * reviseFlow in generate.ts.
+   */
+  designedFrom?: string;
 };
 
 /** Everything the runtime tracks about one conversation. Owned by code, not the LLM. */

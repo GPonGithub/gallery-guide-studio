@@ -400,8 +400,15 @@ export function OnboardingTour({
         }
         target = find(current.fallback.target);
       }
-      // Panels slide open; scroll once they've settled.
-      setTimeout(() => !cancelled && target?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' }), 250);
+      // Panels slide open; scroll once they've settled — and again if opening several pushed it out of view.
+      const reveal = (onlyIfHidden: boolean) => {
+        if (cancelled || !target) return;
+        const r = target.getBoundingClientRect();
+        if (onlyIfHidden && r.top >= 0 && r.bottom <= window.innerHeight) return;
+        target.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' });
+      };
+      setTimeout(() => reveal(false), 250);
+      setTimeout(() => reveal(true), 800);
     })();
     return () => {
       cancelled = true;

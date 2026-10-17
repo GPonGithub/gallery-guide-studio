@@ -27,11 +27,13 @@ export const LAYOUT_DEMO_ACTIONS: Record<string, (h: TourHelpers) => Promise<voi
     const width = () => Number(border.getAttribute('aria-valuenow'));
     const start = width();
     // Wider if there's room, otherwise narrower.
-    const room = Math.min(Number(border.getAttribute('aria-valuemax')), window.innerWidth - 480) - start;
+    const room = Number(border.getAttribute('aria-valuemax')) - start;
     const dx = room >= 160 ? 160 : -120;
+    // Twice the usual demo speed: it's a simple move.
+    h.setPace(0.5);
     try {
       await h.slide(border, dx);
-      await h.wait(900);
+      await h.wait(450);
       await h.slide(border, -dx);
     } finally {
       // Back to exactly the width it had — straight away if the student moved on mid-demo.

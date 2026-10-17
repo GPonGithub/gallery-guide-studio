@@ -68,6 +68,11 @@ export async function POST(req: Request) {
     if (testing && data.ok && body.spreadsheetId && data.spreadsheetId !== body.spreadsheetId) {
       return Response.json({ ok: false, error: `That script belongs to “${data.name}”, not the sheet these scenes came from.` });
     }
+    // In the server log: what the sheet's script did with each save or clear.
+    if (!testing) {
+      const what = body.action === 'clear' ? `clear ${body.column === '*' ? 'every scene column' : `column ${body.column}`}` : `save column ${body.column} (${body.entries?.length ?? 0} items)`;
+      console.log(`[sheet] ${what} → ${data.ok ? 'done' : `FAILED: ${data.error}`}`);
+    }
     return Response.json(data);
   } catch {
     // Google answers with a sign-in or error page when the deployment isn't open to "Anyone".

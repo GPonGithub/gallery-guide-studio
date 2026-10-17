@@ -2,14 +2,24 @@ import { generateText, Output } from 'ai';
 import { z } from 'zod';
 import { anthropicModel } from '@/lib/anthropicModel';
 import { validateFlow } from './validate';
-import { END, type AgentFlow } from './types';
+import { END, type AgentFlow, type Stage } from './types';
 
 /**
  * Brief → flow. Claude designs the stages from a student's plain-English
  * description; validateFlow checks the result, and if it finds structural
- * problems Claude gets one chance to fix its own design before anything
- * reaches the board.
+ * problems Claude gets one chance to fix them — returning only the stages
+ * that change, not a whole second design.
+ *
+ * When there's already a design and the description has only changed a
+ * little (the usual case — a few edits in the sheet), reviseFlow sends
+ * Claude the current design plus what changed, and gets back only what must
+ * change: far less to write, so far quicker, and anything the student edited
+ * by hand (in the app or on the FigJam board) is kept.
+ *
+ * Thinking is off: it adds time and this is a writing task.
  */
+
+const NO_THINKING = { anthropic: { thinking: { type: 'disabled' as const } } };
 
 const exitSchema = z.object({
   to: z.string().describe('Target stage code, or "END" to finish the call'),
@@ -24,24 +34,35 @@ const cueSchema = z.object({
   when: z.string().optional().describe('For on="moment": the moment in plain English'),
 });
 
+const stageSchema = z.object({
+  code: z.string(),
+  name: z.string().describe('UPPER CASE, a few words'),
+  goal: z.string(),
+  collect: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean() })),
+  instructions: z.string(),
+  steering: z.enum(['strict', 'balanced', 'relaxed']),
+  exits: z.array(exitSchema),
+  cues: z.array(cueSchema),
+});
+
 const flowSchema = z.object({
   name: z.string().describe('Short name for the flow, e.g. "UCSF front desk"'),
   persona: z.string(),
   rules: z.string().describe('One rule per line'),
   globalExits: z.array(exitSchema),
   globalCues: z.array(cueSchema),
-  stages: z.array(
-    z.object({
-      code: z.string(),
-      name: z.string().describe('UPPER CASE, a few words'),
-      goal: z.string(),
-      collect: z.array(z.object({ name: z.string(), description: z.string(), required: z.boolean() })),
-      instructions: z.string(),
-      steering: z.enum(['strict', 'balanced', 'relaxed']),
-      exits: z.array(exitSchema),
-      cues: z.array(cueSchema),
-    }),
-  ),
+  stages: z.array(stageSchema),
+});
+
+/** Only what changes: stages to add or replace (by code), codes to remove, and master fields only if they change. */
+const patchSchema = z.object({
+  summary: z.string().describe('One short line: what changed in the design, for the student'),
+  upsert: z.array(stageSchema).describe('Stages to add, or to replace entirely (same code) — only ones that must change'),
+  remove: z.array(z.string()).describe('Codes of stages to delete'),
+  persona: z.string().optional().describe('Only if it must change'),
+  rules: z.string().optional().describe('Only if they must change'),
+  globalExits: z.array(exitSchema).optional().describe('Only if they must change: the complete new list'),
+  globalCues: z.array(cueSchema).optional().describe('Only if they must change: the complete new list'),
 });
 
 const SYSTEM = `You design conversation flows for a voice-agent prototyping tool used by design students.
@@ -67,9 +88,25 @@ DESIGN RULES
 10. Usually 4–9 stages. Keep wording plain — students will edit this on a FigJam board.`;
 
 type Generated = z.infer<typeof flowSchema>;
+type GeneratedStage = z.infer<typeof stageSchema>;
+type Patch = z.infer<typeof patchSchema>;
+
+const upper = (s: string) => s.trim().toUpperCase();
+
+function toStage(s: GeneratedStage, id: string): Stage {
+  return {
+    ...s,
+    id,
+    code: upper(s.code),
+    exits: s.exits.map((e) => ({
+      ...e,
+      to: upper(e.to) === 'END' ? END : upper(e.to),
+      when: e.onComplete ? e.when.trim().replace(/^(?:the\s+)?goal(?:\s+is)?\s+met\b[\s—–:,.-]*/i, '') : e.when.trim(),
+    })),
+  };
+}
 
 function toFlow(g: Generated): AgentFlow {
-  const upper = (s: string) => s.trim().toUpperCase();
   return {
     name: g.name.trim(),
     persona: g.persona.trim(),
@@ -77,17 +114,97 @@ function toFlow(g: Generated): AgentFlow {
     globalExits: g.globalExits.map((e) => ({ ...e, to: upper(e.to), onComplete: false })),
     globalCues: g.globalCues,
     tdUrl: '',
-    stages: g.stages.map((s, i) => ({
-      ...s,
-      id: `gen-${i}-${upper(s.code)}`,
-      code: upper(s.code),
-      exits: s.exits.map((e) => ({
-        ...e,
-        to: upper(e.to) === 'END' ? END : upper(e.to),
-        when: e.onComplete ? e.when.trim().replace(/^(?:the\s+)?goal(?:\s+is)?\s+met\b[\s—–:,.-]*/i, '') : e.when.trim(),
-      })),
+    stages: g.stages.map((s, i) => toStage(s, `gen-${i}-${upper(s.code)}`)),
+  };
+}
+
+/** The design as Claude reads it back (no ids or app settings). */
+function asDesign(flow: AgentFlow) {
+  return {
+    name: flow.name ?? '',
+    persona: flow.persona,
+    rules: flow.rules,
+    globalExits: flow.globalExits,
+    globalCues: flow.globalCues,
+    stages: flow.stages.map(({ code, name, goal, collect, instructions, steering, exits, cues }) => ({
+      code,
+      name,
+      goal,
+      collect,
+      instructions,
+      steering,
+      exits,
+      cues,
     })),
   };
+}
+
+/** Applies a patch: replaced stages keep their place (and id), new ones go at the end, removed ones go. */
+export function applyPatch(flow: AgentFlow, patch: Patch): AgentFlow {
+  const removed = new Set(patch.remove.map(upper));
+  const byCode = new Map(patch.upsert.map((s) => [upper(s.code), s]));
+  const stages = flow.stages
+    .filter((s) => !removed.has(s.code))
+    .map((s) => {
+      const replacement = byCode.get(s.code);
+      if (!replacement) return s;
+      byCode.delete(s.code);
+      return toStage(replacement, s.id);
+    });
+  const stamp = Date.now();
+  for (const [code, added] of byCode) stages.push(toStage(added, `gen-${stamp}-${code}`));
+  return {
+    ...flow,
+    persona: patch.persona?.trim() || flow.persona,
+    rules: patch.rules?.trim() || flow.rules,
+    globalExits: patch.globalExits ? patch.globalExits.map((e) => ({ ...e, to: upper(e.to), onComplete: false })) : flow.globalExits,
+    globalCues: patch.globalCues ?? flow.globalCues,
+    stages,
+  };
+}
+
+/** Lines that were added or removed between two versions of the brief — to point Claude at the change. */
+export function changedLines(before: string, after: string): string {
+  const lines = (t: string) => t.split('\n').map((l) => l.trim()).filter(Boolean);
+  const was = new Set(lines(before));
+  const now = new Set(lines(after));
+  const removed = [...was].filter((l) => !now.has(l)).map((l) => `- ${l}`);
+  const added = [...now].filter((l) => !was.has(l)).map((l) => `+ ${l}`);
+  return [...removed, ...added].join('\n') || '(only spacing or line order changed)';
+}
+
+const REVISE = `
+REVISING AN EXISTING DESIGN
+You are given the CURRENT DESIGN (which may include changes the student made by hand — keep them), the PREVIOUS BRIEF it was made from, the NEW BRIEF, and the lines that changed. Return ONLY what the change requires: stages to add or replace (give the complete stage, with the same code to replace one), codes of stages to remove, and persona/rules/global exits/global cues only if they must change. Leave everything else exactly as it is. Keep codes stable, keep every exit pointing at a stage that exists, and follow the design rules above. If nothing in the design needs to change, return empty lists.`;
+
+/** Asks Claude for just the changes, and applies them. */
+async function patchFlow(model: ReturnType<typeof anthropicModel>, flow: AgentFlow, task: string): Promise<{ flow: AgentFlow; summary: string }> {
+  const { output } = await generateText({
+    model,
+    system: SYSTEM + REVISE,
+    prompt: `CURRENT DESIGN:\n${JSON.stringify(asDesign(flow))}\n\n${task}`,
+    output: Output.object({ schema: patchSchema }),
+    maxOutputTokens: 8000,
+    providerOptions: NO_THINKING,
+  });
+  return { flow: applyPatch(flow, output), summary: output.summary.trim() };
+}
+
+/** One chance to fix problems the checker found — as changes, not a whole second design. */
+async function repair(model: ReturnType<typeof anthropicModel>, flow: AgentFlow, problems: string[], context: string) {
+  if (problems.length === 0) return { flow, problems };
+  try {
+    const fixed = await patchFlow(
+      model,
+      flow,
+      `${context}\n\nTHE DESIGN HAS THESE PROBLEMS — return only the changes that fix them:\n${problems.map((p) => `- ${p}`).join('\n')}`,
+    );
+    const fixedProblems = validateFlow(fixed.flow);
+    if (fixedProblems.length < problems.length) return { flow: fixed.flow, problems: fixedProblems };
+  } catch {
+    // Keep the design as it was, with its problems listed.
+  }
+  return { flow, problems };
 }
 
 export async function generateFlow(
@@ -108,26 +225,33 @@ export async function generateFlow(
     prompt: `BRIEF FROM THE STUDENT:\n${brief.trim()}${context}`,
     output: Output.object({ schema: flowSchema }),
     maxOutputTokens: 8000,
+    providerOptions: NO_THINKING,
   });
-  let flow = toFlow(first.output);
-  let problems = validateFlow(flow);
+  const flow = toFlow(first.output);
+  return repair(model, flow, validateFlow(flow), `BRIEF FROM THE STUDENT:\n${brief.trim()}${context}`);
+}
 
-  if (problems.length > 0) {
-    const second = await generateText({
-      model,
-      system: SYSTEM,
-      prompt:
-        `BRIEF FROM THE STUDENT:\n${brief.trim()}${context}\n\nYOUR PREVIOUS DESIGN:\n${JSON.stringify(first.output)}\n\n` +
-        `IT HAS THESE PROBLEMS — return the corrected full design:\n${problems.map((p) => `- ${p}`).join('\n')}`,
-      output: Output.object({ schema: flowSchema }),
-      maxOutputTokens: 8000,
-    });
-    const fixed = toFlow(second.output);
-    const fixedProblems = validateFlow(fixed);
-    if (fixedProblems.length < problems.length) {
-      flow = fixed;
-      problems = fixedProblems;
-    }
-  }
-  return { flow, problems };
+/**
+ * The quick path: revise `flow` (generated from `previousBrief`, perhaps
+ * edited since) for `brief`, changing only what the difference calls for.
+ * Nothing changed → nothing is asked of Claude.
+ */
+export async function reviseFlow(
+  previousBrief: string,
+  brief: string,
+  flow: AgentFlow,
+  anthropicApiKey: string,
+  knowledge = '',
+): Promise<{ flow: AgentFlow; problems: string[]; summary: string; unchanged?: boolean }> {
+  if (previousBrief.trim() === brief.trim()) return { flow, problems: validateFlow(flow), summary: '', unchanged: true };
+  const model = anthropicModel(anthropicApiKey);
+  const context = knowledge.trim()
+    ? `\n\nTHE AGENT'S KNOWLEDGE BASE (facts it will have at run time; design around them, don't copy them into instructions):\n${knowledge.trim()}`
+    : '';
+  const task =
+    `PREVIOUS BRIEF:\n${previousBrief.trim()}\n\nNEW BRIEF:\n${brief.trim()}${context}\n\n` +
+    `WHAT CHANGED (- removed, + added):\n${changedLines(previousBrief, brief)}`;
+  const revised = await patchFlow(model, flow, task);
+  const checked = await repair(model, revised.flow, validateFlow(revised.flow), `NEW BRIEF:\n${brief.trim()}${context}`);
+  return { ...checked, summary: revised.summary };
 }

@@ -7,14 +7,20 @@ import { useRef } from 'react';
 // stack). Double-click puts it back to the standard width; with the handle
 // focused, ← and → move it too. The width is remembered in this browser.
 
-export const DESIGN_WIDTH = { min: 300, standard: 400, max: 900 } as const;
+export const DESIGN_WIDTH = { min: 300, standard: 400 } as const;
 const STORAGE_KEY = 'goal-agent-design-width';
 const KEY_STEP = 20;
+/** The border can go right up to this close to the window's right-hand edge. */
+const RIGHT_EDGE_ROOM = 400;
 
-/** Within the limits — and never so wide the chat column is squeezed out. */
+/** The widest the column can be in this window. */
+export function maxDesignWidth(): number {
+  return typeof window === 'undefined' ? 900 : Math.max(DESIGN_WIDTH.min, window.innerWidth - RIGHT_EDGE_ROOM);
+}
+
+/** Within the limits: at least the minimum, and the border no nearer than 400px to the right-hand edge. */
 export function clampDesignWidth(width: number): number {
-  const roomForChat = typeof window === 'undefined' ? Infinity : window.innerWidth - 480;
-  return Math.round(Math.max(DESIGN_WIDTH.min, Math.min(width, DESIGN_WIDTH.max, roomForChat)));
+  return Math.round(Math.max(DESIGN_WIDTH.min, Math.min(width, maxDesignWidth())));
 }
 
 export function loadDesignWidth(): number {
@@ -58,7 +64,9 @@ export function DesignResizeHandle({
       aria-label="Resize the Design Process column"
       data-tour="resize-border"
       aria-valuemin={DESIGN_WIDTH.min}
-      aria-valuemax={DESIGN_WIDTH.max}
+      aria-valuemax={maxDesignWidth()}
+      // The maximum depends on the window, which the server can't know.
+      suppressHydrationWarning
       aria-valuenow={width}
       tabIndex={0}
       title="Drag to resize · double-click for the standard width"
