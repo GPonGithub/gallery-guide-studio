@@ -197,12 +197,25 @@ export function MediaTimeline({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <p className="min-w-0 truncate font-display text-lg text-ink" title={sceneTitle}>
-          Timeline <span className="font-body text-sm text-muted-ink">· {sceneTitle}</span>
-        </p>
+      {/* The scene, and under it the stage the playhead is on; ◀ ▶ together on the right. */}
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="truncate font-display text-lg text-ink" title={sceneTitle}>
+            Timeline <span className="font-body text-sm text-muted-ink">· {sceneTitle}</span>
+          </p>
+          {current && (
+            <p
+              className="truncate font-body text-sm text-ink"
+              aria-live="polite"
+              title={`Stage ${current.code} · ${current.name}`}
+            >
+              Stage {current.code}
+              <span className="text-muted-ink"> · {current.name}</span>
+            </p>
+          )}
+        </div>
         {current && (
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1">
             <button
               onClick={() => moveTo((i) => i - 1)}
               disabled={index === 0}
@@ -211,14 +224,6 @@ export function MediaTimeline({
             >
               ◀
             </button>
-            <span
-              className="w-[150px] truncate text-center font-body text-sm text-ink"
-              aria-live="polite"
-              title={`Stage ${current.code} · ${current.name}`}
-            >
-              Stage {current.code}
-              <span className="text-muted-ink"> · {current.name}</span>
-            </span>
             <button
               onClick={() => moveTo((i) => i + 1)}
               disabled={index === count - 1}
