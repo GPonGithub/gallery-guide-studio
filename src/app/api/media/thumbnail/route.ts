@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,6 +5,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
+import { runFfmpeg } from '@/lib/ffmpeg';
 import { isHosted } from '@/lib/serverKeys';
 
 export const maxDuration = 60;
@@ -16,37 +16,7 @@ export const maxDuration = 60;
 // kept). Only when the app runs on this computer — a hosted copy has no
 // ffmpeg, and the media folder isn't there.
 
-// The app's own copy first (the ffmpeg-static package: `npm install` fetches the right one for
-// each computer, so nobody installs ffmpeg separately), then one installed on the computer.
-const FFMPEG_PLACES = [
-  process.env.FFMPEG_PATH,
-  path.join(process.cwd(), 'node_modules', 'ffmpeg-static', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
-  '/opt/homebrew/bin/ffmpeg',
-  '/usr/local/bin/ffmpeg',
-  'ffmpeg',
-].filter((p): p is string => Boolean(p));
 const LARGEST = 4 * 1024 ** 3; // 4 GB
-
-/** Runs ffmpeg with the first of FFMPEG_PLACES that exists; resolves with what it wrote to stdout. */
-function ffmpeg(args: string[]): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const tryAt = (i: number) => {
-      if (i >= FFMPEG_PLACES.length) return reject(new Error('ffmpeg isn’t installed on this computer.'));
-      const run = spawn(FFMPEG_PLACES[i], args);
-      const out: Buffer[] = [];
-      let err = '';
-      run.stdout.on('data', (d: Buffer) => out.push(d));
-      run.stderr.on('data', (d: Buffer) => (err += d.toString()));
-      run.on('error', (e: NodeJS.ErrnoException) => (e.code === 'ENOENT' ? tryAt(i + 1) : reject(e)));
-      run.on('close', (code) =>
-        code === 0 && out.length > 0
-          ? resolve(Buffer.concat(out))
-          : reject(new Error(err.trim().split('\n').pop() || 'ffmpeg failed.')),
-      );
-    };
-    tryAt(0);
-  });
-}
 
 export async function POST(req: Request) {
   if (isHosted)
@@ -64,7 +34,7 @@ export async function POST(req: Request) {
   const input = path.join(dir, `in.${ext}`);
   try {
     await pipeline(Readable.fromWeb(req.body as unknown as WebReadableStream), createWriteStream(input));
-    const png = await ffmpeg([
+    const png = await runFfmpeg([
       '-hide_banner',
       '-loglevel',
       'error',

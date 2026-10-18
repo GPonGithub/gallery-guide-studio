@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CollapsiblePanel } from './CollapsiblePanel';
-import { buttonBusy, buttonGhost, buttonOutline, buttonPrimary } from '@/lib/styles';
+import { buttonGhost, buttonOutline } from '@/lib/styles';
 import { parseSheetUrl } from '@/lib/agent/sheetScenes';
 import { isScriptUrl } from '@/lib/agent/sheetScript';
 import {
@@ -296,7 +296,7 @@ export function ImmersiveMedia({
           </p>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
-            <button onClick={() => void refresh(false)} disabled={busy} className={busy ? buttonBusy : buttonPrimary}>
+            <button onClick={() => void refresh(false)} disabled={busy} className={stepButton(busy)}>
               {busy ? 'Reading the folder…' : folder ? 'Refresh Media' : 'Choose Media Folder'}
             </button>
             {folder && (
@@ -306,6 +306,8 @@ export function ImmersiveMedia({
             )}
           </div>
         )}
+        {/* The app's packages on this computer (ffmpeg among them, for video thumbnails). */}
+        <ThumbnailTools />
         {folder && (
           <p className="font-label text-[10px] uppercase tracking-wide text-muted-ink">
             Media folder: {folder.name}
@@ -363,6 +365,100 @@ export function ImmersiveMedia({
         )}
       </CollapsiblePanel>
     </>
+  );
+}
+
+/** The Media folder's two buttons, Run npm install and Refresh Media: alike, and the same size. */
+const stepButton = (busy: boolean) =>
+  `h-9 w-[190px] border border-ink px-2 font-label text-[10px] uppercase leading-none tracking-wide transition-colors ${
+    busy ? 'cursor-wait bg-paper text-muted-ink' : 'bg-paper text-ink hover:bg-ink hover:text-paper'
+  }`;
+
+/**
+ * Whether video the browser can't show gets a thumbnail (ffmpeg, on this
+ * computer), and Run npm install — fetches the app's packages, ffmpeg among
+ * them, for a copy that was updated without it. Not shown on a hosted copy.
+ */
+function ThumbnailTools() {
+  const [ffmpeg, setFfmpeg] = useState<'app' | 'computer' | null | 'unknown'>('unknown');
+  const [hosted, setHosted] = useState(true);
+  const [installing, setInstalling] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; output: string } | null>(null);
+  useEffect(() => {
+    fetch('/api/media/ffmpeg')
+      .then((res) => res.json() as Promise<{ hosted: boolean; ffmpeg: 'app' | 'computer' | null }>)
+      .then((data) => {
+        setHosted(data.hosted);
+        setFfmpeg(data.ffmpeg);
+      })
+      .catch(() => {});
+  }, []);
+  if (hosted) return null;
+  const install = async () => {
+    setInstalling(true);
+    setResult(null);
+    try {
+      const res = await fetch('/api/media/ffmpeg', { method: 'POST' });
+      const data = (await res.json()) as {
+        ok: boolean;
+        output?: string;
+        error?: string;
+        ffmpeg?: 'app' | 'computer' | null;
+      };
+      setResult({
+        ok: data.ok,
+        output: data.ok ? (data.output ?? '') : (data.error ?? data.output ?? 'npm install failed.'),
+      });
+      if (data.ffmpeg !== undefined) setFfmpeg(data.ffmpeg);
+    } catch {
+      setResult({ ok: false, output: 'Couldn’t reach the app’s server.' });
+    } finally {
+      setInstalling(false);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => void install()}
+          disabled={installing}
+          className={stepButton(installing)}
+          title="Fetches the app's packages on this computer — ffmpeg among them, for video thumbnails"
+        >
+          {installing ? 'Running npm install…' : 'Run npm install'}
+        </button>
+        <span className="font-body text-xs text-ink">
+          {ffmpeg === 'unknown'
+            ? ''
+            : ffmpeg
+              ? '✓ Video thumbnails ready'
+              : 'Video thumbnails need ffmpeg — run npm install'}
+        </span>
+      </div>
+      {installing && (
+        <p className="font-body text-[11px] italic text-muted-ink">This can take a minute or two. Keep the app open.</p>
+      )}
+      {result && (
+        <div
+          className={`relative pr-8 font-body text-[11px] text-ink ${result.ok ? '' : 'border-l-4 border-[#b91c1c] pl-2'}`}
+        >
+          <button
+            onClick={() => setResult(null)}
+            aria-label="Close this message"
+            title="Close"
+            className="absolute right-0 top-0 flex h-6 w-6 items-center justify-center text-xl leading-none text-ink hover:bg-ink/10"
+          >
+            ×
+          </button>
+          <p>{result.ok ? '✓ npm install finished.' : 'npm install didn’t finish:'}</p>
+          {result.output && (
+            <pre className="mt-1 max-h-24 overflow-auto whitespace-pre-wrap bg-muted p-1 text-[10px] text-muted-ink">
+              {result.output}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

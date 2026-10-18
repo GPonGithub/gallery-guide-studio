@@ -391,7 +391,7 @@ export function MediaTimeline({
                     className="h-full w-2 shrink-0 cursor-ew-resize border-r border-paper/50 bg-ink/20"
                     aria-hidden="true"
                   />
-                  <span className="min-w-0 flex-1 truncate px-1 font-body text-[10px] leading-none">
+                  <span className="min-w-0 flex-1 truncate px-1 font-body text-[15px] leading-none">
                     {every ? '↻ ' : ''}
                     {l.action}
                   </span>
