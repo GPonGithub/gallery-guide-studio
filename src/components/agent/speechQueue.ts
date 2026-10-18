@@ -21,6 +21,12 @@ export type SpeechQueueOptions = {
   onSpeakingChange: (speaking: boolean) => void;
   /** The voice has actually started playing a sentence (audio coming out, not just requested). */
   onPlay?: () => void;
+  /**
+   * Runs before the first sentence plays, which waits for it — e.g. a sound
+   * connected to "every time before you speak". The sentences keep streaming
+   * in meanwhile, so the voice is ready the moment it finishes.
+   */
+  beforeFirst?: () => Promise<void>;
   onError: (message: string) => void;
 };
 
@@ -34,6 +40,8 @@ export class SpeechQueue {
   private active = false;
   // Caught up with what's been written so far; waiting for the next sentence.
   private waiting = false;
+  // beforeFirst has run (or is running).
+  private begun = false;
 
   constructor(private options: SpeechQueueOptions) {}
 
@@ -87,6 +95,11 @@ export class SpeechQueue {
 
   private async playNext(): Promise<void> {
     if (this.cancelled) return;
+    if (!this.begun) {
+      this.begun = true;
+      await this.options.beforeFirst?.().catch(() => {});
+      if (this.cancelled) return;
+    }
     const next = this.clips.shift();
     if (!next) {
       this.playing = null;

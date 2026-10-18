@@ -1,7 +1,7 @@
 import saved from '@/data/figjamBoards.json';
 
 /**
- * The FigJam boards students can pick from (Design Process, section 6).
+ * The FigJam boards students can pick from (Design Process, section 2).
  * The list lives in src/data/figjamBoards.json — part of the project itself,
  * so every copy (a student's download, or the hosted app) comes with it. It's
  * edited in the app on the computer running it, which writes that file

@@ -1,11 +1,12 @@
 'use client';
 
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 
 // The border between the Design Process column and the chat: drag it to
 // widen or narrow the column (wide screens only — on narrow ones the columns
 // stack). Double-click puts it back to the standard width; with the handle
 // focused, ← and → move it too. The width is remembered in this browser.
+// The border shows as a 4px black line, green (as Saved) while it's held.
 
 export const DESIGN_WIDTH = { min: 300, standard: 400 } as const;
 const STORAGE_KEY = 'goal-agent-design-width';
@@ -50,9 +51,11 @@ export function DesignResizeHandle({
   onReset: () => void;
 }) {
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
+  const [grabbed, setGrabbed] = useState(false);
 
   const stopDrag = () => {
     drag.current = null;
+    setGrabbed(false);
     document.body.style.removeProperty('user-select');
     document.body.style.removeProperty('cursor');
   };
@@ -79,6 +82,7 @@ export function DesignResizeHandle({
           // Not a real pointer (the onboarding tour's demonstration) — following still works on the handle.
         }
         drag.current = { startX: e.clientX, startWidth: width };
+        setGrabbed(true);
         // No text gets selected, and the cursor stays put, while dragging over the page.
         document.body.style.userSelect = 'none';
         document.body.style.cursor = 'col-resize';
@@ -102,7 +106,7 @@ export function DesignResizeHandle({
       // Sits over the column's 2px right border, a little wider so it's easy to grab.
       className="group absolute inset-y-0 -right-[6px] z-20 hidden w-[10px] cursor-col-resize justify-center outline-none lg:flex"
     >
-      <span className="h-full w-[4px] bg-ink opacity-0 transition-opacity group-hover:opacity-40 group-focus-visible:opacity-60 group-active:opacity-60" />
+      <span className={`h-full w-[4px] transition-colors ${grabbed ? 'bg-[#15803d]' : 'bg-ink'}`} />
     </div>
   );
 }

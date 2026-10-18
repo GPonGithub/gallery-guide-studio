@@ -8,7 +8,6 @@ import { SpeechQueue } from '@/components/agent/speechQueue';
 import { startStreamedClip, type StreamedClip } from '@/components/agent/streamedAudio';
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
-import { SceneButtons } from '@/components/agent/SceneButtons';
 import { OnboardingTour } from '@/components/agent/OnboardingTour';
 import { useHosting } from '@/lib/agent/hosting';
 import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
@@ -17,6 +16,18 @@ import { LAYOUT_DEMO_ACTIONS } from '@/components/agent/layoutDemo';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { CueMarker, CueMonitor, type SentCue } from '@/components/agent/CueMonitor';
+import { MediaMarker, type PlayedSound } from '@/components/agent/MediaMarker';
+import { playEvent, soundsFor, type PlannedSound } from '@/lib/agent/mediaPlayback';
+import {
+  CHAT_FOLD_BELOW,
+  CHAT_WIDTH,
+  clampChatWidth,
+  loadChatHidden,
+  loadChatWidth,
+  MediaWorkspace,
+  saveChatHidden,
+  saveChatWidth,
+} from '@/components/agent/MediaWorkspace';
 import { adoptKeylessTrack, clearTrack, loadTrack, saveTrack } from '@/lib/musicStore';
 import {
   applySheetScene,
@@ -293,6 +304,8 @@ export default function AgentStudioPage() {
   const [voiceOn, setVoiceOn] = useState(true);
   // Every TouchDesigner cue of this conversation, as it went out (see CueMonitor).
   const [cueLog, setCueLog] = useState<SentCue[]>([]);
+  // Every sound the conversation played for a media action (see mediaPlayback.ts), and where.
+  const [soundLog, setSoundLog] = useState<PlayedSound[]>([]);
   const conversations = useRef<ConversationStore>({ threads: {}, lastStart: {} });
   /** The work put aside while the onboarding's Scenes demo runs (null = no demo). */
   const sceneDemo = useRef<DemoBackup | null>(null);
@@ -308,6 +321,7 @@ export default function AgentStudioPage() {
       // Storage blocked: no pulse, rather than one that could never be switched off.
     }
   }, []);
+  const startTour = useRef<(() => void) | null>(null);
   const stopOnboardPulse = () => {
     setOnboardPulse(false);
     try {
@@ -326,6 +340,38 @@ export default function AgentStudioPage() {
     const next = clampDesignWidth(width);
     setDesignWidth(next);
     saveDesignWidth(next);
+  };
+  // "Adding Immersive Media Process" is open: the media panel sits between Design Process and the chat.
+  const [mediaOpen, setMediaOpen] = useState(false);
+  // The chat's width while the media panel is open — dragged on the border between them.
+  const [chatWidth, setChatWidth] = useState<number>(CHAT_WIDTH.standard);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
+    setChatWidth(loadChatWidth());
+    setChatHidden(loadChatHidden());
+  }, []);
+  // Pulled all the way right, the chat folds away (to a tab under the Inspector); pulled back, it returns.
+  const [chatHidden, setChatHidden] = useState(false);
+  const chatAway = mediaOpen && chatHidden;
+  const hideChat = (hidden: boolean) => {
+    setChatHidden(hidden);
+    saveChatHidden(hidden);
+  };
+  const resizeChat = (width: number) => {
+    if (width < CHAT_FOLD_BELOW) {
+      if (!chatHidden) hideChat(true);
+      return;
+    }
+    if (chatHidden) hideChat(false);
+    const next = clampChatWidth(width, designWidth);
+    setChatWidth(next);
+    saveChatWidth(next);
+  };
+  const reopenChat = () => {
+    hideChat(false);
+    const next = clampChatWidth(CHAT_WIDTH.reopen, designWidth);
+    setChatWidth(next);
+    saveChatWidth(next);
   };
   const [sheetScenes, setSheetScenes] = useState<AgentProject[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -535,7 +581,7 @@ export default function AgentStudioPage() {
   // checked once per scene and set of memories, then reused for every turn;
   // if the check can't be done, nothing from earlier scenes is used.
   const activePatient = saved ? (patients.find((p) => p.id === saved.activePatientId) ?? null) : null;
-  /** The sheet's scenes as number buttons (in "Describe the conversation in each scene" and above the chat). */
+  /** The sheet's scenes as number buttons (in the Design Process and above the room in the media panel). */
   const sheetSceneList = sheetScenes.map((p) => ({ id: p.id, number: p.sheet!.number, name: p.name }));
   const sceneNow: SceneRef | null = saved
     ? { id: saved.projectId ?? 'unsaved', number: saved.sceneSheet?.number ?? '', name: saved.projectName }
@@ -774,6 +820,7 @@ export default function AgentStudioPage() {
     stopAudio();
     musicRef.current?.stop();
     setCueLog([]);
+    setSoundLog([]);
     setSession(initialState(flow, code || undefined));
     setMessages([]);
     setLog([]);
@@ -789,6 +836,7 @@ export default function AgentStudioPage() {
     stopAudio();
     musicRef.current?.stop();
     setCueLog([]);
+    setSoundLog([]);
     setSession(initialState(next));
     setMessages([]);
     setLog([]);
@@ -1122,6 +1170,32 @@ export default function AgentStudioPage() {
     }
   };
 
+  // Says a line in the voice in use and waits until it's finished (the Media Library's Try it);
+  // `signal` stops it (Try it's Stop).
+  const sayAndWait = async (text: string, signal?: AbortSignal) => {
+    if (signal?.aborted) return;
+    await speak(text, true, saved.voiceExpressive);
+    const audio = audioRef.current;
+    if (!audio || audio.ended) return;
+    if (signal?.aborted) {
+      audio.pause();
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      audio.addEventListener('ended', () => resolve(), { once: true });
+      audio.addEventListener('pause', () => resolve(), { once: true });
+      audio.addEventListener('error', () => resolve(), { once: true });
+      signal?.addEventListener(
+        'abort',
+        () => {
+          audio.pause();
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  };
+
   // "Moment" cues are judged against the reply, so they're checked after it
   // is already on screen and being spoken — never holding the reply back.
   // Whatever fires is added to the latest turn in the inspector.
@@ -1273,9 +1347,13 @@ export default function AgentStudioPage() {
 
   // Speaks one reply sentence by sentence, each requested as soon as it's written.
   // `hooks`: told when the voice actually starts playing, and when it goes quiet.
-  const newSpeechQueue = (expressive: boolean, hooks: { onPlay?: () => void; onQuiet?: () => void } = {}) =>
+  const newSpeechQueue = (
+    expressive: boolean,
+    hooks: { onPlay?: () => void; onQuiet?: () => void; beforeFirst?: () => Promise<void> } = {},
+  ) =>
     new SpeechQueue({
       expressive,
+      beforeFirst: hooks.beforeFirst,
       playbackRate: () => voiceRef.current.settings.speed,
       onSpeakingChange: (speakingNow) => {
         setSpeaking(speakingNow);
@@ -1330,6 +1408,27 @@ export default function AgentStudioPage() {
     early?.controller.abort();
     return undefined;
   };
+
+  // A media action's sound played (or couldn't): mark it in the conversation.
+  const noteSound = (sound: PlannedSound, afterMessage: number, problem?: string) =>
+    setSoundLog((list) => {
+      // A sound that then couldn't play updates its own marker.
+      const last = list.findLast((p) => p.assetId === sound.asset.id && p.afterMessage === afterMessage);
+      if (problem && last && !last.problem) return list.map((p) => (p === last ? { ...p, problem } : p));
+      return [
+        ...list,
+        {
+          id: crypto.randomUUID(),
+          at: Date.now(),
+          afterMessage,
+          assetId: sound.asset.id,
+          name: sound.asset.name,
+          when: sound.timing.when,
+          action: sound.link.action,
+          problem,
+        },
+      ];
+    });
 
   // A cue went out (or its status changed): show it in the TouchDesigner
   // window and the conversation, and keep the inspector's copy up to date.
@@ -1427,6 +1526,30 @@ export default function AgentStudioPage() {
     // Cues of this turn go out before its reply (the reply is about the
     // situation they mark), so that's where they show in the conversation.
     const cuePosition = withCaller.length;
+    // Sounds connected to this scene's "every time" media actions (Media Library), looked up now
+    // so they're ready the moment they're needed.
+    const mediaScene = saved.sceneSheet ? { sheetId: saved.sceneSheet.sheetId, number: saved.sceneSheet.number } : null;
+    const sounds = {
+      before: soundsFor(mediaScene, 'before-reply'),
+      start: soundsFor(mediaScene, 'reply-start'),
+      after: soundsFor(mediaScene, 'after-reply'),
+    };
+    const play = (planned: Promise<PlannedSound[]>, afterMessage: number) =>
+      planned.then((list) => playEvent(list, (s, problem) => noteSound(s, afterMessage, problem))).catch(() => {});
+    if (userText) void play(soundsFor(mediaScene, 'caller-speaks'), cuePosition);
+    let replyStarted = false;
+    const replyStarts = () => {
+      if (replyStarted) return;
+      replyStarted = true;
+      void play(sounds.start, cuePosition);
+    };
+    let turnFailed = false;
+    let replyEnded = false;
+    const replyEnds = () => {
+      if (replyEnded || turnFailed) return;
+      replyEnded = true;
+      void play(sounds.after, cuePosition + 1);
+    };
     // "When spoken": this turn's cues wait here until its reply is actually
     // heard — the voice starting, or (voice off) the reply appearing.
     const gate = { open: !cuesWhenSpoken, waiting: [] as CueEvent[] };
@@ -1440,14 +1563,20 @@ export default function AgentStudioPage() {
       voiceOn && voiceRef.current.apiKey.trim()
         ? // If the voice fails and goes quiet without playing, the cues still go.
           newSpeechQueue(Boolean(state.expressive), {
+            // "Every time before you speak": the voice waits for those sounds.
+            beforeFirst: () => play(sounds.before, cuePosition),
             onPlay: () => {
               if (clock.voice === null) {
                 clock.voice = performance.now();
                 reportWait();
               }
+              replyStarts();
               openGate();
             },
-            onQuiet: openGate,
+            onQuiet: () => {
+              openGate();
+              replyEnds();
+            },
           })
         : null;
     queueRef.current = queue;
@@ -1460,6 +1589,11 @@ export default function AgentStudioPage() {
       else gate.waiting.push(cue);
     };
     const onSentence = (sentence: string) => {
+      // No voice: the reply appearing is when it "starts".
+      if (!queue && clock.text === null) {
+        void play(sounds.before, cuePosition);
+        replyStarts();
+      }
       clock.text ??= performance.now();
       shown = `${shown} ${sentence}`.trim();
       setMessages([...withCaller, { role: 'assistant', text: shown }]);
@@ -1489,7 +1623,10 @@ export default function AgentStudioPage() {
       }
       queue?.finish();
       // Nothing to say out loud (or no voice): the reply is "heard" now.
-      if (!queue || queue.idle) openGate();
+      if (!queue || queue.idle) {
+        openGate();
+        replyEnds();
+      }
       setMessages([...withCaller, { role: 'assistant', text: data.reply }]);
       setSession(data.state);
       // Cue statuses as last heard (held ones may have been sent since the turn finished).
@@ -1513,6 +1650,7 @@ export default function AgentStudioPage() {
       void checkMoments(data.state, userText, data.reply, cuePosition + 1);
     } catch (err) {
       // A failed turn sends nothing.
+      turnFailed = true;
       gate.open = true;
       gate.waiting.length = 0;
       queue?.cancel();
@@ -1643,25 +1781,14 @@ export default function AgentStudioPage() {
     <main className="flex min-h-screen flex-col bg-paper lg:h-screen">
       <header className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-ink px-5 py-3">
         <div className="flex min-w-0 items-center gap-3">
-          {/* The guided tour of the interface (see onboardingSteps.tsx). */}
+          {/* The guided tour of the chatbot generation process (see onboardingSteps.tsx) — started
+              by Onboard Me beside that section's heading in Design Process. */}
           <OnboardingTour
             steps={ONBOARDING_STEPS}
             actions={{ ...sceneDemoActions({ begin: beginSceneDemo }), ...LAYOUT_DEMO_ACTIONS }}
             onLeaveGroup={(group) => (group === 'scenes-demo' ? endSceneDemo() : undefined)}
-          >
-            {(start) => (
-              <button
-                onClick={() => {
-                  stopOnboardPulse();
-                  start();
-                }}
-                className={`shrink-0 ${buttonOutline} ${onboardPulse ? 'onboard-pulse' : ''}`}
-                title="A guided tour of Chatbot Designer"
-              >
-                Onboard Me
-              </button>
-            )}
-          </OnboardingTour>
+            startRef={startTour}
+          />
           <div className="min-w-0">
             <h1 className="font-display text-2xl leading-none tracking-tight text-ink">Chatbot Designer</h1>
             <p className="mt-1 truncate font-label text-[10px] uppercase tracking-widest text-muted-ink">
@@ -1728,8 +1855,12 @@ export default function AgentStudioPage() {
       )}
 
       <div
-        className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[var(--design-width)_minmax(0,1fr)_auto]"
-        style={{ '--design-width': `${designWidth}px` } as CSSProperties}
+        className={`grid min-h-0 flex-1 grid-cols-1 ${
+          mediaOpen && !chatAway
+            ? 'lg:grid-cols-[var(--design-width)_minmax(0,1fr)_var(--chat-width)_auto]'
+            : 'lg:grid-cols-[var(--design-width)_minmax(0,1fr)_auto]'
+        }`}
+        style={{ '--design-width': `${designWidth}px`, '--chat-width': `${chatWidth}px` } as CSSProperties}
       >
         {/* Flow editor */}
         <section className="relative flex min-h-0 flex-col border-b-2 border-ink lg:border-b-0 lg:border-r-2">
@@ -1789,6 +1920,13 @@ export default function AgentStudioPage() {
                 }}
                 onClearConversation={() => restart()}
                 onRefreshFromSheet={refreshSceneFromSheet}
+                onMediaOpenChange={setMediaOpen}
+                onTryVoice={sayAndWait}
+                onboardPulse={onboardPulse}
+                onOnboard={() => {
+                  stopOnboardPulse();
+                  startTour.current?.();
+                }}
                 onNeedKey={() => {
                   setError('Add your Anthropic API key first (Keys, top right).');
                   setKeysOpen(true);
@@ -1799,9 +1937,30 @@ export default function AgentStudioPage() {
           </div>
         </section>
 
+        {mediaOpen && (
+          <MediaWorkspace
+            chatWidth={chatAway ? 0 : chatWidth}
+            onChatResize={resizeChat}
+            scenes={sheetSceneList}
+            currentSceneId={saved.projectId}
+            onSwitchScene={(id) => void switchScene(id)}
+            switching={busy}
+            sceneKey={saved.projectId ?? 'unsaved'}
+            sceneTitle={
+              saved.sceneSheet ? `Scene ${saved.sceneSheet.number} · ${saved.projectName}` : saved.projectName
+            }
+            stages={sortStages(flow.stages).map((s) => ({ code: s.code, name: s.name }))}
+            liveStage={session.stageCode}
+            scene={saved.sceneSheet ? { sheetId: saved.sceneSheet.sheetId, number: saved.sceneSheet.number } : null}
+          />
+        )}
+
         {/* Conversation. It can shrink (min-w-0) when the Design column is dragged wide — but it doesn't
             clip, so the Voice and Music panels, which open leftwards over the Design column, show in full. */}
-        <section className="flex min-h-[520px] min-w-0 flex-col border-b-2 border-ink lg:min-h-0 lg:border-b-0 lg:border-r-2">
+        {/* Folded away (chatAway), it stays mounted — a conversation in progress carries on. */}
+        <section
+          className={`flex min-h-[520px] min-w-0 flex-col border-b-2 border-ink lg:min-h-0 lg:border-b-0 lg:border-r-2 ${chatAway ? 'hidden' : ''}`}
+        >
           {/* One row of controls, every one exactly 40px tall: the conversation on
               the left, its sound (music, voice) on the right. Its grey (and the
               scene row's) is a step darker than the dialogue's. */}
@@ -1931,26 +2090,6 @@ export default function AgentStudioPage() {
             </div>
           </div>
 
-          {/* The sheet's scenes, to switch without opening "Describe the conversation in each scene"
-              (the same buttons as there — both always show the open scene). */}
-          {sheetSceneList.length > 0 && (
-            // Three columns: the buttons sit in the exact centre of the chat column whatever the
-            // scene's name (the label and name take the space either side), as the window resizes.
-            <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b-2 border-ink bg-hair px-3 py-2">
-              <span className={`justify-self-end ${fieldLabel}`}>Scene</span>
-              <SceneButtons
-                scenes={sheetSceneList}
-                currentId={saved.projectId}
-                onSwitch={(id) => void switchScene(id)}
-                disabled={busy}
-                label="Switch scene"
-              />
-              <span className="min-w-0 truncate font-body text-sm text-ink" title={saved.projectName}>
-                {saved.sceneSheet ? saved.projectName : ''}
-              </span>
-            </div>
-          )}
-
           {/* Very light grey behind the dialogue, so the white chatbot boxes stand out. */}
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-muted p-4">
             {messages.length === 0 && !busy && (
@@ -1977,6 +2116,11 @@ export default function AgentStudioPage() {
                   .map((c) => (
                     <CueMarker key={c.id} cue={c} />
                   ))}
+                {soundLog
+                  .filter((p) => p.afterMessage === i)
+                  .map((p) => (
+                    <MediaMarker key={p.id} played={p} />
+                  ))}
                 <div className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                   {/* The caller's words: white on blue (#3c5eac — about 6:1, easy to read). */}
                   <div
@@ -1993,6 +2137,11 @@ export default function AgentStudioPage() {
               .filter((c) => c.afterMessage >= messages.length)
               .map((c) => (
                 <CueMarker key={c.id} cue={c} />
+              ))}
+            {soundLog
+              .filter((p) => p.afterMessage >= messages.length)
+              .map((p) => (
+                <MediaMarker key={p.id} played={p} />
               ))}
             {busy && <p className="font-label text-[11px] uppercase tracking-widest text-muted-ink">Agent is thinking…</p>}
             {session.ended && (
@@ -2081,22 +2230,45 @@ export default function AgentStudioPage() {
 
         {/* Inspector — tucked away by default; the edge tab slides it out and back in. */}
         <section className="flex min-h-[420px] lg:min-h-0">
-          <button
-            onClick={() => setInspectorOpen((o) => !o)}
-            aria-expanded={inspectorOpen}
-            title={inspectorOpen ? 'Slide the inspector away' : 'Show the inspector: current stage, collected information, what happened each turn'}
-            className="flex w-9 shrink-0 flex-col items-center gap-3 bg-paper py-4 text-ink transition-colors duration-100 hover:bg-muted"
-          >
-            <span className="font-label text-sm">{inspectorOpen ? '▸' : '◂'}</span>
-            <span className="rotate-180 font-label text-[10px] uppercase tracking-widest [writing-mode:vertical-rl]">
-              Inspector
-            </span>
-            {!inspectorOpen && session.stageCode && (
-              <span className="bg-ink px-1 font-label text-[10px] text-paper" title="Current stage">
-                {session.ended ? 'END' : session.stageCode}
+          <div className="flex w-9 shrink-0 flex-col bg-paper">
+            <button
+              onClick={() => setInspectorOpen((o) => !o)}
+              aria-expanded={inspectorOpen}
+              title={inspectorOpen ? 'Slide the inspector away' : 'Show the inspector: current stage, collected information, what happened each turn'}
+              className={`flex w-9 flex-col items-center gap-3 py-4 text-ink transition-colors duration-100 hover:bg-muted ${chatAway ? '' : 'flex-1'}`}
+            >
+              <span className="font-label text-sm">{inspectorOpen ? '▸' : '◂'}</span>
+              <span className="rotate-180 font-label text-[10px] uppercase tracking-widest [writing-mode:vertical-rl]">
+                Inspector
               </span>
+              {!inspectorOpen && session.stageCode && (
+                <span className="bg-ink px-1 font-label text-[10px] text-paper" title="Current stage">
+                  {session.ended ? 'END' : session.stageCode}
+                </span>
+              )}
+            </button>
+            {chatAway && (
+              // The chat, folded away by pulling its border all the way right: click to bring it back.
+              <button
+                onClick={reopenChat}
+                title="Show the chat again"
+                className="flex w-9 flex-col items-center gap-3 border-y-2 border-ink bg-ink py-4 text-paper transition-colors duration-100 hover:bg-ink/80"
+              >
+                <span className="font-label text-sm">◂</span>
+                <span className="rotate-180 font-label text-[10px] uppercase tracking-widest [writing-mode:vertical-rl]">
+                  Chat
+                </span>
+              </button>
             )}
-          </button>
+            {chatAway && (
+              <button
+                onClick={() => setInspectorOpen((o) => !o)}
+                tabIndex={-1}
+                aria-hidden="true"
+                className="flex-1 transition-colors duration-100 hover:bg-muted"
+              />
+            )}
+          </div>
           <div
             className={`overflow-hidden transition-[width] duration-300 ease-out ${inspectorOpen ? 'w-[340px]' : 'w-0'}`}
             aria-hidden={!inspectorOpen}

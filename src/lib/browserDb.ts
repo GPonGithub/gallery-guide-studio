@@ -8,11 +8,12 @@
  *   projects      saved projects, by id (see localProjects.ts)
  *   projectMusic  each saved project's music file, by project id
  *   patients      each patient and what their scenes have saved (see memory.ts)
+ *   media         the media folder (its handle, not its files) and its media list (see mediaFolder.ts)
  */
 
 const DB_NAME = 'goal-agent-studio';
-const VERSION = 3;
-export const STORES = ['music', 'projects', 'projectMusic', 'patients'] as const;
+const VERSION = 4;
+export const STORES = ['music', 'projects', 'projectMusic', 'patients', 'media'] as const;
 export type StoreName = (typeof STORES)[number];
 
 export function openDb(): Promise<IDBDatabase> {

@@ -276,7 +276,7 @@ const STEPS: TourStep[] = [
         </ol>
         <p className="text-xs text-muted-ink">
           Apps Script runs inside Google Sheets, so it works on any computer. It can only write to row 7 of your Scene
-          columns. You can skip this and come back later.
+          columns and to a Media tab (the media list). You can skip this and come back later.
         </p>
       </>
     ),
@@ -293,7 +293,7 @@ const STEPS: TourStep[] = [
           <li>conversation description</li>
           <li>information it can use, should save, and must not use</li>
         </ul>
-        <p>Empty columns are skipped. When it&rsquo;s done, move on to step 2.</p>
+        <p>Empty columns are skipped. When it&rsquo;s done, move on to step 3.</p>
       </>
     ),
   },
@@ -302,7 +302,7 @@ const STEPS: TourStep[] = [
     target: 'scene-buttons',
     open: ['design-2'],
     missing:
-      'No Scenes yet. Click Generate Scenes (outlined) first — the Scene buttons then appear in section 2, and this card moves to them.',
+      'No Scenes yet. Click Generate Scenes (outlined) first — the Scene buttons then appear in section 3, and this card moves to them.',
     fallback: { target: 'generate-scenes', open: ['design-1'] },
     body: (
       <>
@@ -486,7 +486,7 @@ const STEPS: TourStep[] = [
       <>
         <p>
           Once a Scene&rsquo;s conversation is generated, click <b>Write to FigJam</b> here (or{' '}
-          <b>Draw it on my FigJam board</b> in step 2) to draw it on the board.
+          <b>Draw it on my FigJam board</b> in step 3) to draw it on the board.
         </p>
         <ul>
           <li>Each Scene gets its own flowchart, placed so they don&rsquo;t overlap.</li>
@@ -508,7 +508,9 @@ const STEPS: TourStep[] = [
           generate conversations, manage information, and see your flows in FigJam.
         </p>
         <p>You&rsquo;re ready to start designing your own chatbot experiences!</p>
-        <p className="text-xs text-muted-ink">Click Onboard Me at any time to see this tour again.</p>
+        <p className="text-xs text-muted-ink">
+          Click Onboard Me beside Chatbot Generation Process at any time to see this tour again.
+        </p>
       </>
     ),
   },

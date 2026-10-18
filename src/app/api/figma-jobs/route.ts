@@ -17,7 +17,7 @@ const json = (body: unknown, status = 200) => Response.json(body, { status, head
 function hostedProblem(queue: string | null): string | null {
   if (!isHosted) return null;
   if (!figjamStoreReady()) return 'FigJam isn’t set up on this hosted copy yet: it needs its job store (see HOSTING.md).';
-  if (!queue) return 'Missing connection code — type the code shown in Chatbot Designer (section 6) into the plugin.';
+  if (!queue) return 'Missing connection code — type the code shown in Chatbot Designer (section 2, FigJam board) into the plugin.';
   return null;
 }
 

@@ -12,6 +12,7 @@ import { validateFlow } from '@/lib/agent/validate';
 import { buttonBusy, buttonDone, buttonOutline, buttonPrimary, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
 import { BoardPicker } from './BoardPicker';
 import { CollapsiblePanel } from './CollapsiblePanel';
+import { ImmersiveMedia } from './ImmersiveMedia';
 import { ProgressLine } from './ProgressLine';
 import { estimateGeneration, recordGeneration } from '@/lib/agent/generationTiming';
 import { ProcessSection } from './ProcessSection';
@@ -216,6 +217,9 @@ export type SceneInfo = {
   fromSheet: boolean;
 };
 
+/** Onboard Me, at the right-hand end of a process section's heading. */
+const onboardButton = `${buttonOutline} !px-3 !py-1.5`;
+
 export function DesignPanel({
   flow,
   brief,
@@ -249,6 +253,10 @@ export function DesignPanel({
   onNeedKey,
   onClearConversation,
   onRefreshFromSheet,
+  onMediaOpenChange,
+  onTryVoice,
+  onOnboard,
+  onboardPulse = false,
 }: {
   flow: AgentFlow;
   brief: string;
@@ -295,6 +303,14 @@ export function DesignPanel({
   onClearConversation: () => void;
   /** Re-reads this scene from its sheet into the app (see refreshSceneFromSheet in the page). */
   onRefreshFromSheet: () => Promise<{ brief: string; flow: AgentFlow; others: { updated: number; keptEdits: number } } | 'cancelled' | null>;
+  /** "Adding Immersive Media Process" opened or closed — it opens the media panel beside this column. */
+  onMediaOpenChange?: (open: boolean) => void;
+  /** Says a line in the voice in use, resolving once it's finished (the Media Library's Try it). */
+  onTryVoice?: (text: string, signal?: AbortSignal) => Promise<void>;
+  /** Starts the Chatbot Generation Process tour (Onboard Me, beside that section's heading). */
+  onOnboard?: () => void;
+  /** Onboard Me pulses until it's first clicked. */
+  onboardPulse?: boolean;
 }) {
   const [busy, setBusy] = useState<null | 'generate' | 'draw' | 'import' | 'sheet'>(null);
   const [conflicts, setConflicts] = useState<SheetConflict[]>([]);
@@ -594,7 +610,19 @@ export function DesignPanel({
   return (
     <div className="flex flex-col">
       {/* The steps of making a chatbot. More titled groups (ProcessSection) can sit alongside this one. */}
-      <ProcessSection title="Chatbot Generation Process" tourId="process-chatbot">
+      <ProcessSection
+        title="Chatbot Generation Process"
+        tourId="process-chatbot"
+        action={
+          <button
+            onClick={onOnboard}
+            className={`${onboardButton} ${onboardPulse ? 'onboard-pulse' : ''}`}
+            title="A guided tour of the chatbot generation process"
+          >
+            Onboard Me
+          </button>
+        }
+      >
         <CollapsiblePanel title="1 · Generate scenes from Google Sheet" tourId="design-1">
           <div className="flex flex-col gap-1" data-tour="sheet-url">
             <label htmlFor="sheet-url-field" className={fieldLabel}>
@@ -661,169 +689,7 @@ export function DesignPanel({
           )}
         </CollapsiblePanel>
 
-        <CollapsiblePanel title="2 · Describe the conversation in each scene" tourId="design-2">
-          <SceneButtons
-            scenes={sheetScenes}
-            currentId={currentSceneId}
-            onSwitch={onSwitchScene}
-            disabled={busy !== null}
-            tourId="scene-buttons"
-          />
-          {scene.fromSheet && <p className="font-display text-base text-ink">{scene.heading}</p>}
-          {stages}
-          <p className="font-body text-xs italic text-muted-ink">
-            Who the agent is, who it talks to, and what should be achieved, in plain English. Claude turns it into stages
-            with goals.
-          </p>
-          <textarea
-            value={brief}
-            onChange={(e) => onBriefChange(e.target.value)}
-            placeholder={BRIEF_PLACEHOLDER}
-            className={`min-h-[160px] w-full resize-y leading-snug ${studentField}`}
-          />
-          <div className="flex flex-wrap items-center gap-2" data-tour="generate-conversation">
-            {/* Red until the flow comes from the description as it reads now; green once it does. */}
-            <button
-              onClick={() => {
-                // Already up to date: confirming starts a whole new design (rather than revising this one).
-                if (upToDate) {
-                  if (window.confirm('This description has already been generated. Make a completely new design from it anyway? (Your edits to the stages will be replaced.)')) void generate({ fresh: true });
-                  return;
-                }
-                void generate();
-              }}
-              disabled={busy !== null || !brief.trim()}
-              aria-disabled={upToDate || undefined}
-              className={`relative self-start overflow-hidden disabled:cursor-not-allowed disabled:opacity-60 ${upToDate ? buttonDone : buttonUnsaved}`}
-              title={
-                upToDate
-                  ? 'The flow was generated from this description. Edit the description to generate again.'
-                  : 'Design the conversation flow from this description'
-              }
-            >
-              {busy === 'generate' && !updating ? 'Generating…' : upToDate ? 'Conversation Generated' : 'Generate New Conversation'}
-              {generating?.source === 'generate' && (
-                <ProgressLine startedAt={generating.startedAt} expectedMs={generating.expectedMs} done={generating.done} />
-              )}
-            </button>
-            {/* Regenerates the pattern and clears the chat — all in one go (FigJam is left alone). */}
-            <button
-              onClick={() => !updating && void updateScene()}
-              disabled={(busy !== null && !updating) || !brief.trim()}
-              aria-busy={updating}
-              aria-disabled={updating || undefined}
-              className={`relative overflow-hidden ${updating ? buttonBusy : buttonOutline}`}
-              title="Recreate this scene’s conversation pattern from the description and clear the conversation in the chat"
-            >
-              {updating && <Spinner />}
-              {updating ? 'Updating…' : 'Update This Scene'}
-              {generating?.source === 'update' && (
-                <ProgressLine startedAt={generating.startedAt} expectedMs={generating.expectedMs} done={generating.done} />
-              )}
-            </button>
-            {/* FigJam is only ever drawn when this (or Write to FigJam, below) is clicked — never by itself. */}
-            <button
-              onClick={() =>
-                (scene.key ||
-                  window.confirm('Draw the current flow on the board? This replaces any flow the plugin drew there before (your other board content is left alone).')) &&
-                void draw(flow)
-              }
-              disabled={busy !== null || !canWrite}
-              className={buttonOutline}
-              title={
-                canWrite
-                  ? scene.key
-                    ? `Draws ${scene.heading} in its own section of the FigJam board (replacing only its earlier drawing)`
-                    : 'Draws the current flow on the FigJam board'
-                  : 'Generate this scene’s conversation first'
-              }
-            >
-              {busy === 'draw' ? 'Drawing…' : 'Draw it on my FigJam board'}
-            </button>
-          </div>
-        </CollapsiblePanel>
-
-        <CollapsiblePanel title="3 · Information this scene can use" tourId="design-3">
-          <SceneButtons scenes={sheetScenes} currentId={currentSceneId} onSwitch={onSwitchScene} disabled={busy !== null} />
-          <p className="font-body text-xs italic text-muted-ink">
-            Facts the bot can rely on but never invent: names, times, prices, options (row 4 of the sheet, after the
-            &ldquo;All scenes&rdquo; column&rsquo;s). It answers questions and offers choices from this, and says when
-            something isn&rsquo;t covered. Drawn on the board as a KNOWLEDGE card.
-          </p>
-          <textarea
-            value={flow.knowledge ?? ''}
-            onChange={(e) => onKnowledgeChange(e.target.value)}
-            data-tour="can-use"
-            placeholder={KNOWLEDGE_PLACEHOLDER}
-            className={`min-h-[200px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
-          />
-          <KnowledgeSize text={flow.knowledge ?? ''} />
-          {/* Scenes made before "can use" and the knowledge base became one box may still have some. */}
-          {flow.canUse?.trim() && (
-            <div className="flex flex-col gap-1 border-l-4 border-[#b45309] pl-2">
-              <p className="font-body text-xs text-ink">
-                This scene also has older &ldquo;can use&rdquo; text, kept apart from the box above — the bot still uses
-                it: <span className="italic">{flow.canUse.trim()}</span>
-              </p>
-              <button onClick={onMergeCanUse} className={`self-start ${buttonOutline}`}>
-                Move it into the box above
-              </button>
-            </div>
-          )}
-          <p className={fieldLabel}>
-            Also usable: {memory.patientName ?? 'the patient'}&rsquo;s earlier scenes{memory.checking ? ' · checking…' : ''}
-          </p>
-          {memory.error && <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">{memory.error}</p>}
-          <MemoryList
-            items={memory.available}
-            empty="Nothing saved by earlier scenes yet."
-          />
-        </CollapsiblePanel>
-
-        <CollapsiblePanel title="4 · Information saved from the scene" tourId="design-4">
-          <SceneButtons scenes={sheetScenes} currentId={currentSceneId} onSwitch={onSwitchScene} disabled={busy !== null} />
-          <p className="font-body text-xs italic text-muted-ink">
-            What to pick up during this scene&rsquo;s conversation and keep for the patient&rsquo;s later scenes (row 5 of
-            the sheet). It&rsquo;s kept for the patient, and scenes numbered after this one can use it.
-          </p>
-          <textarea
-            value={flow.saveInfo ?? ''}
-            onChange={(e) => onSaveInfoChange(e.target.value)}
-            data-tour="save-info"
-            placeholder="e.g. Their symptoms and how long they've had them. Whether they prefer a morning or afternoon appointment."
-            className={`min-h-[120px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
-          />
-          <div className="flex flex-col gap-2" data-tour="saved-list">
-            <p className={`mt-1 ${fieldLabel}`}>List of Saved Information from This Scene · {memory.savedHere.length}</p>
-            <SavedFromScene
-              items={memory.savedHere}
-              patientName={memory.patientName}
-              sync={sheetSync}
-              sheetColumn={sceneSheet?.column ?? null}
-              connected={isScriptUrl(sheetScriptUrl)}
-            />
-          </div>
-        </CollapsiblePanel>
-
-        <CollapsiblePanel title="5 · Information this scene cannot use" tourId="design-5">
-          <SceneButtons scenes={sheetScenes} currentId={currentSceneId} onSwitch={onSwitchScene} disabled={busy !== null} />
-          <p className="font-body text-xs italic text-muted-ink">
-            What the bot must not have in this scene (row 6 of the sheet). Anything the patient&rsquo;s earlier scenes
-            saved that falls under this is left out of what the bot is given — it never sees it. It&rsquo;s also told not
-            to bring these things up from its general knowledge.
-          </p>
-          <textarea
-            value={flow.cannotUse ?? ''}
-            onChange={(e) => onCannotUseChange(e.target.value)}
-            data-tour="cannot-use"
-            placeholder="e.g. Anything about the patient's insurance or payment details."
-            className={`min-h-[120px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
-          />
-          <p className={fieldLabel}>Kept out of this scene</p>
-          <MemoryList items={memory.blocked} empty="Nothing from earlier scenes is being kept out." />
-        </CollapsiblePanel>
-
-        <CollapsiblePanel title="6 · FigJam board" tourId="design-6">
+        <CollapsiblePanel title="2 · FigJam board (optional)" tourId="design-6">
           <BoardPicker boardUrl={boardUrl} onBoardUrlChange={onBoardUrlChange} />
           <div className="flex flex-wrap gap-2" data-tour="figjam-actions">
             <button
@@ -908,6 +774,168 @@ export function DesignPanel({
           </details>
         </CollapsiblePanel>
 
+        <CollapsiblePanel title="3 · Describe the conversation in each scene" tourId="design-2">
+          <SceneButtons
+            scenes={sheetScenes}
+            currentId={currentSceneId}
+            onSwitch={onSwitchScene}
+            disabled={busy !== null}
+            tourId="scene-buttons"
+          />
+          {scene.fromSheet && <p className="font-display text-base text-ink">{scene.heading}</p>}
+          {stages}
+          <p className="font-body text-xs italic text-muted-ink">
+            Who the agent is, who it talks to, and what should be achieved, in plain English. Claude turns it into stages
+            with goals.
+          </p>
+          <textarea
+            value={brief}
+            onChange={(e) => onBriefChange(e.target.value)}
+            placeholder={BRIEF_PLACEHOLDER}
+            className={`min-h-[160px] w-full resize-y leading-snug ${studentField}`}
+          />
+          <div className="flex flex-wrap items-center gap-2" data-tour="generate-conversation">
+            {/* Red until the flow comes from the description as it reads now; green once it does. */}
+            <button
+              onClick={() => {
+                // Already up to date: confirming starts a whole new design (rather than revising this one).
+                if (upToDate) {
+                  if (window.confirm('This description has already been generated. Make a completely new design from it anyway? (Your edits to the stages will be replaced.)')) void generate({ fresh: true });
+                  return;
+                }
+                void generate();
+              }}
+              disabled={busy !== null || !brief.trim()}
+              aria-disabled={upToDate || undefined}
+              className={`relative self-start overflow-hidden disabled:cursor-not-allowed disabled:opacity-60 ${upToDate ? buttonDone : buttonUnsaved}`}
+              title={
+                upToDate
+                  ? 'The flow was generated from this description. Edit the description to generate again.'
+                  : 'Design the conversation flow from this description'
+              }
+            >
+              {busy === 'generate' && !updating ? 'Generating…' : upToDate ? 'Conversation Generated' : 'Generate New Conversation'}
+              {generating?.source === 'generate' && (
+                <ProgressLine startedAt={generating.startedAt} expectedMs={generating.expectedMs} done={generating.done} />
+              )}
+            </button>
+            {/* Regenerates the pattern and clears the chat — all in one go (FigJam is left alone). */}
+            <button
+              onClick={() => !updating && void updateScene()}
+              disabled={(busy !== null && !updating) || !brief.trim()}
+              aria-busy={updating}
+              aria-disabled={updating || undefined}
+              className={`relative overflow-hidden ${updating ? buttonBusy : buttonOutline}`}
+              title="Recreate this scene’s conversation pattern from the description and clear the conversation in the chat"
+            >
+              {updating && <Spinner />}
+              {updating ? 'Updating…' : 'Update This Scene'}
+              {generating?.source === 'update' && (
+                <ProgressLine startedAt={generating.startedAt} expectedMs={generating.expectedMs} done={generating.done} />
+              )}
+            </button>
+            {/* FigJam is only ever drawn when this (or Write to FigJam, below) is clicked — never by itself. */}
+            <button
+              onClick={() =>
+                (scene.key ||
+                  window.confirm('Draw the current flow on the board? This replaces any flow the plugin drew there before (your other board content is left alone).')) &&
+                void draw(flow)
+              }
+              disabled={busy !== null || !canWrite}
+              className={buttonOutline}
+              title={
+                canWrite
+                  ? scene.key
+                    ? `Draws ${scene.heading} in its own section of the FigJam board (replacing only its earlier drawing)`
+                    : 'Draws the current flow on the FigJam board'
+                  : 'Generate this scene’s conversation first'
+              }
+            >
+              {busy === 'draw' ? 'Drawing…' : 'Draw it on my FigJam board'}
+            </button>
+          </div>
+        </CollapsiblePanel>
+
+        <CollapsiblePanel title="4 · Information this scene can use" tourId="design-3">
+          <SceneButtons scenes={sheetScenes} currentId={currentSceneId} onSwitch={onSwitchScene} disabled={busy !== null} />
+          <p className="font-body text-xs italic text-muted-ink">
+            Facts the bot can rely on but never invent: names, times, prices, options (row 4 of the sheet, after the
+            &ldquo;All scenes&rdquo; column&rsquo;s). It answers questions and offers choices from this, and says when
+            something isn&rsquo;t covered. Drawn on the board as a KNOWLEDGE card.
+          </p>
+          <textarea
+            value={flow.knowledge ?? ''}
+            onChange={(e) => onKnowledgeChange(e.target.value)}
+            data-tour="can-use"
+            placeholder={KNOWLEDGE_PLACEHOLDER}
+            className={`min-h-[200px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
+          />
+          <KnowledgeSize text={flow.knowledge ?? ''} />
+          {/* Scenes made before "can use" and the knowledge base became one box may still have some. */}
+          {flow.canUse?.trim() && (
+            <div className="flex flex-col gap-1 border-l-4 border-[#b45309] pl-2">
+              <p className="font-body text-xs text-ink">
+                This scene also has older &ldquo;can use&rdquo; text, kept apart from the box above — the bot still uses
+                it: <span className="italic">{flow.canUse.trim()}</span>
+              </p>
+              <button onClick={onMergeCanUse} className={`self-start ${buttonOutline}`}>
+                Move it into the box above
+              </button>
+            </div>
+          )}
+          <p className={fieldLabel}>
+            Also usable: {memory.patientName ?? 'the patient'}&rsquo;s earlier scenes{memory.checking ? ' · checking…' : ''}
+          </p>
+          {memory.error && <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">{memory.error}</p>}
+          <MemoryList
+            items={memory.available}
+            empty="Nothing saved by earlier scenes yet."
+          />
+        </CollapsiblePanel>
+
+        <CollapsiblePanel title="5 · Information saved from the scene" tourId="design-4">
+          <SceneButtons scenes={sheetScenes} currentId={currentSceneId} onSwitch={onSwitchScene} disabled={busy !== null} />
+          <p className="font-body text-xs italic text-muted-ink">
+            What to pick up during this scene&rsquo;s conversation and keep for the patient&rsquo;s later scenes (row 5 of
+            the sheet). It&rsquo;s kept for the patient, and scenes numbered after this one can use it.
+          </p>
+          <textarea
+            value={flow.saveInfo ?? ''}
+            onChange={(e) => onSaveInfoChange(e.target.value)}
+            data-tour="save-info"
+            placeholder="e.g. Their symptoms and how long they've had them. Whether they prefer a morning or afternoon appointment."
+            className={`min-h-[120px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
+          />
+          <div className="flex flex-col gap-2" data-tour="saved-list">
+            <p className={`mt-1 ${fieldLabel}`}>List of Saved Information from This Scene · {memory.savedHere.length}</p>
+            <SavedFromScene
+              items={memory.savedHere}
+              patientName={memory.patientName}
+              sync={sheetSync}
+              sheetColumn={sceneSheet?.column ?? null}
+              connected={isScriptUrl(sheetScriptUrl)}
+            />
+          </div>
+        </CollapsiblePanel>
+
+        <CollapsiblePanel title="6 · Information this scene cannot use" tourId="design-5">
+          <SceneButtons scenes={sheetScenes} currentId={currentSceneId} onSwitch={onSwitchScene} disabled={busy !== null} />
+          <p className="font-body text-xs italic text-muted-ink">
+            What the bot must not have in this scene (row 6 of the sheet). Anything the patient&rsquo;s earlier scenes
+            saved that falls under this is left out of what the bot is given — it never sees it. It&rsquo;s also told not
+            to bring these things up from its general knowledge.
+          </p>
+          <textarea
+            value={flow.cannotUse ?? ''}
+            onChange={(e) => onCannotUseChange(e.target.value)}
+            data-tour="cannot-use"
+            placeholder="e.g. Anything about the patient's insurance or payment details."
+            className={`min-h-[120px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
+          />
+          <p className={fieldLabel}>Kept out of this scene</p>
+          <MemoryList items={memory.blocked} empty="Nothing from earlier scenes is being kept out." />
+        </CollapsiblePanel>
+
         <CollapsiblePanel title="7 · Bring your edits back">
           <p className="font-body text-xs italic text-muted-ink">
             After editing the cards in FigJam, import them. The board replaces the flow in the app (for a scene drawn in
@@ -919,8 +947,19 @@ export function DesignPanel({
         </CollapsiblePanel>
       </ProcessSection>
 
-      <ProcessSection title="Adding Immersive Media Process" tourId="process-media">
-        <p className="py-2 font-body text-xs italic text-muted-ink">The steps for adding immersive media will go here.</p>
+      <ProcessSection
+        title="Adding Immersive Media Process"
+        tourId="process-media"
+        defaultOpen={false}
+        onOpenChange={onMediaOpenChange}
+        action={
+          // Its own tour is still to come.
+          <button disabled className={onboardButton} title="The tour of the immersive media process is coming soon">
+            Onboard Me
+          </button>
+        }
+      >
+        <ImmersiveMedia sheetUrl={sheetUrl} sheetScriptUrl={sheetScriptUrl} sceneSheet={sceneSheet} sceneName={sceneSheet?.importedName ?? scene.heading} onTryVoice={onTryVoice} />
       </ProcessSection>
 
       {/* Progress and problems stay outside the panels, so they're seen even with every panel folded. */}

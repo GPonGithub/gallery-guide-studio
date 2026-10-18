@@ -12,9 +12,12 @@
  *   row 5  Information saved from this scene (to collect, and keep for later scenes)
  *   row 6  Information this scene cannot use
  *   row 7  List of saved information from this scene — what the conversations
- *          saved; the app shows it (Design Process, section 4) and doesn't read it
+ *          saved; the app shows it (Design Process, section 5) and doesn't read it
+ *   row 8  Media actions in this scene — one per line (e.g. "Show picture of
+ *          Maya when the nurse asks to see it"); media is connected to them in
+ *          the Media Library
  *
- * Whatever the "All scenes" column says in rows 3–6 is given to every scene,
+ * Whatever the "All scenes" column says in rows 3–6 and 8 is given to every scene,
  * ahead of the scene's own. A column with nothing in rows 2–6 is skipped.
  * Scene numbers are kept exactly as the sheet gives them, gaps and all.
  */
@@ -22,7 +25,7 @@
 export const FIRST_SCENE_COLUMN = 'B';
 export const LAST_SCENE_COLUMN = 'Z';
 const MAX_SCENES = 20;
-const ROW = { number: 1, name: 2, describe: 3, knowledge: 4, save: 5, cannotUse: 6 } as const;
+const ROW = { number: 1, name: 2, describe: 3, knowledge: 4, save: 5, cannotUse: 6, mediaActions: 8 } as const;
 const SHARED_COLUMN = /\ball\s*scenes\b/i;
 
 /** One scene as read from the sheet. */
@@ -40,7 +43,16 @@ export type SheetScene = {
   saveInfo: string;
   /** Information this scene cannot use (row 6). */
   cannotUse: string;
+  /** Media actions (row 8), one per line — the "All scenes" ones first. */
+  mediaActions: string[];
 };
+
+/** A cell's lines, each one action — blank lines and leading bullets ("-", "•", "1.") dropped. */
+export const actionLines = (text: string) =>
+  text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim())
+    .filter(Boolean);
 
 /** The sheet's id and tab (gid) from a pasted link, or null if it isn't a Google Sheets link. */
 export function parseSheetUrl(url: string): { sheetId: string; gid: string } | null {
@@ -100,10 +112,12 @@ export function mapSheetScenes(grid: string[][]): SheetScene[] {
 
   // The "All scenes" column(s): given to every scene.
   const shared = new Map<number, string[]>(contentRows.map((r) => [r, []]));
+  const sharedActions: string[] = [];
   const sceneColumns: number[] = [];
   for (let col = first; col <= last; col++) {
     if (SHARED_COLUMN.test(cell(ROW.number, col))) {
       for (const r of contentRows) if (cell(r, col)) shared.get(r)!.push(cell(r, col));
+      sharedActions.push(...actionLines(cell(ROW.mediaActions, col)));
     } else if ([ROW.name, ...contentRows].some((r) => cell(r, col))) {
       sceneColumns.push(col);
     }
@@ -122,6 +136,7 @@ export function mapSheetScenes(grid: string[][]): SheetScene[] {
       knowledge: withShared(ROW.knowledge, col),
       saveInfo: withShared(ROW.save, col),
       cannotUse: withShared(ROW.cannotUse, col),
+      mediaActions: [...sharedActions, ...actionLines(cell(ROW.mediaActions, col))],
     };
   });
 }

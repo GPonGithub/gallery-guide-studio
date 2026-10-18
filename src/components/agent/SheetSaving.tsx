@@ -72,7 +72,7 @@ export function SheetSaving({
         <div className="flex flex-col gap-2 border-t-2 border-ink p-3">
           <p className="font-body text-xs italic text-muted-ink">
             What each scene&rsquo;s conversation saves is written into row 7 of that scene&rsquo;s column, as
-            &ldquo;Label: value&rdquo; lines. Nothing else in the sheet is ever changed.
+            &ldquo;Label: value&rdquo; lines. The only other thing it changes is the media list, on the Media tab.
           </p>
           <label className={`flex flex-col gap-1 ${fieldLabel}`}>
             Apps Script link
@@ -124,7 +124,8 @@ export function SheetSaving({
               </li>
             </ol>
             <p className="mt-2 leading-snug text-muted-ink">
-              Anyone with the link can only write row 7 of scene columns — but keep it to yourself and your students.
+              Anyone with the link can only write row 7 of scene columns and the Media tab — but keep it to yourself and
+              your students.
               Don&rsquo;t put real patients&rsquo; details in a shared sheet.
             </p>
           </details>

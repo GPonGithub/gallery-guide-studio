@@ -13,12 +13,15 @@ export function CollapsiblePanel({
   title,
   defaultOpen = false,
   tourId,
+  onOpenChange,
   children,
 }: {
   title: string;
   defaultOpen?: boolean;
   /** Marks it for the onboarding tour (see OnboardingTour). */
   tourId?: string;
+  /** Hears each open or close (from a click on its heading). */
+  onOpenChange?: (open: boolean) => void;
   children: ReactNode;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -26,7 +29,10 @@ export function CollapsiblePanel({
   return (
     <section className="border-b border-hair" data-tour={tourId}>
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          setOpen(!open);
+          onOpenChange?.(!open);
+        }}
         aria-expanded={open}
         aria-controls={bodyId}
         className="flex w-full items-center gap-2 py-2.5 text-left hover:bg-muted/40"

@@ -151,6 +151,7 @@ export function OnboardingTour({
   steps,
   actions,
   onLeaveGroup,
+  startRef,
   children,
 }: {
   steps: TourStep[];
@@ -158,7 +159,10 @@ export function OnboardingTour({
   actions?: Record<string, (h: TourHelpers) => Promise<void>>;
   /** Called when the tour leaves a group of steps (by Next, Go back, closing or finishing) — to tidy up after a demo. */
   onLeaveGroup?: (group: string) => Promise<void> | void;
-  children: (start: () => void) => ReactNode;
+  /** Filled in with the tour's start, for a button elsewhere on the page (e.g. beside a section's heading). */
+  startRef?: { current: (() => void) | null };
+  /** Renders what starts the tour, here — or nothing, if `startRef` is used instead. */
+  children?: (start: () => void) => ReactNode;
 }) {
   const [step, setStep] = useState<number | null>(null);
   /** A demonstration is playing: Next and Go back wait for it. */
@@ -190,6 +194,10 @@ export function OnboardingTour({
     if (saved && !saved.finished && saved.step > 0 && saved.step < total) setOfferResume(saved.step);
     else setStep(0);
   };
+
+  useEffect(() => {
+    if (startRef) startRef.current = start;
+  });
 
   const closePanels = useCallback(async (keep: string[]) => {
     // Innermost first, so a panel inside another closes before it.
@@ -461,7 +469,7 @@ export function OnboardingTour({
 
   return (
     <>
-      {children(start)}
+      {children?.(start)}
 
       {offerResume !== null && (
         <div data-tour-ui className="fixed inset-0 z-[80] flex items-center justify-center bg-ink/40 p-4">
