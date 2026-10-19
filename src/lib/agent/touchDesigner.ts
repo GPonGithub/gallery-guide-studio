@@ -188,12 +188,17 @@ export function send(message: Record<string, unknown>): boolean {
 const sent = new Map<number, Shown>();
 let current: Shown[] = [];
 
-export const visualMessage = (area: number, asset: Pick<MediaAsset, 'id' | 'path' | 'kind'>, loop: boolean) => ({
+export const visualMessage = (
+  area: number,
+  asset: Pick<MediaAsset, 'id' | 'path' | 'kind' | 'value'>,
+  loop: boolean,
+) => ({
   type: 'media',
-  action: asset.kind === 'image' ? 'show' : 'play',
+  action: asset.kind === 'video' ? 'play' : 'show',
   area,
   id: asset.id,
-  path: asset.path,
+  // A text or colour has no file: its words or hex colour travel instead.
+  ...(asset.kind === 'text' || asset.kind === 'color' ? { value: asset.value ?? '' } : { path: asset.path }),
   kind: asset.kind,
   loop,
 });
@@ -205,7 +210,7 @@ export function syncVisuals(showing: Shown[]) {
   const now = new Map(showing.map((s) => [s.area, s]));
   for (const [area, s] of now) {
     if (sent.get(area) === s) continue;
-    send(visualMessage(area, { id: s.assetId, path: s.path, kind: s.kind }, s.loop));
+    send(visualMessage(area, { id: s.assetId, path: s.path, kind: s.kind, value: s.value }, s.loop));
     sent.set(area, s);
   }
   for (const area of [...sent.keys()]) {

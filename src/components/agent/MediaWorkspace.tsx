@@ -373,6 +373,42 @@ function AreaMedia({ shape, shown }: { shape: ProjectionShape; shown: Shown }) {
   const [failed, setFailed] = useState<string | null>(null);
   const clip = `url(#projection-area-${shape.area})`;
   const title = <title>{`${shown.assetId} ${shown.name} — ${shown.action}`}</title>;
+  // A colour fills the area; a text is white words on black, centred and sized to the area.
+  if (shown.kind === 'color') {
+    return (
+      <rect {...box} fill={shown.value || '#000'} clipPath={clip}>
+        {title}
+      </rect>
+    );
+  }
+  if (shown.kind === 'text') {
+    return (
+      <g>
+        {title}
+        <rect {...box} fill="#000" clipPath={clip} />
+        <foreignObject {...box} clipPath={clip}>
+          <div
+            style={{
+              width: '100%',
+              height: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: '8%',
+              color: '#fff',
+              textAlign: 'center',
+              lineHeight: 1.2,
+              fontSize: Math.min(box.height / 6, box.width / 9),
+              overflow: 'hidden',
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            {shown.value}
+          </div>
+        </foreignObject>
+      </g>
+    );
+  }
   if (shown.kind === 'image' || failed === shown.url) {
     const href = shown.kind === 'image' ? shown.url : shown.still;
     if (!href) return null;

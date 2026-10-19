@@ -116,6 +116,11 @@ export function SheetSaving({
                 In the sheet: <b>Extensions → Apps Script</b>. Replace everything in the editor with the script, then save.
               </li>
               <li>
+                Click <b>Run</b> (with <b>doGet</b> chosen beside it). Google asks for permission:{' '}
+                <b>Review permissions</b> → choose your account → <b>Advanced</b> → <b>Go to … (unsafe)</b> →{' '}
+                <b>Allow</b>. This lets Apps Script connect to your Google account — once only.
+              </li>
+              <li>
                 <b>Deploy → New deployment</b> → type <b>Web app</b>. Execute as <b>Me</b>, Who has access <b>Anyone</b> →{' '}
                 <b>Deploy</b>, and allow access when Google asks.
               </li>

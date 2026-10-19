@@ -204,7 +204,7 @@ export type TurnRequest = {
 /** A media action the room can carry out, and whether its picture, video or sound is showing (or playing) now. */
 export type RoomMedia = {
   action: string;
-  kind: 'image' | 'video' | 'sound';
+  kind: 'image' | 'video' | 'sound' | 'text' | 'color';
   showing: boolean;
   /** What the caller just said makes the room put it up (or play it) — or take it down — as the agent replies. */
   change?: 'appearing' | 'removing';

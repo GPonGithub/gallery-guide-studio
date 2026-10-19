@@ -2,7 +2,21 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { buttonIcon } from '@/lib/styles';
-import { kindOf } from '@/lib/agent/media';
+import { DropdownArrow } from './DropdownArrow';
+import { markerArrived } from '@/lib/agent/markerPlay';
+import {
+  ACTION_KINDS,
+  isStill,
+  kindOf,
+  KIND_BADGE,
+  KIND_HELP,
+  LOOP_WHEN_BADGE,
+  VOICE_LABEL,
+  WHEN_LABEL,
+  type ActionKind,
+  type EveryWhen,
+  type VoiceWait,
+} from '@/lib/agent/media';
 import { stopSounds } from '@/lib/agent/mediaPlayback';
 import { hideVisualExcept } from '@/lib/agent/mediaShow';
 import {
@@ -14,6 +28,14 @@ import {
   updateMediaLinks,
   useHistoryNote,
   useMediaLinks,
+  useSceneActions,
+  isConnected,
+  isMarker,
+  MARKER_ACTION,
+  MARKER_LABEL,
+  DRAG_SOUND,
+  DRAG_VISUAL,
+  type DraggedAsset,
   type MediaLink,
   type TimelineBar,
 } from '@/lib/agent/mediaFolder';
@@ -152,8 +174,11 @@ export function MediaTimeline({
   const [heads, setHeads] = useState<Record<string, string>>({});
   const found = stages.findIndex((s) => s.code === heads[sceneKey]);
   const index = found >= 0 ? found : 0;
+  // Moved by hand (◀ ▶, the ruler, arrow keys): "on marker arrival" media plays for where it lands.
+  const movedByHand = useRef(false);
   const moveTo = (to: number | ((i: number) => number)) => {
     if (count === 0) return;
+    movedByHand.current = true;
     setHeads((all) => {
       const nowAt = Math.max(
         0,
@@ -169,6 +194,15 @@ export function MediaTimeline({
     setFollowed(liveStage);
     if (liveStage && stages.some((s) => s.code === liveStage)) setHeads((all) => ({ ...all, [sceneKey]: liveStage }));
   }
+
+  const headCode = stages[index]?.code;
+  useEffect(() => {
+    if (!movedByHand.current) return;
+    movedByHand.current = false;
+    void markerArrived(scene, stages, headCode);
+    // Only the marker landing somewhere new matters (stages and scene go with headCode).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [headCode]);
 
   const ruler = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
@@ -392,6 +426,118 @@ export function MediaTimeline({
       'Delete bar',
     );
   };
+  // A Media Library item dragged over the tracks: where it would land, and whether that row takes it
+  // (sounds on the sound tracks; pictures, video, text and colour on the projection tracks).
+  const [dropHere, setDropHere] = useState<{ stage: number; track: Track; ok: boolean } | null>(null);
+  const dropAt = (e: React.DragEvent) => {
+    const box = tracksBox.current?.getBoundingClientRect();
+    if (!box || count === 0) return null;
+    const stage = Math.floor((e.clientX - box.left) / (box.width / count));
+    const row = Math.floor((e.clientY - box.top) / (box.height / trackRows.length));
+    if (stage < 0 || stage >= count || row < 0 || row >= trackRows.length) return null;
+    return { stage, track: trackRows[row] };
+  };
+  const dragOver = (e: React.DragEvent) => {
+    const sound = e.dataTransfer.types.includes(DRAG_SOUND);
+    if (!sound && !e.dataTransfer.types.includes(DRAG_VISUAL)) return;
+    const here = dropAt(e);
+    const ok = Boolean(here && scene && (sound ? isSoundTrack(here.track) : !isSoundTrack(here.track)));
+    if (ok) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    }
+    if (here?.stage !== dropHere?.stage || here?.track !== dropHere?.track || ok !== dropHere?.ok)
+      setDropHere(here ? { ...here, ok } : null);
+  };
+  /** A dropped item: a bar at that stage and row, not yet connected to an action (its ▼ picks one). */
+  const drop = (e: React.DragEvent) => {
+    const here = dropAt(e);
+    setDropHere(null);
+    const raw = e.dataTransfer.getData(DRAG_SOUND) || e.dataTransfer.getData(DRAG_VISUAL);
+    if (!raw || !here || !scene) return;
+    e.preventDefault();
+    let item: DraggedAsset;
+    try {
+      item = JSON.parse(raw) as DraggedAsset;
+    } catch {
+      return;
+    }
+    if ((item.kind === 'sound') !== isSoundTrack(here.track)) return;
+    const bar: Bar = { track: here.track, from: stages[here.stage].code, to: stages[here.stage].code };
+    const ours = (l: MediaLink) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number;
+    updateMediaLinks((all) => {
+      const unplaced = all.find((l) => ours(l) && l.assetId === item.id && !isConnected(l));
+      if (unplaced)
+        return all.map((l) =>
+          l === unplaced ? (l.bar ? { ...l, copies: [...(l.copies ?? []), bar] } : { ...l, bar }) : l,
+        );
+      const link: MediaLink = {
+        assetId: item.id,
+        sheetId: scene.sheetId,
+        sceneNumber: scene.number,
+        sceneName: sceneTitle.replace(/^Scene\s+\S+\s+·\s+/, ''),
+        action: '',
+        assetName: item.name,
+        assetKind: item.kind,
+        bar,
+      };
+      return [...all, { ...link, barsKind: timingOf(link).kind }];
+    }, `Place ${item.id}`);
+  };
+
+  // A bar's ▼: the scene's actions (row 8, as the Media Library last read them) — picking one connects
+  // this bar to it. The bar moves into that action's connection (joining its other bars, if it has
+  // any); a connection left with no bars goes.
+  const sceneActions = useSceneActions();
+  const actionList =
+    scene && sceneActions?.key === `${scene.sheetId}:${scene.number}` ? sceneActions.list : null;
+  const [picking, setPicking] = useState<string | null>(null);
+  useEffect(() => {
+    if (!picking) return;
+    const away = (e: PointerEvent) => {
+      const t = e.target as Element | null;
+      if (!t?.closest('[data-bar-picker], [data-bar-pick]')) setPicking(null);
+    };
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && setPicking(null);
+    document.addEventListener('pointerdown', away);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('pointerdown', away);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [picking]);
+  const connectBar = (l: MediaLink, i: number, action: string) => {
+    setPicking(null);
+    if (action === l.action) return;
+    const bar = barsOf(l)[i];
+    if (!bar) return;
+    updateMediaLinks((all) => {
+      const next = all.flatMap((x) => {
+        if (!sameLink(x, l)) return [x];
+        const left = withBar(x, i, null);
+        return barsOf(left).length ? [left] : [];
+      });
+      const target = next.find(
+        (x) => x.assetId === l.assetId && x.action === action && x.sheetId === l.sheetId && x.sceneNumber === l.sceneNumber,
+      );
+      if (target)
+        return next.map((x) =>
+          x === target ? (x.bar ? { ...x, copies: [...(x.copies ?? []), bar] } : { ...x, bar }) : x,
+        );
+      const made: MediaLink = {
+        assetId: l.assetId,
+        sheetId: l.sheetId,
+        sceneNumber: l.sceneNumber,
+        sceneName: l.sceneName,
+        action,
+        assetName: l.assetName,
+        assetKind: l.assetKind,
+        bar,
+      };
+      return [...next, { ...made, barsKind: timingOf(made).kind }];
+    }, 'Connect bar');
+  };
+
   // Option (Alt) held: the bars show they'll be duplicated when dragged.
   const [optionHeld, setOptionHeld] = useState(false);
   useEffect(() => {
@@ -614,7 +760,30 @@ export function MediaTimeline({
           </div>
 
           {/* The tracks, and the playhead through them. */}
-          <div ref={tracksBox} className="relative grid" style={rows} data-tour="timeline-tracks">
+          <div
+            ref={tracksBox}
+            className="relative grid"
+            style={rows}
+            data-tour="timeline-tracks"
+            onDragOver={dragOver}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHere(null);
+            }}
+            onDrop={drop}
+          >
+            {/* Where a dragged Media Library item would land: green on a row that takes it, red if not. */}
+            {dropHere && (
+              <div
+                className={`pointer-events-none absolute z-30 border-2 ${dropHere.ok ? 'border-[#15803d] bg-[#15803d]/20' : 'border-[#b91c1c] bg-[#b91c1c]/10'}`}
+                style={{
+                  left: at(dropHere.stage),
+                  width,
+                  top: `${(rowOf(dropHere.track) / trackRows.length) * 100}%`,
+                  height: `${100 / trackRows.length}%`,
+                }}
+                aria-hidden="true"
+              />
+            )}
             <div
               className="pointer-events-none absolute inset-y-0 bg-ink/10"
               style={{ left: at(index), width }}
@@ -650,7 +819,7 @@ export function MediaTimeline({
                 const place = dragging && !dragging.copy ? dragging.now : here;
                 const every = timingOf(l).kind === 'every';
                 // "Loop, when user instructs" (video, sound): ∞ on its bar, as ↻ marks "every time".
-                const loops = timingOf(l).kind === 'once' && l.assetKind !== 'image' && loopOf(l);
+                const loops = timingOf(l).kind === 'once' && !isStill(l.assetKind) && loopOf(l);
                 const stagesText = (p: { from: number; to: number }) =>
                   p.from === p.to
                     ? `stage ${stages[p.from].code}`
@@ -664,8 +833,20 @@ export function MediaTimeline({
                 });
                 const label = (
                   <span className="min-w-0 flex-1 truncate px-1 font-body text-[15px] leading-none">
-                    {every ? '↻ ' : loops ? '∞ ' : ''}
-                    {l.action}
+                    {isMarker(l) ? (
+                      <>
+                        {/* Plays whenever the marker is on this bar's stages. */}▶ {MARKER_LABEL}
+                        {l.assetName ? ` · ${l.assetName}` : ''}
+                      </>
+                    ) : isConnected(l) ? (
+                      <>
+                        {every ? '↻ ' : loops ? '∞ ' : ''}
+                        {l.action}
+                      </>
+                    ) : (
+                      // Dropped from the Media Library, no action yet: it doesn't play until its ▼ picks one.
+                      <span className="italic">{l.assetName ?? l.assetId} · pick an action ▼</span>
+                    )}
                   </span>
                 );
                 const handle = (end: 'from' | 'to') => (
@@ -694,14 +875,31 @@ export function MediaTimeline({
                     onPointerMove={(e) => follow(e, l, i)}
                     onPointerUp={() => letGo(l, i)}
                     onPointerCancel={() => setDrag(null)}
-                    title={`${l.action}\n${l.assetId}${l.assetName ? ` ${l.assetName}` : ''} · ${stagesText(place)} — drag to move, drag an end to stretch, Option-drag to duplicate`}
-                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border border-[#3c5eac] bg-[#3c5eac] text-paper shadow-sm ${
+                    title={`${l.action || 'Not connected to an action yet'}\n${l.assetId}${l.assetName ? ` ${l.assetName}` : ''} · ${stagesText(place)} — drag to move, drag an end to stretch, Option-drag to duplicate, ▼ to connect it to an action`}
+                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border border-[#3c5eac] text-paper shadow-sm ${
+                      isConnected(l) ? 'bg-[#3c5eac]' : 'border-dashed border-paper/80 bg-[#3c5eac]/60'
+                    } ${
                       optionHeld ? 'cursor-copy' : 'cursor-grab active:cursor-grabbing'
                     } ${dragging && !dragging.copy ? 'opacity-80 ring-2 ring-ink' : ''}`}
                     style={box(place)}
                   >
                     {handle('from')}
                     {label}
+                    <button
+                      // Not a drag: pressing it mustn't pick the bar up.
+                      onPointerDown={(e) => e.stopPropagation()}
+                      data-bar-pick
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPicking(picking === key ? null : key);
+                      }}
+                      aria-expanded={picking === key}
+                      aria-label={`Connect this bar to an action (${l.action || 'not connected'})`}
+                      title="Connect this bar to one of the scene's actions"
+                      className={`flex h-full w-6 shrink-0 cursor-pointer items-center justify-center hover:bg-ink/30 ${picking === key ? 'bg-ink/40' : ''}`}
+                    >
+                      <DropdownArrow open={picking === key} className="text-paper" />
+                    </button>
                     <button
                       // Not a drag: pressing it mustn't pick the bar up.
                       onPointerDown={(e) => e.stopPropagation()}
@@ -722,6 +920,60 @@ export function MediaTimeline({
                     </button>
                     {handle('to')}
                   </div>,
+                  picking === key && (
+                    // The scene's actions, under the bar (above it, for a bar low on the timeline).
+                    <div
+                      key={`${key}-pick`}
+                      data-bar-picker
+                      role="listbox"
+                      aria-label="Connect this bar to an action"
+                      className="absolute z-40 max-h-96 w-[min(340px,100%)] overflow-y-auto border-2 border-ink bg-paper font-body text-xs text-ink shadow-lg"
+                      style={{
+                        left: `calc(${at(place.from)} + 2px)`,
+                        ...(rowOf(place.track) < trackRows.length / 2
+                          ? { top: `${((rowOf(place.track) + 1) / trackRows.length) * 100}%` }
+                          : { bottom: `${100 - (rowOf(place.track) / trackRows.length) * 100}%` }),
+                      }}
+                    >
+                      <p className="border-b border-hair px-2 py-1 font-label text-[9px] uppercase tracking-wide text-muted-ink">
+                        Connect {l.assetName ?? l.assetId} to
+                      </p>
+                      <button
+                        role="option"
+                        aria-selected={isMarker(l)}
+                        onClick={() => connectBar(l, i, MARKER_ACTION)}
+                        className="flex w-full items-start gap-1.5 border-b border-hair px-2 py-1.5 text-left hover:bg-ink/10"
+                        title="Plays whenever the timeline's marker is on this bar's stages"
+                      >
+                        <span className="w-3 shrink-0 font-label">{isMarker(l) ? '✓' : ''}</span>
+                        <span className="min-w-0 flex-1 font-medium">▶ Play on marker arrival</span>
+                      </button>
+                      {!actionList ? (
+                        <p className="p-2 italic text-muted-ink">
+                          Open the Media Library (Adding Immersive Media → 2) to read this scene&rsquo;s actions from the
+                          sheet.
+                        </p>
+                      ) : actionList.length === 0 ? (
+                        <p className="p-2 italic text-muted-ink">
+                          This scene has no media actions yet — write them in row 8 of the sheet.
+                        </p>
+                      ) : (
+                        actionList.map((a) => (
+                          <button
+                            key={a}
+                            role="option"
+                            aria-selected={a === l.action}
+                            onClick={() => connectBar(l, i, a)}
+                            className="flex w-full items-start gap-1.5 px-2 py-1.5 text-left hover:bg-ink/10"
+                          >
+                            <span className="w-3 shrink-0 font-label">{a === l.action ? '✓' : ''}</span>
+                            <span className="min-w-0 flex-1">{a}</span>
+                          </button>
+                        ))
+                      )}
+                      {isConnected(l) && <BarPlays link={l} />}
+                    </div>
+                  ),
                   dragging?.copy && (
                     <div
                       key={`${key}-copy`}
@@ -759,5 +1011,109 @@ function OpenArrow({ open }: { open: boolean }) {
     <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden className="shrink-0 fill-current">
       <polygon points={open ? '4,2 12,2 8,9' : '1,0 8,5 1,10'} />
     </svg>
+  );
+}
+
+/**
+ * A bar's "When it plays" (under its ▼ list): the same choices as its connection in the Media Library —
+ * when it fires, and for "every time" which moment and what the voice does; for "on marker arrival",
+ * whether a video or sound loops. Each change is one undo step, and the bars follow it.
+ */
+function BarPlays({ link }: { link: MediaLink }) {
+  const timing = timingOf(link);
+  const still = isStill(link.assetKind);
+  const label = 'font-label text-[9px] uppercase tracking-wide text-muted-ink';
+  const select = 'border border-ink bg-paper px-1.5 py-1 font-body text-xs text-ink';
+  const change = (update: (l: MediaLink) => MediaLink) =>
+    updateMediaLinks((all) => all.map((x) => (sameLink(x, link) ? update(x) : x)), `Change when ${link.assetId} plays`);
+  if (isMarker(link)) {
+    return still ? null : (
+      <div className="flex flex-col gap-1 border-t border-hair px-2 py-1.5">
+        <p className={label}>When it plays</p>
+        <label className="flex items-center gap-1.5 text-xs">
+          <input type="checkbox" checked={loopOf(link)} onChange={(e) => change((l) => ({ ...l, loop: e.target.checked }))} />
+          Loop while the marker is on its bar
+        </label>
+      </div>
+    );
+  }
+  const loopsWhen = timing.kind === 'once' && !still && loopOf(link);
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-hair px-2 py-1.5">
+      <p className={label}>When it plays</p>
+      <select
+        value={loopsWhen ? 'once-loop' : timing.kind}
+        onChange={(e) => {
+          const v = e.target.value;
+          const kind = (v === 'once-loop' ? 'once' : v) as ActionKind;
+          const loop = v === 'once-loop' ? true : v === 'once' ? false : undefined;
+          change((l) => ({ ...l, timing: { ...l.timing, kind }, loop }));
+        }}
+        aria-label="When it plays"
+        title={`Plays ${KIND_HELP[timing.kind]}`}
+        className={select}
+      >
+        {ACTION_KINDS.flatMap((k) => [
+          <option key={k} value={k}>
+            {KIND_BADGE[k]}
+          </option>,
+          // A picture, text or colour just stays up: only video and sound can loop.
+          k === 'once' && !still && (
+            <option key="once-loop" value="once-loop">
+              {LOOP_WHEN_BADGE}
+            </option>
+          ),
+        ])}
+      </select>
+      {timing.kind === 'every' && (
+        <>
+          <select
+            value={timing.when}
+            onChange={(e) => change((l) => ({ ...l, timing: { ...l.timing, when: e.target.value as EveryWhen } }))}
+            aria-label="Each time what happens"
+            className={select}
+          >
+            {(Object.keys(WHEN_LABEL) as EveryWhen[]).map((w) => (
+              <option key={w} value={w}>
+                {WHEN_LABEL[w]}
+              </option>
+            ))}
+          </select>
+          {timing.when === 'before-reply' && (
+            <span className="flex flex-wrap items-center gap-1.5">
+              <select
+                value={timing.voice}
+                onChange={(e) => change((l) => ({ ...l, timing: { ...l.timing, voice: e.target.value as VoiceWait } }))}
+                aria-label="What the voice does"
+                className={select}
+              >
+                {(Object.keys(VOICE_LABEL) as VoiceWait[]).map((v) => (
+                  <option key={v} value={v}>
+                    {VOICE_LABEL[v]}
+                  </option>
+                ))}
+              </select>
+              {timing.voice === 'delay' && (
+                <label className="flex items-center gap-1 text-xs">
+                  <input
+                    type="number"
+                    min={0}
+                    max={30}
+                    step={0.5}
+                    value={timing.delay}
+                    onChange={(e) =>
+                      change((l) => ({ ...l, timing: { ...l.timing, delay: Math.max(0, Number(e.target.value) || 0) } }))
+                    }
+                    aria-label="Seconds the voice waits"
+                    className="w-14 border border-ink bg-paper px-1 py-0.5"
+                  />
+                  s
+                </label>
+              )}
+            </span>
+          )}
+        </>
+      )}
+    </div>
   );
 }

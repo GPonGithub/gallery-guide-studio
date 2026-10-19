@@ -11,12 +11,14 @@ import { startStreamedClip, type StreamedClip } from '@/components/agent/streame
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
 import { OnboardingTour } from '@/components/agent/OnboardingTour';
+import { SceneButtons } from '@/components/agent/SceneButtons';
 import { TeamToggle } from '@/components/agent/TeamToggle';
 import { useHosting } from '@/lib/agent/hosting';
 import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
 import { LAYOUT_DEMO_ACTIONS } from '@/components/agent/layoutDemo';
 import { DEMO_SCENE, DEMO_STAGES, endMediaDemo, useMediaDemo } from '@/lib/agent/mediaDemo';
+import { forgetMarker, markerArrived } from '@/lib/agent/markerPlay';
 import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -935,6 +937,7 @@ export default function AgentStudioPage() {
     musicRef.current?.stop();
     stopLoops();
     clearVisuals();
+    forgetMarker();
     setCueLog([]);
     setSoundLog([]);
     setSession(initialState(flow, code || undefined));
@@ -953,6 +956,7 @@ export default function AgentStudioPage() {
     musicRef.current?.stop();
     stopLoops();
     clearVisuals();
+    forgetMarker();
     setCueLog([]);
     setSoundLog([]);
     setSession(initialState(next));
@@ -1808,6 +1812,9 @@ export default function AgentStudioPage() {
       void play(sceneSounds(mediaScene, 'start'), 0);
       // Images and video "throughout the scene" or "at the start" show in their areas from the start.
       clearVisuals();
+      // "On marker arrival": whatever has a bar on the stage the call starts at.
+      forgetMarker();
+      void markerArrived(mediaScene, sortStages(flow.stages), session.stageCode);
       void sceneMedia(mediaScene, ['throughout', 'start']).then((list) =>
         list.filter((m) => m.asset.kind !== 'sound').forEach((m) => startMedia(m, 0)),
       );
@@ -1928,6 +1935,8 @@ export default function AgentStudioPage() {
       const heardReply = cut() ? cutOff(interruptedRef.current!.heard) : data.reply;
       if (!superseded()) setMessages([...withCaller, { role: 'assistant', text: heardReply }]);
       setSession(data.state);
+      // The marker moves with the conversation: "on marker arrival" media for the stage it's on now.
+      if (!data.state.ended) void markerArrived(mediaScene, sortStages(flow.stages), data.state.stageCode);
       // Cue statuses as last heard (held ones may have been sent since the turn finished).
       const events = data.events.map((e) =>
         e.type === 'cue' ? { ...e, status: cueStatusRef.current.get(e.id) ?? e.status } : e,
@@ -2298,6 +2307,22 @@ export default function AgentStudioPage() {
           {/* Wide enough for one row (a container query on the chat's own width): Restart and Refresh on the
               left, sound on the right. Narrower, the row wraps and every button lines up on the right. */}
           <div className="@container flex flex-col gap-2 border-b-2 border-ink bg-hair px-3 py-2.5">
+            {/* Switch scene from here too (as above the room drawing, and in Design Process steps 3–6). */}
+            {sheetSceneList.length > 0 && (
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5" data-tour="chat-scenes">
+                <span className={fieldLabel}>Scene</span>
+                <SceneButtons
+                  scenes={sheetSceneList}
+                  currentId={saved.projectId}
+                  onSwitch={(id) => void switchScene(id)}
+                  disabled={busy}
+                  label="Switch scene (the chat is the open scene's conversation)"
+                />
+                <span className="min-w-0 truncate font-body text-sm text-ink" title={saved.projectName}>
+                  {sheetSceneList.find((sc) => sc.id === saved.projectId)?.name ?? ''}
+                </span>
+              </div>
+            )}
             <div className="flex flex-wrap items-center justify-end gap-2 @[700px]:justify-start">
               <button
                 onClick={() => setConfirmCompleteRestart(true)}

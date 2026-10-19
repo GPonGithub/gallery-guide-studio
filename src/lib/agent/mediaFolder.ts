@@ -26,8 +26,8 @@ import {
 type Permission = 'granted' | 'denied' | 'prompt';
 type DirectoryHandle = FileSystemDirectoryHandle & {
   values(): AsyncIterable<FileSystemHandle>;
-  queryPermission(options: { mode: 'read' }): Promise<Permission>;
-  requestPermission(options: { mode: 'read' }): Promise<Permission>;
+  queryPermission(options: { mode: 'read' | 'readwrite' }): Promise<Permission>;
+  requestPermission(options: { mode: 'read' | 'readwrite' }): Promise<Permission>;
 };
 type PickerWindow = Window & {
   showDirectoryPicker?: (options?: { id?: string; mode?: 'read' }) => Promise<DirectoryHandle>;
@@ -166,6 +166,54 @@ export function areaOfTrack(track: TimelineBar['track']): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * Whether a connection has an action. A file dragged straight onto the timeline has a bar but no action
+ * (action ''): it never plays until one is picked with the ▼ on its bar.
+ */
+export const isConnected = (link: MediaLink) => link.action.trim() !== '';
+
+/**
+ * "Play on marker arrival": not one of the sheet's actions but a reserved one. The file plays (or
+ * shows) whenever the timeline's marker — the playhead — is on a stage its bar covers: from stage 1
+ * as the call starts, as the conversation moves on, or when the marker is stepped by hand. It comes
+ * down (or stops) when the marker leaves. See markerPlay.ts.
+ */
+export const MARKER_ACTION = '@marker-arrival';
+export const MARKER_LABEL = 'On marker arrival';
+export const isMarker = (link: MediaLink) => link.action === MARKER_ACTION;
+/** An action as people read it (the reserved marker one by its label). */
+export const actionText = (action: string) => (action === MARKER_ACTION ? MARKER_LABEL : action);
+
+// The open scene's media actions (row 8 of the sheet), as the Media Library last read them — for the
+// ▼ on a timeline bar, which picks one. Keyed by "sheetId:number".
+let sceneActions: { key: string; list: string[] } | null = null;
+const actionListeners = new Set<() => void>();
+export function setSceneActions(key: string, list: string[]) {
+  if (sceneActions?.key === key && sceneActions.list.join('\n') === list.join('\n')) return;
+  sceneActions = { key, list };
+  actionListeners.forEach((l) => l());
+}
+export const useSceneActions = () =>
+  useSyncExternalStore(
+    (l) => {
+      actionListeners.add(l);
+      return () => {
+        actionListeners.delete(l);
+      };
+    },
+    () => sceneActions,
+    () => null,
+  );
+
+/**
+ * Dragging a Media Library item onto the timeline. The kind is in the type itself (a drop target can
+ * see the types while dragging over, but not the data until the drop), so sounds only land on sound
+ * tracks and pictures, video, text and colour on the projection tracks.
+ */
+export const DRAG_SOUND = 'application/x-immersive-sound';
+export const DRAG_VISUAL = 'application/x-immersive-visual';
+export type DraggedAsset = { id: string; name: string; kind: MediaKind };
+
 /** A connection's bars: the first, then any duplicates. */
 export const barsOf = (link: MediaLink): TimelineBar[] => (link.bar ? [link.bar, ...(link.copies ?? [])] : []);
 
@@ -289,6 +337,8 @@ export const timingOf = (link: MediaLink): ActionTiming => {
  */
 export function loopOf(link: MediaLink): boolean {
   if (link.loop !== undefined) return link.loop;
+  // On marker arrival: video loops while its bar is under the marker; a sound plays once.
+  if (isMarker(link)) return link.assetKind === 'video';
   if (timingOf(link).kind !== 'once') return true;
   return readingNow(link.action)?.loop ?? wordsSayLoop(link.action);
 }
@@ -410,7 +460,11 @@ export function followRewording(
   actions: string[],
 ): MediaLink[] | null {
   const here = (l: MediaLink) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number;
-  const lost = [...new Set(links.filter((l) => here(l) && !actions.includes(l.action)).map((l) => l.action))];
+  const lost = [
+    ...new Set(
+      links.filter((l) => here(l) && isConnected(l) && !isMarker(l) && !actions.includes(l.action)).map((l) => l.action),
+    ),
+  ];
   if (lost.length === 0) return null;
   const free = actions.filter((a) => !links.some((l) => here(l) && l.action === a));
   const renamed = new Map<string, string>();

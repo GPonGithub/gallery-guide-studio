@@ -140,6 +140,27 @@ def show(msg):
     if not 1 <= area <= AREAS:
         return 'area %s?' % msg.get('area'), 'no such area'
     where = 'area %d' % area
+    kind = msg.get('kind')
+    if kind == 'color':
+        # A colour wash: the area's colour layer (switch input 2).
+        hexv = (msg.get('value') or '#000000').lstrip('#')
+        try:
+            r, g, b = (int(hexv[i:i + 2], 16) / 255 for i in (0, 2, 4))
+        except ValueError:
+            return where, 'not a colour: %s' % msg.get('value')
+        col = lab.op('color%d' % area)
+        col.par.colorr, col.par.colorg, col.par.colorb = r, g, b
+        lab.op('movie%d' % area).par.play = 0
+        lab.op('switch%d' % area).par.index = 2
+        now(where, dict(msg, path=msg.get('value')))
+        return where, 'colour shown'
+    if kind == 'text':
+        # Words on the area: its text layer (switch input 3).
+        lab.op('words%d' % area).par.text = msg.get('value') or ''
+        lab.op('movie%d' % area).par.play = 0
+        lab.op('switch%d' % area).par.index = 3
+        now(where, dict(msg, path=(msg.get('value') or '')[:60]))
+        return where, 'text shown'
     path = full_path(msg)
     if not path or not os.path.isfile(path):
         return where, 'file missing'
@@ -350,6 +371,10 @@ GUIDE = [
     ['Message', 'What TouchDesigner does', 'Example'],
     ['media show', 'Shows a picture in an area (1-11)',
      '{"type":"media","action":"show","area":3,"id":"M-001","path":"Maya.jpg","kind":"image"}'],
+    ['media show (colour)', 'Fills an area with a colour (hex), no file',
+     '{"type":"media","action":"show","area":4,"id":"M-020","kind":"color","value":"#0b1d36"}'],
+    ['media show (text)', 'Shows words in an area (white on black, centred), no file',
+     '{"type":"media","action":"show","area":5,"id":"M-021","kind":"text","value":"Welcome to the clinic"}'],
     ['media play', 'Plays a video in an area; loop true = loops, false = plays once and holds the last frame',
      '{"type":"media","action":"play","area":5,"id":"M-007","path":"monitor.mov","kind":"video","loop":true}'],
     ['media hide', 'Clears an area to black', '{"type":"media","action":"hide","area":5}'],
@@ -447,9 +472,26 @@ def build():
         setp(fit, 'outputresolution', 'custom')
         fit.par.resolutionw.expr = 'parent().par.Width'
         fit.par.resolutionh.expr = 'parent().par.Height'
+        # A colour wash and words, for text and colour items (no file).
+        col = place(lab.create(constantTOP, 'color%d' % a), 0, y - 50)
+        setp(col, 'outputresolution', 'custom')
+        col.par.resolutionw.expr = 'parent().par.Width'
+        col.par.resolutionh.expr = 'parent().par.Height'
+        setp(col, 'alpha', 1)
+        words = place(lab.create(textTOP, 'words%d' % a), 0, y - 100)
+        setp(words, 'outputresolution', 'custom')
+        words.par.resolutionw.expr = 'parent().par.Width'
+        words.par.resolutionh.expr = 'parent().par.Height'
+        setp(words, 'alignx', 'center')
+        setp(words, 'aligny', 'center')
+        setp(words, 'fontsizex', 110)
+        setp(words, 'wordwrap', True)
+        setp(words, 'bgalpha', 1)
         sw = place(lab.create(switchTOP, 'switch%d' % a), 200, y)
         sw.inputConnectors[0].connect(black)
         sw.inputConnectors[1].connect(fit)
+        sw.inputConnectors[2].connect(col)
+        sw.inputConnectors[3].connect(words)
         setp(sw, 'index', 0)
         area = place(lab.create(nullTOP, 'area%d' % a), 400, y)
         area.inputConnectors[0].connect(sw)

@@ -56,7 +56,13 @@ async function timed<T>(timings: string[], label: string, work: Promise<T>): Pro
 }
 
 /** The patient's remembered information, one line each, with the scene it came from. */
-const MEDIA_NOUN: Record<RoomMedia['kind'], string> = { image: 'picture', video: 'video', sound: 'sound' };
+const MEDIA_NOUN: Record<RoomMedia['kind'], string> = {
+  image: 'picture',
+  video: 'video',
+  sound: 'sound',
+  text: 'words on a screen',
+  color: 'coloured light',
+};
 
 /** The room's media, for the prompts: what each action is, and whether it's showing now. */
 function mediaLines(media: RoomMedia[]): string {

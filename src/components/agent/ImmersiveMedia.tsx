@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CollapsiblePanel } from './CollapsiblePanel';
 import { DEMO_SCENE, DEMO_SHEET_ID, useMediaDemo, useMediaFolderRevision } from '@/lib/agent/mediaDemo';
 import { TouchDesignerPanel } from './TouchDesignerPanel';
+import { ShowFilePanel } from './ShowFilePanel';
+import { useShowAutosave } from '@/lib/agent/showSave';
 import { buttonGhost, buttonOutline } from '@/lib/styles';
 import { parseSheetUrl } from '@/lib/agent/sheetScenes';
 import { isScriptUrl } from '@/lib/agent/sheetScript';
@@ -18,6 +20,7 @@ import {
   VOICE_LABEL,
   WHEN_LABEL,
   fromRows,
+  formatId,
   mergeMedia,
   readActionTiming,
   toRow,
@@ -27,6 +30,8 @@ import {
   type MediaKind,
   type MediaRow,
   type VoiceWait,
+  isMade,
+  isStill,
 } from '@/lib/agent/media';
 import { isSoundPlaying, onSoundsChange, playSound, stopSounds } from '@/lib/agent/mediaPlayback';
 import { areasOf, areasText, hideVisual, showVisual, useShowing } from '@/lib/agent/mediaShow';
@@ -49,6 +54,15 @@ import {
   readingNow,
   timingOf,
   useActionReadings,
+  isConnected,
+  isMarker,
+  actionText,
+  MARKER_ACTION,
+  MARKER_LABEL,
+  setSceneActions,
+  DRAG_SOUND,
+  DRAG_VISUAL,
+  type DraggedAsset,
   type MediaFolder,
   type MediaLink,
   type StoredLibrary,
@@ -157,6 +171,8 @@ export function ImmersiveMedia({
   const sheetConnected = Boolean(sheet) && isScriptUrl(scriptUrl);
 
   const links = useMediaLinks();
+  // show.json in the media folder follows every change (see showSave.ts).
+  useShowAutosave(folder, library, links);
   // Claude's readings of the actions: re-renders as they arrive.
   useActionReadings();
   const keyRef = useRef(anthropicApiKey);
@@ -166,6 +182,11 @@ export function ImmersiveMedia({
   const [sheetActions, setActions] = useState<SceneActions | null>(null);
   const sceneKey = sceneSheet ? `${sceneSheet.sheetId}:${sceneSheet.number}` : null;
   const actions: SceneActions | null = demo && sceneKey ? { key: sceneKey, list: demo.actions } : sheetActions;
+  // The timeline's bars pick from the same actions (their ▼).
+  const actionsText = actions && actions.key === sceneKey && 'list' in actions ? actions.list.join('\n') : null;
+  useEffect(() => {
+    if (sceneKey && actionsText !== null) setSceneActions(sceneKey, actionsText ? actionsText.split('\n') : []);
+  }, [sceneKey, actionsText]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: the browser's folder support isn't known during SSR
@@ -260,6 +281,36 @@ export function ImmersiveMedia({
       `${connected(links) ? 'Disconnect' : 'Connect'} ${assetId}`,
     );
   };
+  /** Adds a text or colour item to the library, with the next ID (made in the app: no file). */
+  const addMade = async (kind: 'text' | 'color', name: string, value: string) => {
+    const assets = library?.assets ?? [];
+    const n = Math.max(0, ...assets.map((a) => Number(/^M-(\d+)$/i.exec(a.id)?.[1] ?? 0))) + 1;
+    const item: MediaAsset = {
+      id: formatId(n),
+      path: '',
+      name: name.trim() || (kind === 'text' ? value.trim().split('\n')[0].slice(0, 40) : value),
+      kind,
+      status: 'present',
+      added: new Date().toLocaleDateString('en-CA'),
+      value,
+    };
+    const next: StoredLibrary = {
+      folderName: library?.folderName ?? folder?.name ?? '',
+      refreshedAt: library?.refreshedAt ?? Date.now(),
+      assets: [...assets, item],
+    };
+    await saveLibrary(next);
+    setLibrary(next);
+  };
+  /** Deletes a text or colour item, and its connections (with their bars) — the room takes it down. */
+  const removeMade = async (asset: MediaAsset) => {
+    if (!window.confirm(`Delete “${asset.name}”? Its connections to actions go too.`)) return;
+    hideVisual(asset.id);
+    updateMediaLinks((all) => all.filter((l) => l.assetId !== asset.id), `Delete ${asset.id}`);
+    const next: StoredLibrary = { ...library!, assets: (library?.assets ?? []).filter((a) => a.id !== asset.id) };
+    await saveLibrary(next);
+    setLibrary(next);
+  };
   const removeLink = (link: MediaLink) =>
     updateMediaLinks((all) => all.filter((l) => l !== link), `Disconnect ${link.assetId}`);
   /** "When it plays": its kind, and for "once, when user instructs" whether it loops — one change, one undo. */
@@ -296,7 +347,9 @@ export function ImmersiveMedia({
       setBusy(true);
       const found = await scanMediaFolder(f);
       // The sheet's list is the one everyone shares, so its IDs come first.
-      let existing = chooseAgain && library?.folderName !== f.name ? [] : (library?.assets ?? []);
+      // Text and colour items aren't in any folder: they stay through a refresh or a new folder.
+      const made = (library?.assets ?? []).filter((a) => isMade(a.kind));
+      let existing = chooseAgain && library?.folderName !== f.name ? made : (library?.assets ?? []);
       let sheetNote = '';
       if (sheetConnected) {
         const read = await mediaRequest({
@@ -304,7 +357,8 @@ export function ImmersiveMedia({
           spreadsheetId: sheet!.sheetId,
           action: 'read',
         });
-        if (read.ok && read.media && read.media.length > 0) existing = fromRows(read.media);
+        if (read.ok && read.media && read.media.length > 0)
+          existing = [...fromRows(read.media).filter((a) => !isMade(a.kind)), ...made];
         else if (!read.ok) sheetNote = read.error ?? 'The sheet couldn’t be read.';
       }
       const merged = mergeMedia(existing, found, new Date().toLocaleDateString('en-CA'));
@@ -320,11 +374,12 @@ export function ImmersiveMedia({
           scriptUrl,
           spreadsheetId: sheet!.sheetId,
           action: 'write',
-          rows: merged.assets.map(toRow),
+          // The Media tab lists files only.
+          rows: merged.assets.filter((a) => !isMade(a.kind)).map(toRow),
         });
         if (!write.ok) sheetNote = write.error ?? 'The sheet couldn’t be written.';
       }
-      const present = merged.assets.filter((a) => a.status === 'present').length;
+      const present = merged.assets.filter((a) => a.status === 'present' && !isMade(a.kind)).length;
       const changes = [
         merged.added && `${merged.added} new`,
         merged.returned && `${merged.returned} back`,
@@ -431,9 +486,11 @@ export function ImmersiveMedia({
                 </button>
               </div>
             )}
+            <MakeItem onAdd={addMade} />
             <MediaList
               folder={folder}
               assets={assets}
+              onRemoveMade={(a) => void removeMade(a)}
               show={libraryOpen && readable === true}
               connect={{
                 scene: sceneSheet ? { sheetId: sceneSheet.sheetId, number: sceneSheet.number, name: sceneName } : null,
@@ -452,7 +509,11 @@ export function ImmersiveMedia({
         )}
       </CollapsiblePanel>
 
-      <CollapsiblePanel title="3 · TouchDesigner" tourId="media-3">
+      <CollapsiblePanel title="3 · Show file" tourId="media-3">
+        <ShowFilePanel folder={folder} library={library} />
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="4 · TouchDesigner" tourId="media-4">
         <TouchDesignerPanel assets={assets} />
       </CollapsiblePanel>
     </>
@@ -640,11 +701,14 @@ function MediaList({
   assets,
   show,
   connect,
+  onRemoveMade,
 }: {
   folder: MediaFolder;
   assets: MediaAsset[];
   show: boolean;
   connect: Connect;
+  /** Deletes a text or colour item (files are only ever removed from the folder). */
+  onRemoveMade: (asset: MediaAsset) => void;
 }) {
   /** The file whose Connect with Action list is open. */
   const [connecting, setConnecting] = useState<string | null>(null);
@@ -734,20 +798,46 @@ function MediaList({
           <li
             key={a.id}
             data-asset={a.id}
-            className={`border-b border-hair p-1.5 last:border-b-0 ${a.status === 'missing' ? 'opacity-50' : ''}`}
+            // Drag it onto a timeline row to place it there (connect it to an action from its bar's ▼).
+            draggable={a.status === 'present'}
+            onDragStart={(e) => {
+              const dragged: DraggedAsset = { id: a.id, name: a.name, kind: a.kind };
+              e.dataTransfer.setData(a.kind === 'sound' ? DRAG_SOUND : DRAG_VISUAL, JSON.stringify(dragged));
+              e.dataTransfer.effectAllowed = 'copy';
+            }}
+            title={a.status === 'present' ? 'Drag onto the timeline to place it' : undefined}
+            className={`border-b border-hair p-1.5 last:border-b-0 ${a.status === 'missing' ? 'opacity-50' : 'cursor-grab'}`}
           >
             {/* The details sit level with the thumbnail's top edge, Connect with Action with its bottom edge. */}
             <div className="flex items-stretch gap-3">
-              <Thumbnail asset={a} folder={folder} show={show && a.status === 'present'} root={list} onPlay={onPlay} />
+              {isMade(a.kind) ? (
+                <MadeThumbnail asset={a} />
+              ) : (
+                <Thumbnail asset={a} folder={folder} show={show && a.status === 'present'} root={list} onPlay={onPlay} />
+              )}
               <div className="flex min-w-0 flex-1 flex-col font-body text-xs leading-snug text-ink">
                 <p className="font-label text-[10px] leading-none tracking-wide">
                   {a.id} · {KIND_LABEL[a.kind]}
                   {a.status === 'missing' && ' · missing from the folder'}
                 </p>
-                <p className="mt-1 truncate" title={a.path}>
+                <p className="mt-1 truncate" title={isMade(a.kind) ? a.value : a.path}>
                   {a.name}
                 </p>
-                <p className="text-[11px] text-muted-ink">Added {a.added || '—'}</p>
+                <p className="text-[11px] text-muted-ink">
+                  {isMade(a.kind) ? 'Made' : 'Added'} {a.added || '—'}
+                  {isMade(a.kind) && (
+                    <>
+                      {' · '}
+                      <button
+                        onClick={() => onRemoveMade(a)}
+                        className="underline underline-offset-2 hover:text-[#b91c1c]"
+                        title={`Delete ${a.name} (and its connections)`}
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
+                </p>
                 <button
                   onClick={() => {
                     const opening = connecting !== a.id;
@@ -826,8 +916,9 @@ function loadOpen(): Set<string> {
 
 /** When a connection plays, in a few words (for its folded line). */
 function playsText(l: MediaLink, asset: MediaAsset): string {
+  if (isMarker(l)) return !isStill(asset.kind) && loopOf(l) ? `${MARKER_LABEL} · loops` : MARKER_LABEL;
   const t = timingOf(l);
-  if (t.kind === 'once' && asset.kind !== 'image' && loopOf(l)) return LOOP_WHEN_BADGE;
+  if (t.kind === 'once' && !isStill(asset.kind) && loopOf(l)) return LOOP_WHEN_BADGE;
   return t.kind === 'every' ? `${KIND_BADGE.every} · ${WHEN_LABEL[t.when]}` : KIND_BADGE[t.kind];
 }
 
@@ -856,7 +947,7 @@ function Connections({ asset, connect }: { asset: MediaAsset; connect: Connect }
     <ul className="mt-1.5 flex flex-col gap-1" aria-label={`Actions ${asset.id} is connected to`}>
       {mine.map((l, i) => {
         const here = connect.scene && l.sheetId === connect.scene.sheetId && l.sceneNumber === connect.scene.number;
-        const gone = here && current !== null && !current.includes(l.action);
+        const gone = here && current !== null && !isMarker(l) && !current.includes(l.action);
         const isOpen = open.has(connectionKey(l));
         const reading = readingNow(l.action);
         const unsure = reading && !reading.clear && !l.timing?.kind;
@@ -866,7 +957,12 @@ function Connections({ asset, connect }: { asset: MediaAsset; connect: Connect }
             data-connection={l.action}
             className="flex items-start gap-1.5 border-l-4 border-[#3c5eac] bg-[#3c5eac]/10 py-0.5 pl-1.5 font-body text-[11px] text-ink"
           >
-            {isOpen ? (
+            {!isConnected(l) ? (
+              // Dragged onto the timeline but not yet given an action: it doesn't play until it has one.
+              <span className="min-w-0 flex-1 self-center py-1 italic text-muted-ink">
+                On the timeline, not connected yet — pick an action with the ▼ on its bar
+              </span>
+            ) : isOpen ? (
               <span className="min-w-0 flex-1">
                 <button
                   onClick={() => toggle(l)}
@@ -878,9 +974,13 @@ function Connections({ asset, connect }: { asset: MediaAsset; connect: Connect }
                   Scene {l.sceneNumber}
                   {l.sceneName ? ` · ${l.sceneName}` : ''}
                 </button>
-                {l.action}
+                {actionText(l.action)}
                 {gone && <span className="text-[#b91c1c]"> — no longer in row 8 of the sheet</span>}
-                <ActionTimingControls link={l} asset={asset} connect={connect} />
+                {isMarker(l) ? (
+                  <MarkerControls link={l} asset={asset} connect={connect} />
+                ) : (
+                  <ActionTimingControls link={l} asset={asset} connect={connect} />
+                )}
               </span>
             ) : (
               // Folded: one line — the action, and when it plays.
@@ -891,7 +991,7 @@ function Connections({ asset, connect }: { asset: MediaAsset; connect: Connect }
                 className="flex min-w-0 flex-1 items-center gap-1 self-center py-1 text-left hover:text-[#3c5eac]"
               >
                 <span className="shrink-0 text-[8px]">▶</span>
-                <span className="min-w-0 flex-1 truncate">{l.action}</span>
+                <span className="min-w-0 flex-1 truncate">{actionText(l.action)}</span>
                 <span
                   className={`shrink-0 font-label text-[9px] uppercase tracking-wide ${
                     gone || unsure ? 'text-[#b91c1c]' : 'text-muted-ink'
@@ -936,7 +1036,7 @@ function ActionTimingControls({ link, asset, connect }: { link: MediaLink; asset
   const reading = readingNow(link.action);
   const unsure = reading && !reading.clear && !link.timing?.kind;
   // "Loop, when user instructs" (video and sound).
-  const loopsWhen = timing.kind === 'once' && asset.kind !== 'image' && loopOf(link);
+  const loopsWhen = timing.kind === 'once' && !isStill(asset.kind) && loopOf(link);
   // An image or video showing in the room now (from Try it or the conversation).
   const shownNow = useShowing().some((m) => m.assetId === asset.id);
 
@@ -1026,7 +1126,7 @@ function ActionTimingControls({ link, asset, connect }: { link: MediaLink; asset
               {KIND_BADGE[k]}
             </option>,
             // A picture just stays up: only video and sound can loop.
-            k === 'once' && asset.kind !== 'image' && (
+            k === 'once' && !isStill(asset.kind) && (
               <option key="once-loop" value="once-loop">
                 {LOOP_WHEN_BADGE}
               </option>
@@ -1226,6 +1326,24 @@ function ActionPicker({ asset, connect, onDone }: { asset: MediaAsset; connect: 
           {scene && connect.rereading && actions ? 'Checking the sheet…' : ''}
         </span>
       </div>
+      {scene && (
+        // Not one of the sheet's actions: plays whenever the timeline's marker is on its bar's stages.
+        <button
+          role="option"
+          data-action-option={MARKER_ACTION}
+          aria-selected={linked(MARKER_ACTION)}
+          onClick={() => {
+            connect.onToggle(asset.id, MARKER_ACTION);
+            onDone();
+          }}
+          className="flex w-full items-start gap-1.5 border-b border-hair px-1.5 py-1.5 text-left hover:bg-ink/10"
+          title="Plays (or shows) whenever the timeline's marker is on a stage its bar covers — from stage 1 as the call starts, or wherever the marker moves"
+        >
+          <span className="w-3 shrink-0 font-label text-[11px]">{linked(MARKER_ACTION) ? '✓' : ''}</span>
+          <span className="min-w-0 flex-1 font-medium">▶ Play on marker arrival</span>
+          <span className="shrink-0 font-label text-[9px] uppercase tracking-wide text-muted-ink">No action needed</span>
+        </button>
+      )}
       <div className={scene && connect.rereading && actions ? 'opacity-50' : ''}>{body}</div>
     </div>
   );
@@ -1419,5 +1537,133 @@ function Thumbnail({
         </span>
       )}
     </button>
+  );
+}
+
+/** A text or colour item's thumbnail: the words, white on black, or the colour itself — as the room shows it. */
+function MadeThumbnail({ asset }: { asset: MediaAsset }) {
+  if (asset.kind === 'color') {
+    return (
+      <span
+        className="flex aspect-video w-[176px] shrink-0 items-end border border-ink p-1"
+        style={{ background: asset.value || '#000' }}
+        title={asset.value}
+      >
+        <span className="bg-paper/90 px-1 font-label text-[9px] uppercase tracking-wide text-ink">{asset.value}</span>
+      </span>
+    );
+  }
+  return (
+    <span
+      className="flex aspect-video w-[176px] shrink-0 items-center justify-center overflow-hidden whitespace-pre-wrap border border-ink bg-ink p-2 text-center font-body text-[11px] leading-snug text-paper"
+      title={asset.value}
+    >
+      {asset.value || '(no text)'}
+    </span>
+  );
+}
+
+/** + Text / + Colour: a title, caption or colour wash for the room — no file needed. */
+function MakeItem({ onAdd }: { onAdd: (kind: 'text' | 'color', name: string, value: string) => Promise<void> }) {
+  const [making, setMaking] = useState<'text' | 'color' | null>(null);
+  const [name, setName] = useState('');
+  const [value, setValue] = useState('');
+  const open = (kind: 'text' | 'color') => {
+    setMaking(making === kind ? null : kind);
+    setName('');
+    setValue(kind === 'color' ? '#0b1d36' : '');
+  };
+  const small = 'border border-ink px-2.5 py-1 font-label text-[10px] uppercase tracking-wide';
+  const ready = making === 'color' ? /^#[0-9a-f]{6}$/i.test(value) : value.trim() !== '';
+  return (
+    <div className="flex flex-col gap-1.5" data-tour="media-make">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="font-label text-[10px] uppercase tracking-wide text-muted-ink">Make</span>
+        {(['text', 'color'] as const).map((k) => (
+          <button
+            key={k}
+            onClick={() => open(k)}
+            aria-expanded={making === k}
+            className={`${small} ${making === k ? 'bg-ink text-paper' : 'bg-paper text-ink hover:bg-ink/10'}`}
+          >
+            + {k === 'text' ? 'Text' : 'Colour'}
+          </button>
+        ))}
+      </div>
+      {making && (
+        <div className="flex flex-col gap-1.5 border border-ink p-2">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={making === 'text' ? 'Name, e.g. Welcome title' : 'Name, e.g. Night blue'}
+            aria-label="Name"
+            className="border border-ink bg-paper px-2 py-1 font-body text-xs text-ink"
+          />
+          {making === 'text' ? (
+            <textarea
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder="The words to show, e.g. Welcome to the clinic"
+              aria-label="Text to show"
+              rows={3}
+              className="border border-ink bg-paper px-2 py-1 font-body text-xs text-ink"
+            />
+          ) : (
+            <span className="flex items-center gap-2">
+              <input
+                type="color"
+                value={/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'}
+                onChange={(e) => setValue(e.target.value)}
+                aria-label="Colour"
+                className="h-8 w-12 cursor-pointer border border-ink bg-paper"
+              />
+              <input
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                aria-label="Colour as hex"
+                className="w-24 border border-ink bg-paper px-2 py-1 font-label text-xs uppercase text-ink"
+              />
+            </span>
+          )}
+          <span className="flex gap-1.5">
+            <button
+              onClick={() => void onAdd(making, name, value).then(() => setMaking(null))}
+              disabled={!ready}
+              className={`${small} bg-ink text-paper disabled:border-hair disabled:bg-hair disabled:text-muted-ink`}
+            >
+              Add to Library
+            </button>
+            <button onClick={() => setMaking(null)} className={`${small} bg-paper text-ink hover:bg-ink/10`}>
+              Cancel
+            </button>
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Settings for "on marker arrival": when it plays is the bar's place on the timeline, so only
+ * whether a video or sound loops while the marker is on its bar (a picture, text or colour just stays).
+ */
+function MarkerControls({ link, asset, connect }: { link: MediaLink; asset: MediaAsset; connect: Connect }) {
+  return (
+    <span className="mt-1 flex flex-col gap-1 not-italic">
+      <span className="text-muted-ink">
+        Plays whenever the timeline&rsquo;s marker is on a stage its bar covers — from the call&rsquo;s first stage,
+        or wherever the marker moves — and comes down when the marker leaves.
+      </span>
+      {!isStill(asset.kind) && (
+        <label className="flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={loopOf(link)}
+            onChange={(e) => connect.onPlays(link, timingOf(link).kind, e.target.checked)}
+          />
+          Loop while the marker is on its bar
+        </label>
+      )}
+    </span>
   );
 }

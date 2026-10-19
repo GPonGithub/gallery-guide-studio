@@ -272,8 +272,11 @@ const STEPS: TourStep[] = [
         </p>
         <ol>
           <li>Follow the steps in &ldquo;Set it up&rdquo;.</li>
-          <li>Paste the link it gives you into the Apps Script link box.</li>
-          <li>Click Test the connection.</li>
+          <li>
+            In the Apps Script window, click <b>Run</b>. When Google asks, allow <b>Apps Script</b> to connect to your
+            Google account: Review permissions → your account → Advanced → Go to … (unsafe) → Allow.
+          </li>
+          <li>Deploy it, paste the link it gives you into the Apps Script link box, and click Test the connection.</li>
         </ol>
         <p className="text-xs text-muted-ink">
           Apps Script runs inside Google Sheets, so it works on any computer. It can only write to row 7 of your Scene

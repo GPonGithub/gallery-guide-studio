@@ -5,6 +5,8 @@ import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
 import { soundsHere, tdLevels, tdSound } from './touchDesigner';
 import {
   allowed,
+  isConnected,
+  isMarker,
   loadLibrary,
   loadMediaLinks,
   openMediaFile,
@@ -38,6 +40,8 @@ export async function sceneSounds(scene: SceneRef | null, kind: ActionKind): Pro
   const assets = new Map((library?.assets ?? []).map((a) => [a.id, a]));
   return links.flatMap((link) => {
     if (link.sheetId !== scene.sheetId || link.sceneNumber !== scene.number) return [];
+    // A bar dropped on the timeline without an action, or one that plays on marker arrival (markerPlay.ts).
+    if (!isConnected(link) || isMarker(link)) return [];
     const timing = timingOf(link);
     const asset = assets.get(link.assetId);
     if (timing.kind !== kind) return [];

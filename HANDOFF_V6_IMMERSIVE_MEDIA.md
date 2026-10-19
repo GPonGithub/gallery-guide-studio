@@ -564,6 +564,56 @@ The ruler (now `h-14`, playhead block 36px) shows each stage's code with its gen
 (9px caps, cut with … when narrow); the tooltip adds the stage's **goal**. `TimelineStage` has an
 optional `goal`, passed from `page.tsx`.
 
+## 7t. v7 — aligning with Greg's Show Control (2026-10-19)
+
+Branch **v7** (made from v6 `baa00af`; v6 still deploys the live site). Decisions (user's): keep 11 areas;
+shared show file = superset of Greg's `show.json`; TouchDesigner gets both the show file and the live link;
+front end gains text & colour content, scrub-previews-the-room, Save / Open show, drag onto the room
+drawing; show file lives in the media folder; Greg joins via the shared GitHub repo; Greg's kiosk app later.
+
+**Done (step 1, the show file):** `src/lib/agent/showFile.ts` (format, `buildShow`, `parseShow`,
+`connectionsFrom` — matches by path), `showSave.ts` (autosave of `show.json` into the media folder 1.5s
+after changes, needs readwrite permission once via Allow Saving; never in the tour demo; Save a Copy
+download), `ShowFilePanel.tsx` = Adding Immersive Media **3 · Show file** (TouchDesigner is now 4).
+Open Show replaces the covered scenes' connections (undoable). Format documented in `SHOW_FORMAT.md`.
+Tested: build/round-trip script; autosave + Open in the pane with an OPFS folder.
+
+**Done (step 2, text & colour content):** `MediaKind` gains `text` / `color` (`isMade`, `isStill` in
+media.ts; `MediaAsset.value`). Media Library → **Make + Text / + Colour** (`MakeItem`), `MadeThumbnail`,
+Delete (removes its connections). Refresh keeps them (mergeMedia passes them through, IDs never reused);
+the sheet's Media tab lists files only. Room drawing: colour fills the area, text is white on black
+(`AreaMedia`). No loop options for still kinds. TouchDesigner: message carries `value` instead of `path`;
+build script adds `color{n}` (Constant TOP) and `words{n}` (Text TOP) as switch inputs 2 and 3 — **re-run
+the build script in TD** to get them. Show file: cast `value`. Tested in the pane with the tour demo.
+
+**Done (step 3, drag onto the timeline):** Media Library rows are draggable (`DRAG_SOUND` / `DRAG_VISUAL`
+types carry the kind, so a row can refuse while hovering). Dropping on the timeline makes a bar at that stage
+and row — sounds only on ♪ tracks, the rest only on projection tracks (green/red cell while hovering) — as a
+connection with **no action** (`action: ''`, `isConnected()` false): dashed bar "name · pick an action ▼",
+never plays (skipped in `sceneMedia` / `sceneSounds`, ignored by `followRewording`), shown in the library as
+"On the timeline, not connected yet". Each bar has a **▼** (`DropdownArrow`) listing the scene's row-8
+actions (`setSceneActions` / `useSceneActions`, published by ImmersiveMedia when it reads them); picking one
+moves that bar into the (file, action) connection — joining its bars, or creating it with `barsKind` set so it
+stays where it was dropped. Undoable ("Place …", "Connect bar"). Tested in the pane with the tour demo.
+
+**Done (step 4, play on marker arrival):** reserved action `MARKER_ACTION` ('@marker-arrival', label
+"On marker arrival") — offered at the top of Connect with Action and of a bar's ▼. `lib/agent/markerPlay.ts`
+`markerArrived(scene, stages, code)`: for every marker connection, shows it in the areas whose bars cover that
+stage (or hides it), starts/stops its sound (once, or looping if set). Called at call start (with
+`forgetMarker()`), after each turn (`data.state.stageCode`), and when the timeline marker is moved by hand
+(◀ ▶, ruler, keys — `movedByHand` in MediaTimeline; merely opening a scene doesn't play). Restarts call
+`forgetMarker()`. Marker links are skipped by `sceneMedia` / `sceneSounds` (the conversation's triggers),
+`followRewording` and the library's "not in sheet". `loopOf`: marker video loops by default, sound doesn't.
+Library settings for them: `MarkerControls` (Loop for video/sound).
+
+**Done:** bar ▼ panel also has **When it plays** (`BarPlays` in MediaTimeline: kinds + Loop-when-instructs,
+every-time event / voice / delay; marker → Loop) — same data as the library, one undo step each.
+**Done:** scene buttons in the chat toolbar (`data-tour="chat-scenes"`).
+**Done:** Apps Script **Run + Allow** step in SheetSaving's setup list, the chatbot tour and the student PDF
+(`student-guide/`, not in git), plus a team-sharing note (one member deploys; others use the same URL).
+
+**Next:** scrub preview → TouchDesigner reads show.json. (Dragging onto the room drawing itself: not yet.)
+
 ## 8. Other open items
 
 - The user hasn't yet re-deployed the Apps Script (§4).

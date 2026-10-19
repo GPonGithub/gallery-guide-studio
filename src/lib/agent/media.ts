@@ -7,7 +7,15 @@
  * ("nurse/susie.jpg").
  */
 
-export type MediaKind = 'image' | 'video' | 'sound';
+/**
+ * What a library item is: a file in the media folder (image, video, sound),
+ * or a text or a colour made in the app (no file — see isMade).
+ */
+export type MediaKind = 'image' | 'video' | 'sound' | 'text' | 'color';
+/** Text and colour items are made in the app: no file, never found or lost by a folder refresh. */
+export const isMade = (kind: MediaKind) => kind === 'text' || kind === 'color';
+/** Shows and stays as it is (a picture, a text, a colour) — no playing, so no looping. */
+export const isStill = (kind: MediaKind | undefined) => kind === 'image' || kind === 'text' || kind === 'color';
 export type MediaStatus = 'present' | 'missing';
 
 export type MediaAsset = {
@@ -22,6 +30,8 @@ export type MediaAsset = {
   status: MediaStatus;
   /** When it first appeared (YYYY-MM-DD). */
   added: string;
+  /** A text item's words, or a colour item's hex colour (e.g. "#0b1d36"). */
+  value?: string;
 };
 
 /** A media file found in the folder. */
@@ -31,6 +41,8 @@ const EXTENSIONS: Record<MediaKind, string[]> = {
   image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'tif', 'tiff', 'exr', 'heic'],
   video: ['mp4', 'mov', 'm4v', 'webm', 'avi', 'mkv', 'mpg', 'mpeg', 'mxf'],
   sound: ['mp3', 'wav', 'aif', 'aiff', 'm4a', 'aac', 'ogg', 'flac'],
+  text: [],
+  color: [],
 };
 
 /** What kind of media a file is, from its extension — null for anything else (documents, project files…). */
@@ -42,8 +54,8 @@ export function kindOf(fileName: string): MediaKind | null {
 }
 
 /** How the sheet shows each kind. */
-export const KIND_LABEL: Record<MediaKind, string> = { image: 'Image', video: 'Video', sound: 'Sound' };
-export const KIND_TAG: Record<MediaKind, string> = { image: 'IMG', video: 'VID', sound: 'SND' };
+export const KIND_LABEL: Record<MediaKind, string> = { image: 'Image', video: 'Video', sound: 'Sound', text: 'Text', color: 'Colour' };
+export const KIND_TAG: Record<MediaKind, string> = { image: 'IMG', video: 'VID', sound: 'SND', text: 'TXT', color: 'CLR' };
 
 const idNumber = (id: string) => Number(/^M-(\d+)$/i.exec(id.trim())?.[1] ?? NaN);
 export const formatId = (n: number) => `M-${String(n).padStart(3, '0')}`;
@@ -61,9 +73,12 @@ export function mergeMedia(
   found: FoundFile[],
   today: string,
 ): { assets: MediaAsset[]; added: number; missing: number; returned: number } {
+  // Text and colour items aren't files: they pass through untouched (and keep their IDs out of reuse).
+  const made = existing.filter((a) => isMade(a.kind));
+  existing = existing.filter((a) => !isMade(a.kind));
   const byPath = new Map(existing.map((a) => [key(a.path), a]));
   const seen = new Set<string>();
-  let next = Math.max(0, ...existing.map((a) => idNumber(a.id)).filter(Number.isFinite)) + 1;
+  let next = Math.max(0, ...[...existing, ...made].map((a) => idNumber(a.id)).filter(Number.isFinite)) + 1;
   let added = 0;
   let returned = 0;
   const assets: MediaAsset[] = [];
@@ -87,6 +102,7 @@ export function mergeMedia(
     if (a.status !== 'missing') missing++;
     assets.push({ ...a, status: 'missing' });
   }
+  assets.push(...made);
   assets.sort((a, b) => idNumber(a.id) - idNumber(b.id) || a.path.localeCompare(b.path));
   return { assets, added, missing, returned };
 }

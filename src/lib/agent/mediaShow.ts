@@ -14,6 +14,8 @@ import {
   areaOfTrack,
   barsOf,
   loopOf,
+  isConnected,
+  isMarker,
   type MediaLink,
 } from './mediaFolder';
 import type { SceneRef } from './mediaPlayback';
@@ -35,9 +37,11 @@ export type Shown = {
   name: string;
   /** Its path inside the media folder (the Media tab's column C) — what TouchDesigner opens. */
   path: string;
-  kind: 'image' | 'video';
-  /** The file itself (an object URL). */
+  kind: 'image' | 'video' | 'text' | 'color';
+  /** The file itself (an object URL); empty for a text or colour, which have no file. */
   url: string;
+  /** A text's words or a colour's hex colour. */
+  value?: string;
   /** For video Chrome can't play (e.g. ProRes with alpha): its first frame, made by ffmpeg, if there is one. */
   still?: string;
   loop: boolean;
@@ -71,6 +75,8 @@ export async function sceneMedia(scene: SceneRef | null, kinds: ActionKind[]): P
   const assets = new Map((library?.assets ?? []).map((a) => [a.id, a]));
   return links.flatMap((link) => {
     if (link.sheetId !== scene.sheetId || link.sceneNumber !== scene.number) return [];
+    // A bar dropped on the timeline without an action, or one that plays on marker arrival (markerPlay.ts).
+    if (!isConnected(link) || isMarker(link)) return [];
     const timing = timingOf(link);
     const asset = assets.get(link.assetId);
     if (!kinds.includes(timing.kind) || !asset || asset.status !== 'present') return [];
@@ -99,11 +105,19 @@ export const useShowing = () =>
     () => NONE,
   );
 
+/** The areas a file is showing in now (sorted), e.g. "1,5". */
+export const areasShowing = (assetId: string) =>
+  showing
+    .filter((s) => s.assetId === assetId)
+    .map((s) => s.area)
+    .sort((a, b) => a - b)
+    .join(',');
+
 /** Whether a file is showing in the room now. */
 export const isShowing = (assetId: string) => showing.some((s) => s.assetId === assetId);
 
 const release = (s: Shown) => {
-  URL.revokeObjectURL(s.url);
+  if (s.url) URL.revokeObjectURL(s.url);
   if (s.still) URL.revokeObjectURL(s.still);
 };
 
@@ -116,6 +130,24 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
   const { asset, link, areas } = media;
   const kind = asset.kind;
   if (kind === 'sound') return;
+  if (kind === 'text' || kind === 'color') {
+    // Made in the app: nothing to open — its words or colour are drawn as they are.
+    put(
+      media,
+      areas.map((area) => ({
+        area,
+        assetId: asset.id,
+        name: asset.name,
+        path: asset.path,
+        kind,
+        url: '',
+        value: asset.value ?? '',
+        loop: false,
+        action: link.action,
+      })),
+    );
+    return;
+  }
   const folder = await savedMediaFolder();
   if (!folder) throw new Error('No media folder has been chosen.');
   if (!(await allowed(folder, ask))) {
@@ -135,7 +167,12 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
     loop: loopOf(link),
     action: link.action,
   }));
-  const replaced = (s: Shown) => areas.includes(s.area) || s.assetId === asset.id;
+  put(media, next);
+}
+
+/** Puts these up in their areas, replacing whatever was there (and this item anywhere else). */
+function put(media: PlannedMedia, next: Shown[]) {
+  const replaced = (s: Shown) => media.areas.includes(s.area) || s.assetId === media.asset.id;
   showing.filter(replaced).forEach(release);
   showing = [...showing.filter((s) => !replaced(s)), ...next];
   changed();
