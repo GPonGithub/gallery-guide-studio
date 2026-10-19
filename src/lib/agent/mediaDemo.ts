@@ -31,8 +31,6 @@ export const DEMO_ACTIONS = [
   'Play the landscape video when the caller asks for it',
   'Play the ding every time before you speak',
 ];
-/** The line "added to the sheet" in the tour's Refresh This Scene step. */
-export const DEMO_NEW_ACTION = 'Play the landscape video at the end of the call';
 
 const FOLDER_NAME = 'Onboarding demo media';
 const FILES: Pick<MediaAsset, 'id' | 'name' | 'kind'>[] = [
@@ -114,13 +112,6 @@ async function setUp() {
   });
   demo = { actions: [...DEMO_ACTIONS] };
   revision++;
-  changed();
-}
-
-/** The tour's Refresh This Scene step: the demo sheet gains a line, as if a student had typed it in row 8. */
-export function addDemoAction() {
-  if (!demo || demo.actions.includes(DEMO_NEW_ACTION)) return;
-  demo = { actions: [...demo.actions, DEMO_NEW_ACTION] };
   changed();
 }
 

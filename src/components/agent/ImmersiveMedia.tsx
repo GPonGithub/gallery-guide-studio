@@ -508,9 +508,10 @@ function ThumbnailTools() {
     }
   };
   return (
-    <div className="flex flex-col gap-1" data-tour="media-npm">
+    <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-2">
         <button
+          data-tour="media-npm"
           onClick={() => void install()}
           disabled={installing}
           className={stepButton(installing)}

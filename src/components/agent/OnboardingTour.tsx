@@ -134,8 +134,11 @@ type Layout = {
   connector?: boolean;
 };
 
-/** How far a card staying put within a step may be from what it points at (an arrow line bridges the gap). */
-const MAX_REACH = 900;
+/**
+ * How far a card staying put within a step may be from what it points at (a short arrow line bridges the
+ * gap). Anything farther and the card moves alongside it instead — no long arrows across the screen.
+ */
+const MAX_REACH = 220;
 
 type Box = { left: number; top: number; right: number; bottom: number };
 const cardBox = (at: { left: number; top: number }, width: number, height: number): Box => ({
@@ -600,7 +603,8 @@ export function OnboardingTour({
       const at = pinned.current;
       const sameStep = placedFor.current === step;
       const near = visible && at && sameStep ? nudge(at, height, rect, second) : null;
-      const waiting = !visible && (steps[step].target || shown.current || runningRef.current);
+      // A step with a demonstration counts as waiting from its first frame (the demo may not have started yet).
+      const waiting = !visible && (steps[step].target || steps[step].run || shown.current || runningRef.current);
       let next: Layout;
       if (near) {
         pinned.current = near;

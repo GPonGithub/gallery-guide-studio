@@ -538,9 +538,12 @@ both ways tested in the pane (AE empty, ED's scene intact).
   `useMediaFolderRevision()` (bumped on begin / end / recovery), not on demo on/off. `beginMediaDemo`
   shares one set-up promise (concurrent steps), never overwrites an existing `demo-backup`, never
   backs up the demo's own folder, and `endMediaDemo` waits for a set-up still running.
-- Order (user's): 1 Media Library (folder, path, npm, list, arrange) → 2 Actions (connect, settings,
-  Try it, sound, Refresh This Scene / new action) → 3 Timeline (stages, sections, tracks, blue bar,
-  ◀ ▶) → 4 Editing (length, move, duplicate, sound track, deletions). No TouchDesigner in this tour.
+- **Now 10 steps + finish** (user asked for fewer, following a student's own order, no low-level
+  dropdown detail): Welcome · Choose your media folder (Option⌘C + npm notes) · The Media Library ·
+  Connect a file to an action · When it plays, and Try it · Sounds work the same way · The timeline ·
+  Arrange a bar · Delete a bar · Refresh This Scene · That's it. The card visits three areas in turn
+  (library column → timeline → chat toolbar). No TouchDesigner in this tour. Advanced detail (every-time
+  options, five sound tracks, per-section tracks) could become a separate tour later.
 - Card behaviour (OnboardingTour, both tours): placed once per step near its subject, then stays put
   (`pinned`, `placedFor`); the notch slides round the edge to each highlight, or an arrow line when no
   edge faces it (`connector`); `showBoth` outlines two things; smallest nudge if it would cover one.
