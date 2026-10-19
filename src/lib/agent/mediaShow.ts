@@ -17,6 +17,7 @@ import {
   type MediaLink,
 } from './mediaFolder';
 import type { SceneRef } from './mediaPlayback';
+import { syncVisuals } from './touchDesigner';
 
 /**
  * Images and video shown in the room diagram's projection areas — a preview
@@ -32,6 +33,8 @@ export type Shown = {
   area: number;
   assetId: string;
   name: string;
+  /** Its path inside the media folder (the Media tab's column C) — what TouchDesigner opens. */
+  path: string;
   kind: 'image' | 'video';
   /** The file itself (an object URL). */
   url: string;
@@ -77,7 +80,10 @@ export async function sceneMedia(scene: SceneRef | null, kinds: ActionKind[]): P
 
 let showing: Shown[] = [];
 const listeners = new Set<() => void>();
-const changed = () => listeners.forEach((listener) => listener());
+const changed = () => {
+  syncVisuals(showing); // TouchDesigner shows the same (see touchDesigner.ts)
+  listeners.forEach((listener) => listener());
+};
 const NONE: Shown[] = [];
 
 /** What each area shows now, kept up to date. */
@@ -122,6 +128,7 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
     area,
     assetId: asset.id,
     name: asset.name,
+    path: asset.path,
     kind,
     url: URL.createObjectURL(file),
     ...(thumb && { still: URL.createObjectURL(thumb) }),

@@ -2,6 +2,7 @@
 
 import { dipToShare, levelToGain } from '@/components/agent/backgroundMusic';
 import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
+import { soundsHere, tdLevels, tdSound } from './touchDesigner';
 import {
   allowed,
   loadLibrary,
@@ -60,6 +61,7 @@ const soundVolume = () => levelToGain(levels.volume) * (ducked ? dipToShare(leve
 /** Eases every playing sound to where it should be now (half a cosine, as the music does). */
 function rampAll(ms: number) {
   const to = soundVolume();
+  tdLevels(to, ms);
   for (const [audio, running] of sounding) {
     if (running) clearInterval(running);
     const from = audio.volume;
@@ -79,6 +81,8 @@ function rampAll(ms: number) {
 /** A sound starting: at the level it should be now, and following every change from here on. */
 function follow(audio: HTMLAudioElement) {
   audio.volume = soundVolume();
+  // Silent here (still timing the sound) when TouchDesigner plays the sounds.
+  audio.muted = !soundsHere();
   sounding.set(audio, null);
 }
 
@@ -125,6 +129,7 @@ export async function startLoop(asset: MediaAsset): Promise<void> {
     audio,
     stop: () => {
       audio.pause();
+      tdSound('stop', asset);
       unfollow(audio);
       URL.revokeObjectURL(url);
       loops.delete(loop);
@@ -136,6 +141,7 @@ export async function startLoop(asset: MediaAsset): Promise<void> {
   loops.add(loop);
   playing.add(entry);
   changed();
+  tdSound('play', asset, true);
   try {
     await audio.play();
   } catch (err) {
@@ -211,6 +217,7 @@ export async function playSound(asset: MediaAsset, ask = false): Promise<'ended'
       assetId: asset.id,
       stop: () => {
         audio.pause();
+        tdSound('stop', asset);
         finish(undefined, 'stopped');
       },
     };
@@ -218,6 +225,7 @@ export async function playSound(asset: MediaAsset, ask = false): Promise<'ended'
     audio.onerror = () => finish(new Error(`“${asset.name}” couldn’t be played.`));
     playing.add(entry);
     changed();
+    tdSound('play', asset);
     audio.play().catch((err: unknown) => finish(err ?? new Error('couldn’t start')));
   });
 }

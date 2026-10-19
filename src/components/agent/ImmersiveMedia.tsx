@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CollapsiblePanel } from './CollapsiblePanel';
+import { TouchDesignerPanel } from './TouchDesignerPanel';
 import { buttonGhost, buttonOutline } from '@/lib/styles';
 import { parseSheetUrl } from '@/lib/agent/sheetScenes';
 import { isScriptUrl } from '@/lib/agent/sheetScript';
@@ -426,6 +427,10 @@ export function ImmersiveMedia({
             />
           </>
         )}
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="3 · TouchDesigner" tourId="media-3">
+        <TouchDesignerPanel assets={assets} />
       </CollapsiblePanel>
     </>
   );

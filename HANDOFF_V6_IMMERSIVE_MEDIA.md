@@ -467,7 +467,7 @@ the one stage it starts at. Links from before `barsKind` just adopt their curren
 kind (no move). Bars show ↻ (every time) or ∞ (loop, when user instructs).
 Tested in the pane incl. undo.
 
-## 7p. Team ED / Team AE (2026-10-18, not committed yet)
+## 7p. Team ED / Team AE (2026-10-18)
 
 A **Team ED | Team AE** toggle (`TeamToggle.tsx`) sits left of Keys in the header;
 the open team is filled black. Each team has its own copy of the whole app in
@@ -486,6 +486,37 @@ as a backup if the layout's copy didn't run — a long-running dev server didn't
 pick up the layout change. Toggle centred in the header; both buttons white,
 black on hover, the open team with Complete restart's 4px border. Switching
 both ways tested in the pane (AE empty, ED's scene intact).
+
+## 7q. TouchDesigner media link (2026-10-18)
+
+- **TouchDesigner side:** `public/touchdesigner/build_immersive_lab.py` (also
+  downloadable from the app). Run in TD's Textport:
+  `exec(open('<path>').read())`. Builds `/project1/immersive_lab`: Web Server DAT
+  `receiver` (port 9980, WebSocket + HTTP POST), callbacks in `receiver_callbacks`,
+  11 chains movie→fit→switch(black)→`area1…area11`→`out1…out11`, `preview` layout,
+  8 Audio File In slots → `mix` (gain from `level`→`level_lag`) → `audio_out`, and
+  tables `message_guide`, `message_log`, `now_playing`, `media_list`. Custom pars:
+  Media Folder, Port, Output Width/Height. Unknown parameter names are reported,
+  not fatal. Script is pure ASCII (TD reads files as ASCII). TD 2025.33230:
+  Movie File In loop = `textendright` cycle/hold; Audio File In `repeat` off/on.
+  Built and tested in the user's `11 Video Channels_01.toe` (not saved by me):
+  curl POSTs and the app's test panel over WebSocket showed media in areas 1, 2,
+  3, 5, played a sound, filled all tables; missing file reported. Non-Commercial
+  licence caps resolution at 1280x1280 (warnings only).
+- **App side:** `lib/agent/touchDesigner.ts` — browser WebSocket to the receiver
+  (works hosted too when TD is on the same computer; Chrome may ask to allow local
+  network access). On connect: hello → ready (status light + media folder),
+  medialist, clear, current room, levels. `mediaShow.changed` → `syncVisuals`
+  (diff per area: show/play/hide). `mediaPlayback`: `tdSound` play/stop, `tdLevels`
+  in `rampAll`, local audio muted when sounds play on TouchDesigner (still times
+  the sound; plays locally while not connected). Settings in localStorage
+  `touchdesigner-media` (per team).
+- **UI:** Adding Immersive Media → **3 · TouchDesigner** (`TouchDesignerPanel.tsx`):
+  steps, address + Connect, status, Sounds play on (This computer / TouchDesigner /
+  Both), Test TouchDesigner (show/hide area, loop, play/stop sound, dip, full,
+  clear, last reply).
+- Tested against a stand-in WebSocket receiver: hello/ready, medialist, show,
+  sound play/stop, levels, clear, auto-reconnect after reload.
 
 ## 8. Other open items
 
