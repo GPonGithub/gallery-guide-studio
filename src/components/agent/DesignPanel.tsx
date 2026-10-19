@@ -256,6 +256,7 @@ export function DesignPanel({
   onMediaOpenChange,
   onTryVoice,
   onOnboard,
+  onMediaOnboard,
   onboardPulse = false,
   updateRequest = 0,
   onUpdateProgress,
@@ -311,6 +312,8 @@ export function DesignPanel({
   onTryVoice?: (text: string, signal?: AbortSignal) => Promise<void>;
   /** Starts the Chatbot Generation Process tour (Onboard Me, beside that section's heading). */
   onOnboard?: () => void;
+  /** Starts the Adding Immersive Media tour. */
+  onMediaOnboard?: () => void;
   /** Onboard Me pulses until it's first clicked. */
   onboardPulse?: boolean;
   /** Goes up by one each time "Refresh this scene" (in the chat) asks for an Update This Scene. */
@@ -978,8 +981,11 @@ export function DesignPanel({
         defaultOpen={false}
         onOpenChange={onMediaOpenChange}
         action={
-          // Its own tour is still to come.
-          <button disabled className={onboardButton} title="The tour of the immersive media process is coming soon">
+          <button
+            onClick={onMediaOnboard}
+            className={onboardButton}
+            title="A guided tour of adding pictures, video and sound"
+          >
             Onboard Me
           </button>
         }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CollapsiblePanel } from './CollapsiblePanel';
+import { DEMO_SCENE, DEMO_SHEET_ID, useMediaDemo } from '@/lib/agent/mediaDemo';
 import { TouchDesignerPanel } from './TouchDesignerPanel';
 import { buttonGhost, buttonOutline } from '@/lib/styles';
 import { parseSheetUrl } from '@/lib/agent/sheetScenes';
@@ -109,11 +110,21 @@ async function readSceneActions(scene: SheetSource): Promise<{ list: string[] } 
   }
 }
 
+/** The tour's demo scene, as if it came from a sheet. */
+const DEMO_SOURCE = {
+  sheetId: DEMO_SHEET_ID,
+  gid: '',
+  column: '',
+  number: DEMO_SCENE.number,
+  importedName: DEMO_SCENE.name,
+  importedBrief: '',
+} as SheetSource;
+
 export function ImmersiveMedia({
   sheetUrl,
   sheetScriptUrl,
-  sceneSheet,
-  sceneName,
+  sceneSheet: openSceneSheet,
+  sceneName: openSceneName,
   onTryVoice,
   anthropicApiKey,
 }: {
@@ -127,6 +138,11 @@ export function ImmersiveMedia({
   /** For Claude to read what each action means (any wording or language). */
   anthropicApiKey: string;
 }) {
+  // The onboarding tour's demo (see mediaDemo.ts): its own scene, actions and media folder meanwhile.
+  const demo = useMediaDemo();
+  const demoOn = demo !== null;
+  const sceneSheet = demo ? DEMO_SOURCE : openSceneSheet;
+  const sceneName = demo ? DEMO_SCENE.name : openSceneName;
   const [folder, setFolder] = useState<MediaFolder | null>(null);
   const [library, setLibrary] = useState<StoredLibrary | null>(null);
   const [busy, setBusy] = useState(false);
@@ -147,21 +163,23 @@ export function ImmersiveMedia({
   useEffect(() => {
     keyRef.current = anthropicApiKey;
   });
-  const [actions, setActions] = useState<SceneActions | null>(null);
+  const [sheetActions, setActions] = useState<SceneActions | null>(null);
   const sceneKey = sceneSheet ? `${sceneSheet.sheetId}:${sceneSheet.number}` : null;
+  const actions: SceneActions | null = demo && sceneKey ? { key: sceneKey, list: demo.actions } : sheetActions;
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: the browser's folder support isn't known during SSR
     setPickable(canPickFolder());
     void savedMediaFolder().then(setFolder);
     void loadLibrary().then(setLibrary);
-  }, []);
+    // The demo's folder and library while the tour runs; the student's own again after.
+  }, [demoOn]);
 
   // The open scene's media actions, read from row 8 of the sheet each time the Media Library
   // opens, the scene changes, or Connect with Action is clicked — students change them often, so
   // the list is always the sheet's latest.
   useEffect(() => {
-    if (!libraryOpen || !sceneSheet || !sceneKey) return;
+    if (!libraryOpen || !sceneSheet || !sceneKey || demo) return;
     let gone = false;
     void readSceneActions(sceneSheet).then((read) => {
       if (gone) return;
@@ -174,13 +192,13 @@ export function ImmersiveMedia({
     return () => {
       gone = true;
     };
-  }, [libraryOpen, sceneKey, sceneSheet]);
+  }, [libraryOpen, sceneKey, sceneSheet, demo]);
 
   // Coming back to the app (from editing the sheet, say): row 8 is read again, so a reworded action's
   // bars and connections follow it straight away (see followRewording).
   const lastFocusRead = useRef(0);
   useEffect(() => {
-    if (!sceneSheet || !sceneKey) return;
+    if (!sceneSheet || !sceneKey || demo) return;
     const back = () => {
       if (document.visibilityState !== 'visible' || Date.now() - lastFocusRead.current < 2000) return;
       lastFocusRead.current = Date.now();
@@ -197,12 +215,12 @@ export function ImmersiveMedia({
       window.removeEventListener('focus', back);
       document.removeEventListener('visibilitychange', back);
     };
-  }, [sceneKey, sceneSheet]);
+  }, [sceneKey, sceneSheet, demo]);
 
   /** Reading row 8 again (Connect with Action was clicked) — the list shown meanwhile is the last one read. */
   const [rereading, setRereading] = useState(false);
   const rereadActions = async () => {
-    if (!sceneSheet || !sceneKey) return;
+    if (!sceneSheet || !sceneKey || demo) return;
     setRereading(true);
     const read = await readSceneActions(sceneSheet);
     setActions({ key: sceneKey, ...read });
@@ -359,7 +377,12 @@ export function ImmersiveMedia({
           </p>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
-            <button onClick={() => void refresh(false)} disabled={busy} className={stepButton(busy)}>
+            <button
+              onClick={() => void refresh(false)}
+              disabled={busy}
+              className={stepButton(busy)}
+              data-tour="media-folder-button"
+            >
               {busy ? 'Reading the folder…' : folder ? 'Refresh Media' : 'Choose Media Folder'}
             </button>
             {folder && (
@@ -485,7 +508,7 @@ function ThumbnailTools() {
     }
   };
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1" data-tour="media-npm">
       <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={() => void install()}
@@ -668,7 +691,7 @@ function MediaList({
   const shown = bySearch(arrange(assets, order, connected), search);
   return (
     <div>
-      <div className="mb-1 flex flex-wrap gap-0.5" role="group" aria-label="Arrange the Media Library">
+      <div className="mb-1 flex flex-wrap gap-0.5" role="group" aria-label="Arrange the Media Library" data-tour="media-arrange">
         {ORDERS.map((o) => (
           <button
             key={o.value}
@@ -695,13 +718,21 @@ function MediaList({
           }}
           placeholder="Search…"
           aria-label="Search the Media Library"
+          data-tour="media-search"
           className="min-w-[60px] flex-1 border border-ink bg-paper px-2 py-0.5 font-body text-xs text-ink placeholder:text-muted-ink focus:outline focus:outline-2 focus:outline-ink"
         />
       </div>
-      <ul ref={list} className="overflow-y-auto border border-hair" style={{ height }} aria-label="Media Library">
+      <ul
+        ref={list}
+        className="overflow-y-auto border border-hair"
+        style={{ height }}
+        aria-label="Media Library"
+        data-tour="media-list"
+      >
         {shown.map((a) => (
           <li
             key={a.id}
+            data-asset={a.id}
             className={`border-b border-hair p-1.5 last:border-b-0 ${a.status === 'missing' ? 'opacity-50' : ''}`}
           >
             {/* The details sit level with the thumbnail's top edge, Connect with Action with its bottom edge. */}
@@ -831,6 +862,7 @@ function Connections({ asset, connect }: { asset: MediaAsset; connect: Connect }
         return (
           <li
             key={i}
+            data-connection={l.action}
             className="flex items-start gap-1.5 border-l-4 border-[#3c5eac] bg-[#3c5eac]/10 py-0.5 pl-1.5 font-body text-[11px] text-ink"
           >
             {isOpen ? (
@@ -986,6 +1018,7 @@ function ActionTimingControls({ link, asset, connect }: { link: MediaLink; asset
           className={`${selectClass} font-label uppercase`}
           title={`Plays ${loopsWhen ? LOOP_WHEN_HELP : KIND_HELP[timing.kind]}`}
           aria-label="When it plays"
+          data-when-plays
         >
           {ACTION_KINDS.flatMap((k) => [
             <option key={k} value={k}>
@@ -1154,6 +1187,7 @@ function ActionPicker({ asset, connect, onDone }: { asset: MediaAsset; connect: 
           <li key={action}>
             <button
               role="option"
+              data-action-option={action}
               aria-selected={linked(action)}
               onClick={() => {
                 connect.onToggle(asset.id, action);

@@ -420,7 +420,7 @@ export function MediaTimeline({
   }, [historyNote]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col" data-tour="timeline">
       {/* One line: the scene on the left; on the right the stage the playhead is on, then ◀ ▶ —
           kept low, so the tracks get the room. */}
       <div className="mb-1 flex items-center justify-between gap-3">
@@ -446,6 +446,7 @@ export function MediaTimeline({
               <span className="text-muted-ink"> · {current.name}</span>
             </p>
             <button
+              data-tour="timeline-prev"
               onClick={() => moveTo((i) => i - 1)}
               disabled={index === 0}
               aria-label="Previous stage"
@@ -454,6 +455,7 @@ export function MediaTimeline({
               ◀
             </button>
             <button
+              data-tour="timeline-next"
               onClick={() => moveTo((i) => i + 1)}
               disabled={index === count - 1}
               aria-label="Next stage"
@@ -477,6 +479,7 @@ export function MediaTimeline({
           {/* The ruler: each stage's code, with alternative branches bracketed, and the playhead's handle. */}
           <div
             ref={ruler}
+            data-tour="timeline-ruler"
             role="slider"
             aria-label="Playhead"
             aria-valuemin={1}
@@ -558,6 +561,7 @@ export function MediaTimeline({
               t === 'sound' ? (
                 <button
                   key={t}
+                  data-tour="timeline-sound"
                   onClick={toggleSounds}
                   aria-expanded={soundsOpen}
                   title={
@@ -571,6 +575,7 @@ export function MediaTimeline({
                 // A projection area: its number, and an arrow that opens it into MAX_AREA_TRACKS tracks.
                 <button
                   key={t}
+                  data-tour={`timeline-area-${t}`}
                   onClick={() => toggleArea(t)}
                   aria-expanded={areasOpen.includes(t)}
                   title={
@@ -600,7 +605,7 @@ export function MediaTimeline({
           </div>
 
           {/* The tracks, and the playhead through them. */}
-          <div ref={tracksBox} className="relative grid" style={rows}>
+          <div ref={tracksBox} className="relative grid" style={rows} data-tour="timeline-tracks">
             <div
               className="pointer-events-none absolute inset-y-0 bg-ink/10"
               style={{ left: at(index), width }}
@@ -656,6 +661,7 @@ export function MediaTimeline({
                 );
                 const handle = (end: 'from' | 'to') => (
                   <span
+                    data-bar-end={end}
                     onPointerDown={(e) => grab(e, l, i, end)}
                     onPointerMove={(e) => {
                       e.stopPropagation();
@@ -672,6 +678,9 @@ export function MediaTimeline({
                 return [
                   <div
                     key={key}
+                    data-bar={l.action}
+                    data-bar-index={i}
+                    data-bar-track={bar.track}
                     onPointerDown={(e) => grab(e, l, i, 'move')}
                     onPointerMove={(e) => follow(e, l, i)}
                     onPointerUp={() => letGo(l, i)}
@@ -687,6 +696,7 @@ export function MediaTimeline({
                     <button
                       // Not a drag: pressing it mustn't pick the bar up.
                       onPointerDown={(e) => e.stopPropagation()}
+                      data-bar-delete
                       onClick={(e) => {
                         e.stopPropagation();
                         remove(l, i);

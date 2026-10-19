@@ -313,6 +313,7 @@ function ProjectionDiagram() {
   return (
     <svg
       ref={svg}
+      data-tour="room-diagram"
       viewBox={`0 0 ${LAYOUT_SIZE.width} ${LAYOUT_SIZE.height}`}
       preserveAspectRatio="xMidYMid meet"
       className="h-full w-full"

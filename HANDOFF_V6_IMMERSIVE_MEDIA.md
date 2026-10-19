@@ -518,6 +518,32 @@ both ways tested in the pane (AE empty, ED's scene intact).
 - Tested against a stand-in WebSocket receiver: hello/ready, medialist, show,
   sound play/stop, levels, clear, auto-reconnect after reload.
 
+## 7r. Adding Immersive Media tour (2026-10-18)
+
+- Section's **Onboard Me** now starts a 30-step tour (`components/agent/mediaTour.tsx`,
+  9 parts: timeline, media folder + Option⌘C path + npm install/ffmpeg types,
+  Media Library, Connect with Action + settings + Try it, bars (stretch / move /
+  Option-duplicate), sound + 5 sound tracks, linked deletion, ◀ ▶, Refresh This
+  Scene with a simulated new row-8 action). Own progress key
+  `immersive-media-onboarding`.
+- **Sandbox** `lib/agent/mediaDemo.ts`: demo scene "Demo · Nurse Visit" (stages 1,
+  2A, 2B, 3, 4; three row-8 actions), demo files `public/onboarding-media/`
+  (video, picture, ding — made with ffmpeg-static) copied into OPFS and set as
+  the media folder; student's `folder`/`library` saved in IDB `demo-backup` and
+  restored on finish, Close, or next page load. Demo links (`sheetId
+  onboarding-demo`) removed and undo history cleared at the end. ImmersiveMedia
+  and the page's MediaWorkspace use the demo scene while `useMediaDemo()` is on.
+- Tour helpers gained `move(handle, dx, dy, alt)` and `choose(select, value)`;
+  `OnboardingTour` takes `progressKey`; the pointer clears on every step.
+- Markers added: room-diagram, timeline, timeline-ruler/tracks/prev/next,
+  timeline-area-N, timeline-sound, media-folder-button, media-npm, media-arrange,
+  media-search, media-list, refresh-scene; `data-asset`, `data-connection`,
+  `data-action-option`, `data-when-plays`, `data-bar`/`-index`/`-track`/`-end`/
+  `-delete`.
+- Tested in the pane step by step (connect, settings change, Try it, stretch,
+  move to 3, duplicate to 6, sound to sound-2, deletes, nav, new action), plus
+  cleanup on finish, Close and reload. Not watched visually at full size.
+
 ## 8. Other open items
 
 - The user hasn't yet re-deployed the Apps Script (§4).

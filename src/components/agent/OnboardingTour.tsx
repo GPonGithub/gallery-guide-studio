@@ -56,6 +56,10 @@ export type TourHelpers = {
   drag: (handle: HTMLElement, target: HTMLElement, place?: 'above' | 'below') => Promise<void>;
   /** Drags `handle` sideways by `dx` pixels (e.g. a column's resize border). */
   slide: (handle: HTMLElement, dx: number) => Promise<void>;
+  /** Drags `handle` by `dx`, `dy` pixels — with Option (Alt) held if `alt` (e.g. to duplicate a timeline bar). */
+  move: (handle: HTMLElement, dx: number, dy: number, alt?: boolean) => Promise<void>;
+  /** Picks an option of a dropdown (<select>) by its value. */
+  choose: (select: HTMLSelectElement, value: string) => Promise<void>;
   /** Plays what follows this many times slower again (e.g. 2 = half the usual demo speed). */
   setPace: (times: number) => void;
   /** Outlines this element (instead of the step's target) and puts the card beside it. */
@@ -74,17 +78,17 @@ const EDGE = 12; // nearest the card goes to the window's edge
 
 type Progress = { step: number; finished: boolean };
 
-function readProgress(): Progress | null {
+function readProgress(key: string): Progress | null {
   try {
-    const raw = window.localStorage.getItem(PROGRESS_KEY);
+    const raw = window.localStorage.getItem(key);
     return raw ? (JSON.parse(raw) as Progress) : null;
   } catch {
     return null;
   }
 }
-function writeProgress(progress: Progress) {
+function writeProgress(key: string, progress: Progress) {
   try {
-    window.localStorage.setItem(PROGRESS_KEY, JSON.stringify(progress));
+    window.localStorage.setItem(key, JSON.stringify(progress));
   } catch {
     // Storage blocked — the tour just won't remember where it was.
   }
@@ -152,9 +156,12 @@ export function OnboardingTour({
   actions,
   onLeaveGroup,
   startRef,
+  progressKey = PROGRESS_KEY,
   children,
 }: {
   steps: TourStep[];
+  /** Where this tour remembers how far it got (each tour its own). */
+  progressKey?: string;
   /** Demonstrations steps can play (see TourStep.run). */
   actions?: Record<string, (h: TourHelpers) => Promise<void>>;
   /** Called when the tour leaves a group of steps (by Next, Go back, closing or finishing) — to tidy up after a demo. */
@@ -190,7 +197,7 @@ export function OnboardingTour({
   const total = steps.length;
 
   const start = () => {
-    const saved = readProgress();
+    const saved = readProgress(progressKey);
     if (saved && !saved.finished && saved.step > 0 && saved.step < total) setOfferResume(saved.step);
     else setStep(0);
   };
@@ -223,12 +230,12 @@ export function OnboardingTour({
       setRunning(false);
       void closePanels([]);
       setStep((current) => {
-        if (current !== null) writeProgress({ step: finished ? 0 : current, finished });
+        if (current !== null) writeProgress(progressKey, { step: finished ? 0 : current, finished });
         return null;
       });
       setLayout(null);
     },
-    [closePanels, leaveGroup],
+    [closePanels, leaveGroup, progressKey],
   );
 
   // The demonstration's hands. `stopped` says the student has moved on.
@@ -256,11 +263,11 @@ export function OnboardingTour({
     };
     // Press on `handle`, move (eased, so it starts and ends gently) to `to`, let go. It always lets
     // go — even if the student moves on mid-drag — so nothing is left held.
-    const pull = async (handle: HTMLElement, from: { x: number; y: number }, to: { x: number; y: number }) => {
+    const pull = async (handle: HTMLElement, from: { x: number; y: number }, to: { x: number; y: number }, altKey = false) => {
       let at = from;
       const fire = (type: string) =>
         handle.dispatchEvent(
-          new PointerEvent(type, { bubbles: true, clientX: at.x, clientY: at.y, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }),
+          new PointerEvent(type, { bubbles: true, clientX: at.x, clientY: at.y, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true, altKey }),
         );
       setPointer({ ...from, pressed: true, glide: false });
       fire('pointerdown');
@@ -344,13 +351,29 @@ export function OnboardingTour({
         const from = centre(handle);
         await pull(handle, from, { x: from.x + dx, y: from.y });
       },
+      move: async (handle, dx, dy, alt = false) => {
+        await point(handle);
+        const from = centre(handle);
+        if (alt) setPointer((p) => p && { ...p, key: '⌥ Option' });
+        await pull(handle, from, { x: from.x + dx, y: from.y + dy }, alt);
+      },
+      choose: async (select, value) => {
+        await point(select);
+        setPointer((p) => p && { ...p, pressed: true });
+        await slow(200);
+        const setValue = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+        setValue.call(select, value);
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        setPointer((p) => p && { ...p, pressed: false });
+        await slow(600);
+      },
     };
   }, []);
 
   // Entering a step: open its panels (one at a time — an inner one only exists once the outer is open), then bring the control into view.
   useEffect(() => {
     if (step === null) return;
-    writeProgress({ step, finished: false });
+    writeProgress(progressKey, { step, finished: false });
     const current = steps[step];
     let cancelled = false;
     shown.current = null;
@@ -360,7 +383,7 @@ export function OnboardingTour({
         await leaveGroup();
         group.current = current.group ?? null;
       }
-      if (!current.run) setPointer(null);
+      setPointer(null);
       const wanted = current.open ?? [];
       await closePanels(wanted);
       for (const marker of wanted) {
@@ -421,7 +444,7 @@ export function OnboardingTour({
     return () => {
       cancelled = true;
     };
-  }, [step, steps, closePanels, leaveGroup, helpers]);
+  }, [step, steps, closePanels, leaveGroup, helpers, progressKey]);
 
 
   // Follow the control as things move: panels opening, scrolling, the window resizing.

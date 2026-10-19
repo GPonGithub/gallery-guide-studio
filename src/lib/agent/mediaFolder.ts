@@ -243,6 +243,11 @@ function travel(from: Step[], to: Step[], did: HistoryNote['did']): boolean {
 }
 
 /** Undoes the last change to the media connections and bars; false if there's nothing to undo. */
+/** Forgets every undo and redo step (the onboarding demo's, once it's over). */
+export function forgetMediaHistory() {
+  undoSteps.length = 0;
+  redoSteps.length = 0;
+}
 export const undoMediaLinks = () => travel(undoSteps, redoSteps, 'Undo');
 /** Redoes the last change undone; false if there's nothing to redo. */
 export const redoMediaLinks = () => travel(redoSteps, undoSteps, 'Redo');

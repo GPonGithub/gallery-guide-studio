@@ -16,6 +16,8 @@ import { useHosting } from '@/lib/agent/hosting';
 import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
 import { LAYOUT_DEMO_ACTIONS } from '@/components/agent/layoutDemo';
+import { DEMO_SCENE, DEMO_STAGES, endMediaDemo, useMediaDemo } from '@/lib/agent/mediaDemo';
+import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { CueMarker, CueMonitor, type SentCue } from '@/components/agent/CueMonitor';
@@ -365,6 +367,9 @@ export default function AgentStudioPage() {
     }
   }, []);
   const startTour = useRef<(() => void) | null>(null);
+  /** The Adding Immersive Media tour's demo scene, while it runs (see mediaDemo.ts). */
+  const mediaDemo = useMediaDemo();
+  const startMediaTour = useRef<(() => void) | null>(null);
   const stopOnboardPulse = () => {
     setOnboardPulse(false);
     try {
@@ -2087,6 +2092,14 @@ export default function AgentStudioPage() {
             onLeaveGroup={(group) => (group === 'scenes-demo' ? endSceneDemo() : undefined)}
             startRef={startTour}
           />
+          {/* The Adding Immersive Media tour (see mediaTour.tsx), started by its section's Onboard Me. */}
+          <OnboardingTour
+            steps={MEDIA_TOUR_STEPS}
+            actions={mediaTourActions}
+            onLeaveGroup={(group) => (group === 'media-demo' ? endMediaDemo() : undefined)}
+            startRef={startMediaTour}
+            progressKey="immersive-media-onboarding"
+          />
           <div className="min-w-0">
             <h1 className="font-display text-2xl leading-none tracking-tight text-ink">Chatbot Designer</h1>
             <p className="mt-1 truncate font-label text-[10px] uppercase tracking-widest text-muted-ink">
@@ -2231,6 +2244,7 @@ export default function AgentStudioPage() {
                   stopOnboardPulse();
                   startTour.current?.();
                 }}
+                onMediaOnboard={() => startMediaTour.current?.()}
                 onNeedKey={() => {
                   setError('Add your Anthropic API key first (Keys, top right).');
                   setKeysOpen(true);
@@ -2249,13 +2263,24 @@ export default function AgentStudioPage() {
             currentSceneId={saved.projectId}
             onSwitchScene={(id) => void switchScene(id)}
             switching={busy}
-            sceneKey={saved.projectId ?? 'unsaved'}
+            // The Adding Immersive Media tour works on its own demo scene (see mediaDemo.ts).
+            sceneKey={mediaDemo ? 'media-demo' : (saved.projectId ?? 'unsaved')}
             sceneTitle={
-              saved.sceneSheet ? `Scene ${saved.sceneSheet.number} · ${saved.projectName}` : saved.projectName
+              mediaDemo
+                ? DEMO_SCENE.name
+                : saved.sceneSheet
+                  ? `Scene ${saved.sceneSheet.number} · ${saved.projectName}`
+                  : saved.projectName
             }
-            stages={sortStages(flow.stages).map((s) => ({ code: s.code, name: s.name }))}
-            liveStage={session.stageCode}
-            scene={saved.sceneSheet ? { sheetId: saved.sceneSheet.sheetId, number: saved.sceneSheet.number } : null}
+            stages={mediaDemo ? DEMO_STAGES : sortStages(flow.stages).map((s) => ({ code: s.code, name: s.name }))}
+            liveStage={mediaDemo ? undefined : session.stageCode}
+            scene={
+              mediaDemo
+                ? { sheetId: DEMO_SCENE.sheetId, number: DEMO_SCENE.number }
+                : saved.sceneSheet
+                  ? { sheetId: saved.sceneSheet.sheetId, number: saved.sceneSheet.number }
+                  : null
+            }
           />
         )}
 
@@ -2281,6 +2306,7 @@ export default function AgentStudioPage() {
                 Complete restart
               </button>
               <button
+                data-tour="refresh-scene"
                 onClick={refreshScene}
                 disabled={busy || updateProgress !== null}
                 aria-busy={updateProgress !== null}
