@@ -2272,7 +2272,9 @@ export default function AgentStudioPage() {
                   ? `Scene ${saved.sceneSheet.number} · ${saved.projectName}`
                   : saved.projectName
             }
-            stages={mediaDemo ? DEMO_STAGES : sortStages(flow.stages).map((s) => ({ code: s.code, name: s.name }))}
+            stages={
+              mediaDemo ? DEMO_STAGES : sortStages(flow.stages).map((s) => ({ code: s.code, name: s.name, goal: s.goal }))
+            }
             liveStage={mediaDemo ? undefined : session.stageCode}
             scene={
               mediaDemo

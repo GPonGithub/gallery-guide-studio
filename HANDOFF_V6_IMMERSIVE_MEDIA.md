@@ -558,6 +558,12 @@ both ways tested in the pane (AE empty, ED's scene intact).
   move to 3, duplicate to 6, sound to sound-2, deletes, nav, new action), plus
   cleanup on finish, Close and reload. Not watched visually at full size.
 
+## 7s. Stage names on the timeline ruler (2026-10-18)
+
+The ruler (now `h-14`, playhead block 36px) shows each stage's code with its generated **name** beneath
+(9px caps, cut with … when narrow); the tooltip adds the stage's **goal**. `TimelineStage` has an
+optional `goal`, passed from `page.tsx`.
+
 ## 8. Other open items
 
 - The user hasn't yet re-deployed the Apps Script (§4).

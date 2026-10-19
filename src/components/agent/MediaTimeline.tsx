@@ -81,7 +81,8 @@ function withBar(l: MediaLink, i: number, to: Bar | null): MediaLink {
 }
 const isSound = (l: MediaLink) => (l.assetKind ?? kindOf(l.assetName ?? '')) === 'sound';
 
-export type TimelineStage = { code: string; name: string };
+/** A stage of the scene's conversation: its code (1, 2A…), its name, and (for the tooltip) its goal. */
+export type TimelineStage = { code: string; name: string; goal?: string };
 
 type Placed = { track: Track; from: number; to: number };
 
@@ -517,7 +518,7 @@ export function MediaTimeline({
               e.preventDefault();
               moveTo(move);
             }}
-            className="relative h-11 cursor-ew-resize touch-none select-none outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+            className="relative h-14 cursor-ew-resize touch-none select-none outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
           >
             {/* Alternative branches: a bracket over 2A, 2B… — the conversation takes one of them. */}
             {runs.map((r) => (
@@ -536,17 +537,25 @@ export function MediaTimeline({
               </div>
             ))}
             {/* The playhead's handle: a black block over the current stage. */}
-            <div className="absolute bottom-0 h-[24px] bg-ink" style={{ left: at(index), width }} />
+            <div className="absolute bottom-0 h-[36px] bg-ink" style={{ left: at(index), width }} />
+            {/* Each stage: its code, and its name beneath (cut short with … when narrow; the tooltip has it all). */}
             {stages.map((s, i) => (
               <span
                 key={s.code}
-                className={`absolute bottom-[7px] truncate px-0.5 text-center font-label text-[11px] leading-none ${
+                className={`absolute bottom-[5px] flex flex-col items-center gap-[3px] px-1 text-center leading-none ${
                   i === index ? 'text-paper' : 'text-ink'
                 }`}
                 style={{ left: at(i), width }}
-                title={`Stage ${s.code} · ${s.name}`}
+                title={`Stage ${s.code} · ${s.name}${s.goal?.trim() ? `\n${s.goal.trim()}` : ''}`}
               >
-                {s.code}
+                <span className="font-label text-[11px]">{s.code}</span>
+                <span
+                  className={`w-full truncate font-label text-[9px] uppercase tracking-wide ${
+                    i === index ? 'text-paper/80' : 'text-muted-ink'
+                  }`}
+                >
+                  {s.name}
+                </span>
               </span>
             ))}
             <div className="absolute inset-x-0 bottom-0 h-px bg-ink" />
