@@ -486,11 +486,11 @@ const STEPS: TourStep[] = [
     body: (
       <>
         <p>
-          Once a Scene&rsquo;s conversation is generated, click <b>Write to FigJam</b> here (or{' '}
-          <b>Draw it on my FigJam board</b> in step 3) to draw it on the board.
+          Once your Scenes&rsquo; conversations are generated, click <b>Draw All Scenes to FigJam</b> to draw every
+          Scene on the board (or <b>Draw it on my FigJam board</b> in step 3 for just the open one).
         </p>
         <ul>
-          <li>Each Scene gets its own flowchart, placed so they don&rsquo;t overlap.</li>
+          <li>Each Scene gets its own flowchart, placed so they don&rsquo;t overlap; drawing again replaces only it.</li>
           <li>It shows the stages and how they connect.</li>
           <li>View in FigJam opens the board in a new tab.</li>
         </ul>

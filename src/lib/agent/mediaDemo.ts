@@ -44,6 +44,10 @@ const FILES: Pick<MediaAsset, 'id' | 'name' | 'kind'>[] = [
 export type MediaDemo = { actions: string[] };
 
 let demo: MediaDemo | null = null;
+/** Goes up each time the media folder in storage is swapped (demo in, student's back) — panels re-read it then. */
+let revision = 0;
+/** The demo being set up (so a second call waits for the same one instead of starting another). */
+let starting: Promise<void> | null = null;
 type Backup = { folder: unknown; library: unknown };
 // The student's folder and library while the demo runs — also kept in the database (BACKUP_KEY),
 // so a page reloaded mid-tour still gets them back (see recover below).
@@ -65,6 +69,8 @@ export const useMediaDemo = () =>
     () => null,
   );
 export const mediaDemoOn = () => demo !== null;
+/** Changes whenever the stored media folder and library have just been swapped (see `revision`). */
+export const useMediaFolderRevision = () => useSyncExternalStore(subscribe, () => revision, () => 0);
 
 const get = (key: string) => run<unknown>('media', 'readonly', (s) => s.get(key));
 const put = (key: string, value: unknown) =>
@@ -73,11 +79,23 @@ const put = (key: string, value: unknown) =>
     : run('media', 'readwrite', (s) => s.put(value, key));
 
 /** Puts the student's media folder and library aside and opens the demo (once; later calls do nothing). */
-export async function beginMediaDemo(): Promise<void> {
-  if (demo) return;
+export function beginMediaDemo(): Promise<void> {
+  if (demo) return Promise.resolve();
+  starting ??= setUp().finally(() => {
+    starting = null;
+  });
+  return starting;
+}
+
+async function setUp() {
   await recovering;
-  const backup: Backup = { folder: await get('folder'), library: await get('library') };
-  await put(BACKUP_KEY, backup);
+  // The student's own folder and library, kept safe first — never replaced by a later copy (which, if
+  // something went wrong, could already be the demo's).
+  if (!(await get(BACKUP_KEY))) {
+    const folder = (await get('folder')) as { name?: string } | undefined;
+    const backup: Backup = { folder, library: await get('library') };
+    if (folder?.name !== FOLDER_NAME) await put(BACKUP_KEY, backup);
+  }
   // The demo files, copied into this site's private storage (OPFS) — a real folder the app can read.
   const root = await navigator.storage.getDirectory();
   const folder = await root.getDirectoryHandle(FOLDER_NAME, { create: true });
@@ -95,6 +113,7 @@ export async function beginMediaDemo(): Promise<void> {
     assets: FILES.map((f) => ({ ...f, path: f.name, status: 'present', added: today })),
   });
   demo = { actions: [...DEMO_ACTIONS] };
+  revision++;
   changed();
 }
 
@@ -107,11 +126,16 @@ export function addDemoAction() {
 
 /** Ends the demo: its connections, room media and sounds go, and the student's folder and library come back. */
 export async function endMediaDemo(): Promise<void> {
+  // Closed while it was still being set up: let that finish, then undo it.
+  if (starting) await starting.catch(() => undefined);
   if (!demo) return;
-  demo = null;
   clearVisuals();
   stopSounds();
+  // The student's folder and library go back into storage first; only then does the panel hear the demo
+  // is over and read them again (reading earlier would pick up the demo's).
   await putBack();
+  demo = null;
+  revision++;
   changed();
 }
 
@@ -139,6 +163,7 @@ const recovering: Promise<void> =
     : (async () => {
         if (await get(BACKUP_KEY).catch(() => undefined)) {
           await putBack();
+          revision++;
           changed();
         }
       })().catch(() => undefined);

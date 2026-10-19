@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { cleanBoards, FIGJAM_BOARDS, isBoardUrl, nameFromBoardUrl, type FigjamBoard } from '@/lib/figjamBoards';
 import { buttonOutline, buttonSaved, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
 import { DropdownArrow } from './DropdownArrow';
@@ -12,7 +12,19 @@ import { DropdownArrow } from './DropdownArrow';
  * project's own files (src/data/figjamBoards.json), so it goes with every
  * copy of the app.
  */
-export function BoardPicker({ boardUrl, onBoardUrlChange }: { boardUrl: string; onBoardUrlChange: (url: string) => void }) {
+export function BoardPicker({
+  boardUrl,
+  onBoardUrlChange,
+  buttonClass,
+  below,
+}: {
+  boardUrl: string;
+  onBoardUrlChange: (url: string) => void;
+  /** Size of the Select This Board / Board Selected button (to match buttons stacked under it). */
+  buttonClass?: string;
+  /** Shown straight under the Board Selected button (before the board-list editor). */
+  below?: ReactNode;
+}) {
   const [boards, setBoards] = useState<FigjamBoard[]>(FIGJAM_BOARDS);
   const [editable, setEditable] = useState(false);
   const [draft, setDraft] = useState<FigjamBoard[] | null>(null);
@@ -65,7 +77,8 @@ export function BoardPicker({ boardUrl, onBoardUrlChange }: { boardUrl: string; 
   return (
     <div className="flex flex-col gap-2">
       {/* Keyed by the board in use, so it starts from that board whenever it changes. */}
-      <BoardChooser key={boardUrl} boards={boards} boardUrl={boardUrl} onSelect={onBoardUrlChange} />
+      <BoardChooser key={boardUrl} boards={boards} boardUrl={boardUrl} onSelect={onBoardUrlChange} buttonClass={buttonClass} />
+      {below}
 
       {/* Folded away by default; unsaved changes are kept while it's folded. */}
       {editable && (
@@ -159,10 +172,12 @@ function BoardChooser({
   boards,
   boardUrl,
   onSelect,
+  buttonClass,
 }: {
   boards: FigjamBoard[];
   boardUrl: string;
   onSelect: (url: string) => void;
+  buttonClass?: string;
 }) {
   const inUse = boards.find((b) => b.url === boardUrl);
   const [choice, setChoice] = useState(inUse ? inUse.url : boardUrl ? OWN : '');
@@ -199,9 +214,9 @@ function BoardChooser({
       </label>
 
       {choice !== '' && (
-        <div className="flex items-end gap-2">
+        <div className="flex flex-col items-start gap-2">
           {choice === OWN ? (
-            <label className={`flex min-w-0 flex-1 flex-col gap-1 ${fieldLabel}`}>
+            <label className={`flex w-full min-w-0 flex-col gap-1 ${fieldLabel}`}>
               Paste a Board Link
               <input
                 value={pasted}
@@ -214,13 +229,13 @@ function BoardChooser({
               />
             </label>
           ) : (
-            <p className="flex h-10 min-w-0 flex-1 items-center truncate font-body text-sm text-ink">{chosen?.name}</p>
+            <p className="w-full min-w-0 truncate font-body text-sm text-ink">{chosen?.name}</p>
           )}
           {/* Inactive until there's a valid board; green once it's the board in use. */}
           <button
             onClick={() => onSelect(pending)}
             disabled={!valid || selected}
-            className={`h-10 shrink-0 ${selected ? buttonSaved : buttonOutline}`}
+            className={`${buttonClass ?? 'h-10 shrink-0'} ${selected ? buttonSaved : buttonOutline}`}
           >
             {selected ? 'Board Selected' : 'Select This Board'}
           </button>

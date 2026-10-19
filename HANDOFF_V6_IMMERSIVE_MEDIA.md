@@ -533,6 +533,17 @@ both ways tested in the pane (AE empty, ED's scene intact).
   restored on finish, Close, or next page load. Demo links (`sheetId
   onboarding-demo`) removed and undo history cleared at the end. ImmersiveMedia
   and the page's MediaWorkspace use the demo scene while `useMediaDemo()` is on.
+- Restore safety (fixed after the user lost their folder in the panel): `endMediaDemo` puts the
+  folder/library back **before** clearing `demo`, and the panel re-reads them on
+  `useMediaFolderRevision()` (bumped on begin / end / recovery), not on demo on/off. `beginMediaDemo`
+  shares one set-up promise (concurrent steps), never overwrites an existing `demo-backup`, never
+  backs up the demo's own folder, and `endMediaDemo` waits for a set-up still running.
+- Order (user's): 1 Media Library (folder, path, npm, list, arrange) → 2 Actions (connect, settings,
+  Try it, sound, Refresh This Scene / new action) → 3 Timeline (stages, sections, tracks, blue bar,
+  ◀ ▶) → 4 Editing (length, move, duplicate, sound track, deletions). No TouchDesigner in this tour.
+- Card behaviour (OnboardingTour, both tours): placed once per step near its subject, then stays put
+  (`pinned`, `placedFor`); the notch slides round the edge to each highlight, or an arrow line when no
+  edge faces it (`connector`); `showBoth` outlines two things; smallest nudge if it would cover one.
 - Tour helpers gained `move(handle, dx, dy, alt)` and `choose(select, value)`;
   `OnboardingTour` takes `progressKey`; the pointer clears on every step.
 - Markers added: room-diagram, timeline, timeline-ruler/tracks/prev/next,

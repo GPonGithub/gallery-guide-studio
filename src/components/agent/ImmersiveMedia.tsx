@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CollapsiblePanel } from './CollapsiblePanel';
-import { DEMO_SCENE, DEMO_SHEET_ID, useMediaDemo } from '@/lib/agent/mediaDemo';
+import { DEMO_SCENE, DEMO_SHEET_ID, useMediaDemo, useMediaFolderRevision } from '@/lib/agent/mediaDemo';
 import { TouchDesignerPanel } from './TouchDesignerPanel';
 import { buttonGhost, buttonOutline } from '@/lib/styles';
 import { parseSheetUrl } from '@/lib/agent/sheetScenes';
@@ -140,7 +140,7 @@ export function ImmersiveMedia({
 }) {
   // The onboarding tour's demo (see mediaDemo.ts): its own scene, actions and media folder meanwhile.
   const demo = useMediaDemo();
-  const demoOn = demo !== null;
+  const folderRevision = useMediaFolderRevision();
   const sceneSheet = demo ? DEMO_SOURCE : openSceneSheet;
   const sceneName = demo ? DEMO_SCENE.name : openSceneName;
   const [folder, setFolder] = useState<MediaFolder | null>(null);
@@ -172,8 +172,8 @@ export function ImmersiveMedia({
     setPickable(canPickFolder());
     void savedMediaFolder().then(setFolder);
     void loadLibrary().then(setLibrary);
-    // The demo's folder and library while the tour runs; the student's own again after.
-  }, [demoOn]);
+    // Read again whenever the tour swaps them: the demo's while it runs, the student's own after.
+  }, [folderRevision]);
 
   // The open scene's media actions, read from row 8 of the sheet each time the Media Library
   // opens, the scene changes, or Connect with Action is clicked — students change them often, so

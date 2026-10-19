@@ -64,6 +64,11 @@ export type TourHelpers = {
   setPace: (times: number) => void;
   /** Outlines this element (instead of the step's target) and puts the card beside it. */
   show: (el: HTMLElement | null) => void;
+  /**
+   * Outlines two elements at once: the card sits beside the first (its arrow on it) and keeps clear of the
+   * second, which gets an arrow of its own — so the card stays put while both are pointed at.
+   */
+  showBoth: (first: HTMLElement | null, second: HTMLElement | null) => void;
   wait: (ms: number) => Promise<void>;
 };
 
@@ -121,13 +126,120 @@ type Layout = {
   top: number;
   /** Where the arrow sits along the card's edge (px from its top or left). */
   arrowAt: number;
+  /** A second element pointed at (see TourHelpers.showBoth). */
+  also: DOMRect | null;
+  /** The card's height as measured (for the second arrow). */
+  cardHeight?: number;
+  /** The notch can't face the control squarely from where the card is: an arrow line points at it instead. */
+  connector?: boolean;
 };
+
+/** How far a card staying put within a step may be from what it points at (an arrow line bridges the gap). */
+const MAX_REACH = 900;
+
+type Box = { left: number; top: number; right: number; bottom: number };
+const cardBox = (at: { left: number; top: number }, width: number, height: number): Box => ({
+  left: at.left,
+  top: at.top,
+  right: at.left + width,
+  bottom: at.top + height,
+});
+const overlap = (a: Box, b: Box, margin: number) =>
+  a.left < b.right + margin && a.right > b.left - margin && a.top < b.bottom + margin && a.bottom > b.top - margin;
+const gapBetween = (a: Box, b: Box) =>
+  Math.hypot(Math.max(0, b.left - a.right, a.left - b.right), Math.max(0, b.top - a.bottom, a.top - b.bottom));
+
+/**
+ * Whether the card can stay where it is while pointing at `rect` (and `also`): it still fits on screen,
+ * covers neither, and isn't too far away.
+ */
+function canStay(at: { left: number; top: number }, height: number, rect: DOMRect, also: DOMRect | null) {
+  const width = Math.min(CARD_WIDTH, window.innerWidth - EDGE * 2);
+  const card = cardBox(at, width, height);
+  if (card.top < 0 || card.bottom > window.innerHeight || card.left < 0 || card.right > window.innerWidth) return false;
+  if (overlap(card, rect, GAP / 2) || (also && overlap(card, also, GAP / 2))) return false;
+  return gapBetween(card, rect) <= MAX_REACH && (!also || gapBetween(card, also) <= MAX_REACH);
+}
+
+/**
+ * The smallest move that lets the card stay near where it is — straight up, down, left or right just
+ * clear of what it points at — or null if none works (then it's placed afresh).
+ */
+function nudge(at: { left: number; top: number }, height: number, rect: DOMRect, also: DOMRect | null) {
+  if (canStay(at, height, rect, also)) return at;
+  const width = Math.min(CARD_WIDTH, window.innerWidth - EDGE * 2);
+  const vh = window.innerHeight;
+  const vw = window.innerWidth;
+  const inside = { top: Math.max(EDGE, Math.min(at.top, vh - height - EDGE)), left: Math.max(EDGE, Math.min(at.left, vw - width - EDGE)) };
+  const candidates = [inside];
+  for (const r of also ? [rect, also] : [rect]) {
+    candidates.push(
+      { ...inside, top: r.top - GAP - height },
+      { ...inside, top: r.bottom + GAP },
+      { ...inside, left: r.left - GAP - width },
+      { ...inside, left: r.right + GAP },
+    );
+  }
+  const moved = (c: { left: number; top: number }) => Math.hypot(c.left - at.left, c.top - at.top);
+  return candidates.filter((c) => canStay(c, height, rect, also)).sort((a, b) => moved(a) - moved(b))[0] ?? null;
+}
+
+/**
+ * The card stays where it is; its notch slides round its edge to face `rect` — or, when no edge
+ * faces it squarely, an arrow line points at it (connector).
+ */
+function aimFrom(at: { left: number; top: number }, height: number, rect: DOMRect, also: DOMRect | null): Layout {
+  const width = Math.min(CARD_WIDTH, window.innerWidth - EDGE * 2);
+  const card = cardBox(at, width, height);
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
+  const reach = 18; // the notch keeps this far from the card's corners
+  const levelWith = rect.bottom > card.top + reach && rect.top < card.bottom - reach;
+  const aboveOrBelowWith = rect.right > card.left + reach && rect.left < card.right - reach;
+  const sides: { placement: Placement; gap: number; square: boolean }[] = [
+    { placement: 'right', gap: card.left - rect.right, square: levelWith },
+    { placement: 'left', gap: rect.left - card.right, square: levelWith },
+    { placement: 'below', gap: card.top - rect.bottom, square: aboveOrBelowWith },
+    { placement: 'above', gap: rect.top - card.bottom, square: aboveOrBelowWith },
+  ];
+  const facing = sides.filter((s) => s.gap >= 0);
+  const square = facing.find((s) => s.square);
+  const side = square ?? facing.sort((a, b) => b.gap - a.gap)[0] ?? sides[0];
+  const midY = rect.top + rect.height / 2;
+  const midX = rect.left + rect.width / 2;
+  const arrowAt =
+    side.placement === 'right' || side.placement === 'left'
+      ? clamp(midY - card.top, reach, height - reach)
+      : clamp(midX - card.left, reach, width - reach);
+  return { rect, placement: side.placement, left: at.left, top: at.top, arrowAt, also, cardHeight: height, connector: !square };
+}
+
+/** The card beside `rect`, moved up or down out of the way of `also` if it would cover it. */
+function layoutForBoth(rect: DOMRect | null, also: DOMRect | null, cardHeight: number): Layout {
+  const base = layoutFor(rect, cardHeight);
+  if (!also || !rect || base.placement === 'center') return { ...base, also, cardHeight };
+  const vh = window.innerHeight;
+  const width = Math.min(CARD_WIDTH, window.innerWidth - EDGE * 2);
+  const overlaps = (top: number) =>
+    base.left < also.right + GAP && base.left + width > also.left - GAP && top < also.bottom + GAP && top + cardHeight > also.top - GAP;
+  let top = base.top;
+  if (overlaps(top)) {
+    const above = also.top - GAP - cardHeight;
+    const below = also.bottom + GAP;
+    top = above >= EDGE ? above : below + cardHeight <= vh - EDGE ? below : top;
+  }
+  const midY = rect.top + rect.height / 2;
+  const arrowAt =
+    base.placement === 'right' || base.placement === 'left'
+      ? Math.max(18, Math.min(midY - top, cardHeight - 18))
+      : base.arrowAt;
+  return { ...base, top, arrowAt, also, cardHeight };
+}
 
 function layoutFor(rect: DOMRect | null, cardHeight: number): Layout {
   const vw = window.innerWidth;
   const vh = window.innerHeight;
   const width = Math.min(CARD_WIDTH, vw - EDGE * 2);
-  const center = { rect, placement: 'center' as const, left: (vw - width) / 2, top: Math.max(EDGE, (vh - cardHeight) / 2), arrowAt: 0 };
+  const center = { rect, placement: 'center' as const, left: (vw - width) / 2, top: Math.max(EDGE, (vh - cardHeight) / 2), arrowAt: 0, also: null };
   if (!rect || rect.width === 0 || rect.bottom < 0 || rect.top > vh) return { ...center, rect: null };
   const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, Math.max(lo, hi)));
   const midY = rect.top + rect.height / 2;
@@ -144,11 +256,11 @@ function layoutFor(rect: DOMRect | null, cardHeight: number): Layout {
   if (placement === 'right' || placement === 'left') {
     const left = placement === 'right' ? rect.right + GAP : rect.left - GAP - width;
     const top = clamp(midY - cardHeight / 2, EDGE, vh - cardHeight - EDGE);
-    return { rect, placement, left, top, arrowAt: clamp(midY - top, 18, cardHeight - 18) };
+    return { rect, placement, left, top, arrowAt: clamp(midY - top, 18, cardHeight - 18), also: null };
   }
   const left = clamp(midX - width / 2, EDGE, vw - width - EDGE);
   const top = placement === 'below' ? rect.bottom + GAP : Math.max(EDGE, rect.top - GAP - cardHeight);
-  return { rect, placement, left, top, arrowAt: clamp(midX - left, 18, width - 18) };
+  return { rect, placement, left, top, arrowAt: clamp(midX - left, 18, width - 18), also: null };
 }
 
 export function OnboardingTour({
@@ -179,6 +291,17 @@ export function OnboardingTour({
   const [pointer, setPointer] = useState<{ x: number; y: number; pressed: boolean; glide: boolean; key?: string; pace?: number } | null>(null);
   /** What a demo is outlining right now (instead of the step's target). */
   const shown = useRef<HTMLElement | null>(null);
+  /** A second element a demo is pointing at (showBoth). */
+  const shownAlso = useRef<HTMLElement | null>(null);
+  /** Where the card was placed — kept while it can point from there (see canStay). */
+  const pinned = useRef<{ left: number; top: number } | null>(null);
+  /** The step the card was last placed for: each new step places it afresh, beside what that step is about. */
+  const placedFor = useRef<number | null>(null);
+  /** A demonstration is playing (for the layout loop, which runs outside React's renders). */
+  const runningRef = useRef(false);
+  useEffect(() => {
+    runningRef.current = running;
+  }, [running]);
   /** The group of steps the tour is in. */
   const group = useRef<string | null>(null);
   // The page's latest demo actions and tidy-up, without restarting a step every time the page re-renders.
@@ -234,6 +357,8 @@ export function OnboardingTour({
         return null;
       });
       setLayout(null);
+      pinned.current = null;
+      placedFor.current = null;
     },
     [closePanels, leaveGroup, progressKey],
   );
@@ -294,6 +419,11 @@ export function OnboardingTour({
       point,
       show: (el) => {
         shown.current = el;
+        shownAlso.current = null;
+      },
+      showBoth: (first, second) => {
+        shown.current = first;
+        shownAlso.current = second;
       },
       find: async (selector) => {
         for (let tries = 0; tries < 60; tries++) {
@@ -377,6 +507,7 @@ export function OnboardingTour({
     const current = steps[step];
     let cancelled = false;
     shown.current = null;
+    shownAlso.current = null;
     void (async () => {
       // Leaving a group (e.g. the scenes demo) tidies it up before anything else happens.
       if ((current.group ?? null) !== group.current) {
@@ -459,8 +590,32 @@ export function OnboardingTour({
       const demo = shown.current?.isConnected ? shown.current : null;
       const el = demo ?? own ?? (fallback ? find(fallback.target) : null);
       const rect = el ? el.getBoundingClientRect() : null;
-      const next = layoutFor(rect, cardRef.current?.offsetHeight ?? 260);
-      const key = JSON.stringify([next.placement, Math.round(next.left), Math.round(next.top), Math.round(next.arrowAt), rect && [rect.left, rect.top, rect.width, rect.height].map(Math.round)]);
+      const second = demo && shownAlso.current?.isConnected ? shownAlso.current.getBoundingClientRect() : null;
+      const height = cardRef.current?.offsetHeight ?? 260;
+      // Each step places the card beside what it's about. Within the step it then stays put while the
+      // demonstration moves between parts of the screen (the Media Library and the timeline, say): only
+      // the notch moves round its edge to the new highlight. It moves only to get out of the way or back
+      // on screen — the smallest move that does it.
+      const visible = rect && rect.width > 0 && rect.bottom >= 0 && rect.top <= window.innerHeight;
+      const at = pinned.current;
+      const sameStep = placedFor.current === step;
+      const near = visible && at && sameStep ? nudge(at, height, rect, second) : null;
+      const waiting = !visible && (steps[step].target || shown.current || runningRef.current);
+      let next: Layout;
+      if (near) {
+        pinned.current = near;
+        next = aimFrom(near, height, rect!, second);
+      } else if (at && waiting) {
+        // Nothing to point at just now — a demo about to show something, or its control off screen for a
+        // moment (scrolling, a list re-drawing): the card waits where it is rather than jumping to the middle.
+        next = { rect: null, placement: 'center', left: at.left, top: at.top, arrowAt: 0, also: null };
+      } else {
+        next = layoutForBoth(rect, second, height);
+        pinned.current = next.placement === 'center' ? null : { left: next.left, top: next.top };
+        placedFor.current = step;
+      }
+      const box = (r: DOMRect | null) => r && [r.left, r.top, r.width, r.height].map(Math.round);
+      const key = JSON.stringify([next.placement, Math.round(next.left), Math.round(next.top), Math.round(next.arrowAt), box(rect), box(second), next.cardHeight, next.connector]);
       if (key !== last) {
         last = key;
         setLayout(next);
@@ -534,7 +689,9 @@ export function OnboardingTour({
       {current && layout && (
         <div data-tour-ui className="pointer-events-none fixed inset-0 z-[70]">
           {/* Dims everything but the control (clicks still go through to the page). */}
-          {layout.rect ? (
+          {layout.rect && layout.also ? (
+            <TwoHoles first={layout.rect} second={layout.also} pad={pad} />
+          ) : layout.rect ? (
             <div
               className="absolute border-[3px] border-[#18a0fb] transition-all duration-200"
               style={{
@@ -549,6 +706,21 @@ export function OnboardingTour({
             <div className="absolute inset-0 bg-ink/30" />
           )}
 
+          {layout.rect && layout.connector && layout.cardHeight && (
+            <SecondArrow
+              card={{ left: layout.left, top: layout.top, width, height: layout.cardHeight }}
+              target={layout.rect}
+              pad={pad}
+            />
+          )}
+          {layout.also && layout.cardHeight && (
+            <SecondArrow
+              card={{ left: layout.left, top: layout.top, width, height: layout.cardHeight }}
+              target={layout.also}
+              pad={pad}
+            />
+          )}
+
           <div
             ref={cardRef}
             role="dialog"
@@ -558,7 +730,9 @@ export function OnboardingTour({
             className="pointer-events-auto absolute flex flex-col gap-3 border-2 border-ink bg-paper p-5 shadow-[6px_6px_0_0_rgba(0,0,0,0.2)] outline-none transition-[left,top] duration-200"
             style={{ left: layout.left, top: layout.top, width }}
           >
-            {layout.rect && layout.placement !== 'center' && <Arrow placement={layout.placement} at={layout.arrowAt} />}
+            {layout.rect && layout.placement !== 'center' && !layout.connector && (
+              <Arrow placement={layout.placement} at={layout.arrowAt} />
+            )}
             <button onClick={() => end(false)} aria-label="Close the tour" className="absolute right-3 top-2 text-2xl leading-none text-ink hover:text-muted-ink">
               ×
             </button>
@@ -640,6 +814,58 @@ export function OnboardingTour({
 }
 
 /** A solid triangle on the card's edge, pointing at the control. */
+/** The dimming with two holes, and an outline round each (for showBoth). */
+function TwoHoles({ first, second, pad }: { first: DOMRect; second: DOMRect; pad: number }) {
+  const hole = (r: DOMRect) => ({ x: r.left - pad, y: r.top - pad, width: r.width + pad * 2, height: r.height + pad * 2 });
+  return (
+    <svg aria-hidden="true" className="absolute inset-0 h-full w-full">
+      <defs>
+        <mask id="tour-two-holes">
+          <rect width="100%" height="100%" fill="#fff" />
+          <rect {...hole(first)} fill="#000" />
+          <rect {...hole(second)} fill="#000" />
+        </mask>
+      </defs>
+      <rect width="100%" height="100%" fill="rgba(0,0,0,0.38)" mask="url(#tour-two-holes)" />
+      <rect {...hole(first)} fill="none" stroke="#18a0fb" strokeWidth="3" />
+      <rect {...hole(second)} fill="none" stroke="#18a0fb" strokeWidth="3" />
+    </svg>
+  );
+}
+
+/** The arrow from the card to the second element (for showBoth): from the card's nearest edge to the element's. */
+function SecondArrow({
+  card,
+  target,
+  pad,
+}: {
+  card: { left: number; top: number; width: number; height: number };
+  target: DOMRect;
+  pad: number;
+}) {
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
+  const cx = target.left + target.width / 2;
+  const cy = target.top + target.height / 2;
+  // Leave the card from the edge facing the target.
+  const startX = clamp(cx, card.left, card.left + card.width);
+  const startY = clamp(cy, card.top, card.top + card.height);
+  // …and stop just short of the target's outline.
+  const endX = clamp(startX, target.left - pad - 4, target.right + pad + 4);
+  const endY = clamp(startY, target.top - pad - 4, target.bottom + pad + 4);
+  if (Math.hypot(endX - startX, endY - startY) < 12) return null;
+  return (
+    <svg aria-hidden="true" className="absolute inset-0 h-full w-full overflow-visible">
+      <defs>
+        <marker id="tour-arrowhead" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 Z" fill="#000" />
+        </marker>
+      </defs>
+      <line x1={startX} y1={startY} x2={endX} y2={endY} stroke="#fff" strokeWidth="6" strokeLinecap="round" />
+      <line x1={startX} y1={startY} x2={endX} y2={endY} stroke="#000" strokeWidth="3" markerEnd="url(#tour-arrowhead)" />
+    </svg>
+  );
+}
+
 function Arrow({ placement, at }: { placement: Placement; at: number }) {
   const size = 14;
   const style: CSSProperties =

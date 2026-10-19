@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { boardToFlow, flowToBoard, type ReadTable } from '@/lib/agent/cards';
-import type { SheetConflict, SheetImport } from '@/lib/agent/localProjects';
+import { listProjects, markWrittenToFigjam, type SheetConflict, type SheetImport } from '@/lib/agent/localProjects';
 import { flowFingerprint, parseSheetUrl } from '@/lib/agent/sheetScenes';
 import type { MemoryItem } from '@/lib/agent/memory';
 import type { SheetSource } from '@/lib/agent/projectStore';
@@ -33,6 +33,8 @@ const PLUGIN_TIMEOUT_MS = 90_000;
 // get a light yellow fill, so it's obvious where their input goes.
 const studentField = fieldInput.replace('bg-paper', 'bg-[#fff6cc]');
 const POLL_MS = 1500;
+/** The FigJam board's three buttons (Board Selected, Draw All Scenes, View in FigJam) are one size, stacked. */
+const FIGJAM_BUTTON = 'inline-flex h-10 w-[260px] items-center justify-center gap-2';
 
 type Job = { status: 'pending' | 'running' | 'done' | 'error'; log: string[]; result?: unknown };
 
@@ -400,12 +402,57 @@ export function DesignPanel({
     }
   };
 
+  // Draw All Scenes to FigJam: every saved scene that has a conversation (archived ones left out), one
+  // after another, each in its own section of the board — replacing only that scene's earlier drawing.
+  // The open scene is drawn as it is now (unsaved edits included).
+  const drawAll = async () => {
+    setBusy('draw');
+    try {
+      const drawable = (f: AgentFlow) => f.stages.some((s) => s.goal.trim() || s.collect.length > 0);
+      const scenes = (await listProjects())
+        .filter((p) => !p.archived)
+        .map((p) => (p.id === scene.key ? { ...p, flow } : p))
+        .filter((p) => drawable(p.flow));
+      if (scenes.length === 0) {
+        say('✗ No saved scene has a conversation to draw yet — generate one first.');
+        return;
+      }
+      say(`Sending ${scenes.length} scene${scenes.length === 1 ? '' : 's'} to the FigJam plugin…`);
+      let drawn = 0;
+      for (const p of scenes) {
+        const heading = p.sheet ? `Scene ${p.sheet.number} · ${p.name}` : p.name;
+        say(`Drawing ${heading}…`);
+        try {
+          await runPluginJob(
+            'draw-agent-flow',
+            { ...flowToBoard(p.flow), title: heading, scene: { key: p.id, number: p.sheet?.number ?? '', heading } },
+            say,
+          );
+          const fingerprint = flowFingerprint(p.flow);
+          if (p.id === scene.key) onWrittenToFigjam(fingerprint);
+          else await markWrittenToFigjam(p.id, fingerprint);
+          drawn++;
+        } catch (err) {
+          say(`✗ ${heading}: ${err instanceof Error ? err.message : 'drawing failed.'}`);
+        }
+      }
+      if (!scene.key && drawable(flow)) say('The open scene isn’t saved yet, so it wasn’t drawn — save it in Scenes first.');
+      say(
+        drawn === scenes.length
+          ? `✓ All ${drawn} scene${drawn === 1 ? '' : 's'} drawn on the board. Edit them there, then Import from FigJam.`
+          : `${drawn} of ${scenes.length} scenes drawn.`,
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
   // The flow is up to date with the description when it was last generated from exactly this text.
   const upToDate = busy !== 'generate' && generatedBrief !== null && brief.trim() !== '' && brief.trim() === generatedBrief.trim();
 
   // "Update This Scene" asks nothing; the generate button checks before
   // replacing a flow. Neither draws in FigJam — that only ever happens when
-  // someone clicks "Draw it on my FigJam board" (or Write to FigJam).
+  // someone clicks "Draw it on my FigJam board" (or Draw All Scenes to FigJam).
   const briefNow = brief;
   const flowNow = flow;
   // `from` is the description and flow to use when they've only just changed
@@ -718,36 +765,36 @@ export function DesignPanel({
         </CollapsiblePanel>
 
         <CollapsiblePanel title="2 · FigJam board (optional)" tourId="design-6">
-          <BoardPicker boardUrl={boardUrl} onBoardUrlChange={onBoardUrlChange} />
-          <div className="flex flex-wrap gap-2" data-tour="figjam-actions">
-            <button
-              onClick={() => window.open(boardUrl, '_blank', 'noopener')}
-              disabled={!boardLooksValid}
-              className={buttonOutline}
-            >
-              View in FigJam
-            </button>
-            <button
-              onClick={() =>
-                (scene.key ||
-                  window.confirm('Draw the current flow on the board? This replaces any flow the plugin drew there before (your other board content is left alone).')) &&
-                draw(flow)
-              }
-              disabled={busy !== null || !canWrite}
-              className={buttonOutline}
-              title={
-                canWrite
-                  ? scene.key
-                    ? `Draws ${scene.heading} in its own section of the board (replacing only its earlier drawing)`
-                    : 'Draws the current flow on the board'
-                  : scene.fromSheet
-                    ? 'Generate this scene’s conversation first (Describe the conversation in each scene)'
-                    : 'There’s no flow to draw yet'
-              }
-            >
-              {busy === 'draw' ? 'Drawing…' : scene.key ? `Write ${scene.heading} to FigJam` : 'Draw in FigJam'}
-            </button>
-          </div>
+          {/* One column, top to bottom: Board Selected (in the picker), Draw All Scenes to FigJam, View in FigJam. */}
+          <BoardPicker
+            boardUrl={boardUrl}
+            onBoardUrlChange={onBoardUrlChange}
+            buttonClass={FIGJAM_BUTTON}
+            below={
+              <div className="flex flex-col items-start gap-2" data-tour="figjam-actions">
+                <button
+                  onClick={() => void drawAll()}
+                  disabled={busy !== null || !boardLooksValid}
+                  className={`${FIGJAM_BUTTON} ${busy === 'draw' ? buttonBusy : buttonOutline}`}
+                  title={
+                    boardLooksValid
+                      ? 'Draws every scene on the board, each in its own section (replacing only that scene’s earlier drawing)'
+                      : 'Select a board first'
+                  }
+                >
+                  {busy === 'draw' && <Spinner />}
+                  {busy === 'draw' ? 'Drawing…' : 'Draw All Scenes to FigJam'}
+                </button>
+                <button
+                  onClick={() => window.open(boardUrl, '_blank', 'noopener')}
+                  disabled={!boardLooksValid}
+                  className={`${FIGJAM_BUTTON} ${buttonOutline}`}
+                >
+                  View in FigJam
+                </button>
+              </div>
+            }
+          />
           {figjamStatus && (
             <p className="font-label text-[10px] uppercase tracking-wide text-muted-ink">{figjamStatus}</p>
           )}
@@ -862,7 +909,7 @@ export function DesignPanel({
                 <ProgressLine startedAt={generating.startedAt} expectedMs={generating.expectedMs} done={generating.done} />
               )}
             </button>
-            {/* FigJam is only ever drawn when this (or Write to FigJam, below) is clicked — never by itself. */}
+            {/* FigJam is only ever drawn when this (or Draw All Scenes to FigJam, in section 2) is clicked — never by itself. */}
             <button
               onClick={() =>
                 (scene.key ||
