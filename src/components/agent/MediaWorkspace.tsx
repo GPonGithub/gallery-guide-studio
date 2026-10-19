@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { LAYOUT_SIZE, PROJECTION_SHAPES, ROOM_DRAWING } from '@/lib/agent/projectionLayout';
+import { LAYOUT_SIZE, PROJECTION_SHAPES, ROOM_DRAWING, type ProjectionShape } from '@/lib/agent/projectionLayout';
+import { useShowing, type Shown } from '@/lib/agent/mediaShow';
 import { MediaTimeline, type TimelineStage } from './MediaTimeline';
 import { SceneButtons } from './SceneButtons';
 import { fieldLabel } from '@/lib/styles';
@@ -205,7 +206,7 @@ export function MediaWorkspace({
         <span className={`h-[4px] w-full transition-colors ${grabbed ? 'bg-[#15803d]' : 'bg-ink'}`} />
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col p-4">
+      <div className="flex min-h-0 flex-1 flex-col px-4 pb-2 pt-2">
         <MediaTimeline sceneKey={sceneKey} sceneTitle={sceneTitle} stages={stages} liveStage={liveStage} scene={scene} />
       </div>
     </section>
@@ -272,11 +273,28 @@ function ChatBorder({ width, onResize }: { width: number; onResize: (width: numb
 /** The outlines' weight in the drawing's own units (as in the source file): it thins and thickens with the drawing. */
 const OUTLINE_WEIGHT = 4;
 
+const pointsOf = (s: ProjectionShape) => s.points.map((p) => p.join(',')).join(' ');
+const pathOf = (points: [number, number][]) => `M${points.map((p) => p.join(',')).join('L')}Z`;
+const SHAPES = new Map(PROJECTION_SHAPES.map((s) => [s.area, s]));
+
+/** An area's outline, less any areas inside it (2, 5 and 8 have holes): what its media is cut to. */
+const clipOf = (s: ProjectionShape) => [s.points, ...(s.holes ?? []).map((h) => SHAPES.get(h)!.points)].map(pathOf).join(' ');
+
+/** The rectangle around an area's outline: its media fills it (cropped to fit), then is cut to the outline. */
+function boxOf(s: ProjectionShape) {
+  const xs = s.points.map((p) => p[0]);
+  const ys = s.points.map((p) => p[1]);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+}
+
 function ProjectionDiagram() {
   // How many drawing units one screen pixel is — so however small the drawing gets, its outlines stay
   // at least a pixel wide.
   const svg = useRef<SVGSVGElement>(null);
   const [unitsPerPixel, setUnitsPerPixel] = useState(0);
+  const showing = useShowing();
   useEffect(() => {
     const el = svg.current;
     if (!el) return;
@@ -301,27 +319,84 @@ function ProjectionDiagram() {
       role="img"
       aria-label="The room's 11 projection areas"
     >
+      <defs>
+        {PROJECTION_SHAPES.map((s) => (
+          <clipPath key={s.area} id={`projection-area-${s.area}`} clipPathUnits="userSpaceOnUse">
+            <path d={clipOf(s)} clipRule="evenodd" />
+          </clipPath>
+        ))}
+      </defs>
       <image href={ROOM_DRAWING} x={0} y={0} width={LAYOUT_SIZE.width} height={LAYOUT_SIZE.height} />
-      {PROJECTION_SHAPES.map((s) => (
-        <g key={s.area}>
-          <polygon
-            points={s.points.map((p) => p.join(',')).join(' ')}
-            className={`stroke-ink ${s.filled ? 'fill-paper' : 'fill-none'}`}
-            strokeWidth={weight}
-            strokeMiterlimit={10}
-          />
-          <text
-            x={s.label[0]}
-            y={s.label[1]}
-            textAnchor="middle"
-            dominantBaseline="central"
-            className="fill-ink font-body"
-            fontSize={s.small ? 28 : 46}
-          >
-            {s.area}
-          </text>
-        </g>
-      ))}
+      {PROJECTION_SHAPES.map((s) => {
+        const shown = showing.find((m) => m.area === s.area);
+        return (
+          <g key={s.area}>
+            {s.filled && <polygon points={pointsOf(s)} className="fill-paper" />}
+            {shown && <AreaMedia shape={s} shown={shown} />}
+            <polygon
+              points={pointsOf(s)}
+              className="fill-none stroke-ink"
+              strokeWidth={weight}
+              strokeMiterlimit={10}
+            />
+            <text
+              x={s.label[0]}
+              y={s.label[1]}
+              textAnchor="middle"
+              dominantBaseline="central"
+              // Over a picture, a white outline keeps the number readable.
+              className={`fill-ink font-body ${shown ? 'stroke-paper' : ''}`}
+              strokeWidth={shown ? 6 : 0}
+              paintOrder="stroke"
+              fontSize={s.small ? 28 : 46}
+            >
+              {s.area}
+            </text>
+          </g>
+        );
+      })}
     </svg>
+  );
+}
+
+/**
+ * An image or video in its area: filling the rectangle around the outline
+ * (cropped, never stretched), then cut to the outline — so it fits areas
+ * with a corner cut away (5, 10), and leaves the areas inside 2, 5 and 8
+ * white. Video plays muted (the room's sound is the sound track's), looping
+ * unless its connection says to play once; one Chrome can't play shows its
+ * first frame, if ffmpeg made one.
+ */
+function AreaMedia({ shape, shown }: { shape: ProjectionShape; shown: Shown }) {
+  const box = boxOf(shape);
+  const [failed, setFailed] = useState<string | null>(null);
+  const clip = `url(#projection-area-${shape.area})`;
+  const title = <title>{`${shown.assetId} ${shown.name} — ${shown.action}`}</title>;
+  if (shown.kind === 'image' || failed === shown.url) {
+    const href = shown.kind === 'image' ? shown.url : shown.still;
+    if (!href) return null;
+    return (
+      <image href={href} {...box} preserveAspectRatio="xMidYMid slice" clipPath={clip}>
+        {title}
+      </image>
+    );
+  }
+  // The title sits outside the foreignObject: inside it, it would be an HTML <title> and rename the page.
+  return (
+    <g>
+      {title}
+      <foreignObject {...box} clipPath={clip}>
+        <video
+          key={shown.url}
+          src={shown.url}
+          autoPlay
+          muted
+          playsInline
+          loop={shown.loop}
+          onError={() => setFailed(shown.url)}
+          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+        />
+      </foreignObject>
+    </g>
   );
 }

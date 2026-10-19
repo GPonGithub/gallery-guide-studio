@@ -4,8 +4,10 @@ import { useEffect, useRef, useState } from 'react';
 
 // Hands-free ("open mic") listening for the goal-agent chat: stays on across
 // turns, sends what was said once the caller has been quiet for the chosen
-// pause, and goes deaf while the agent is thinking or speaking so it can't
-// hear its own voice. Browser Web Speech API (Chrome on a computer).
+// pause, and goes deaf while the agent is thinking. While the agent speaks it
+// either goes deaf too, or (speak to interrupt) keeps listening for the caller
+// talking over it — ignoring the agent's own words coming back through the
+// speakers. Browser Web Speech API (Chrome on a computer).
 
 type SpeechRecognitionLike = {
   interimResults: boolean;
@@ -33,6 +35,25 @@ const MIN_WORDS_FOR_SPEECH = 3;
 // While Chrome still thinks you're mid-phrase (its result isn't final yet),
 // allow this much extra on top of the pause before treating you as done.
 const MID_PHRASE_GRACE_MS = 2000;
+// Talking over the agent: this many of the caller's own words (not the agent's, heard back through the
+// speakers) interrupt it — or any one of these, said on its own.
+const BARGE_IN_WORDS = 2;
+const STOP_WORDS = new Set(['stop', 'wait', 'sorry', 'hold', 'hang', 'excuse', 'pause', 'hey', 'actually', 'no']);
+
+const wordsOf = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/[^\p{L}\p{N}'\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+
+/** Whether what was heard is the caller talking, not just the agent's own voice coming back. */
+function callerTalking(heard: string, agentSaid: string): boolean {
+  const echo = new Set(wordsOf(agentSaid));
+  const own = wordsOf(heard).filter((w) => !echo.has(w));
+  return own.length >= BARGE_IN_WORDS || own.some((w) => STOP_WORDS.has(w));
+}
 
 export type OpenMicStatus = 'off' | 'listening' | 'hearing' | 'paused' | 'starting';
 
@@ -48,10 +69,19 @@ export function OpenMic({
   onPhraseFinal,
   onStatus,
   onError,
+  agentSpeaking = false,
+  agentText = '',
+  onBargeIn,
 }: {
   on: boolean;
-  /** True while the agent is thinking or speaking (or the call has ended). */
+  /** True while the mic should be deaf: the agent thinking (or speaking, without speak to interrupt), or the call ended. */
   paused: boolean;
+  /** The agent is speaking and the mic listens through it, for the caller talking over it (speak to interrupt). */
+  agentSpeaking?: boolean;
+  /** What the agent is saying, so its own voice heard back through the speakers isn't taken for the caller. */
+  agentText?: string;
+  /** The caller has started talking over the agent: stop it. What they say then goes as normal. */
+  onBargeIn?: () => void;
   pauseSeconds: number;
   onToggle: (on: boolean) => void;
   /** Live words as they're heard, for the input box. */
@@ -83,10 +113,31 @@ export function OpenMic({
   const [restartTick, setRestartTick] = useState(0);
 
   // Latest props for callbacks fired by the recognition engine later on.
-  const latest = useRef({ on, paused, pauseSeconds, onToggle, onTranscript, onUtterance, onPhraseFinal, onStatus, onError });
+  const latest = useRef({ on, paused, pauseSeconds, onToggle, onTranscript, onUtterance, onPhraseFinal, onStatus, onError, agentSpeaking, agentText, onBargeIn });
   useEffect(() => {
-    latest.current = { on, paused, pauseSeconds, onToggle, onTranscript, onUtterance, onPhraseFinal, onStatus, onError };
+    latest.current = { on, paused, pauseSeconds, onToggle, onTranscript, onUtterance, onPhraseFinal, onStatus, onError, agentSpeaking, agentText, onBargeIn };
   });
+  // Results before this one (in the current listening session) were the agent's voice, not the caller: skipped.
+  const firstResultRef = useRef(0);
+  const resultCountRef = useRef(0);
+  // The caller just talked over the agent: what they're saying carries on from there.
+  const bargedInRef = useRef(false);
+  // The agent started speaking: what's heard from here is its voice until the caller talks over it.
+  // It finished (without being interrupted): listening starts again from scratch — a fresh session,
+  // as before the agent spoke — so the caller's first words can't be swallowed by a phrase that
+  // began with the agent's voice. (When the caller talked over it, their words are kept.)
+  const wasSpeaking = useRef(agentSpeaking);
+  useEffect(() => {
+    const finished = wasSpeaking.current && !agentSpeaking;
+    wasSpeaking.current = agentSpeaking;
+    if (bargedInRef.current) {
+      bargedInRef.current = false;
+      return;
+    }
+    firstResultRef.current = resultCountRef.current;
+    // Stopping ends the session; it starts again by itself (onend), with nothing carried over.
+    if (finished) recognitionRef.current?.stop();
+  }, [agentSpeaking]);
 
   const clearSilenceTimer = () => {
     if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
@@ -123,9 +174,24 @@ export function OpenMic({
     recognition.interimResults = true;
     transcriptRef.current = '';
     heardSpeechRef.current = false;
+    firstResultRef.current = 0;
+    resultCountRef.current = 0;
 
     recognition.onresult = (e) => {
-      const results = Array.from(e.results);
+      resultCountRef.current = e.results.length;
+      // While the agent speaks: listen only for the caller talking over it. The first phrase with their
+      // own words in it interrupts the agent, and from there on it's what they're saying.
+      if (latest.current.agentSpeaking) {
+        const at = Array.from(e.results).findIndex(
+          (r, i) => i >= firstResultRef.current && callerTalking(r[0].transcript, latest.current.agentText),
+        );
+        if (at < 0) return;
+        firstResultRef.current = at;
+        latest.current.agentSpeaking = false;
+        bargedInRef.current = true;
+        latest.current.onBargeIn?.();
+      }
+      const results = Array.from(e.results).slice(firstResultRef.current);
       const text = results
         .map((r) => r[0].transcript)
         .join(' ')

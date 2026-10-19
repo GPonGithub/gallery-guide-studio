@@ -151,6 +151,7 @@ const STEPS: TourStep[] = [
         <ul>
           <li>The music starts when the Scene starts.</li>
           <li>It gets quieter while the chatbot speaks, then comes back up. This is called audio ducking.</li>
+          <li>The Volume and Dip sliders also set every sound your timeline plays.</li>
         </ul>
       </>
     ),

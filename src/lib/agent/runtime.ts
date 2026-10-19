@@ -16,6 +16,7 @@ import {
   type CuePayload,
   type CueStatus,
   type RememberedItem,
+  type RoomMedia,
   type Exit,
   type SessionState,
   type Stage,
@@ -55,6 +56,31 @@ async function timed<T>(timings: string[], label: string, work: Promise<T>): Pro
 }
 
 /** The patient's remembered information, one line each, with the scene it came from. */
+const MEDIA_NOUN: Record<RoomMedia['kind'], string> = { image: 'picture', video: 'video', sound: 'sound' };
+
+/** The room's media, for the prompts: what each action is, and whether it's showing now. */
+function mediaLines(media: RoomMedia[]): string {
+  return media
+    .map((m) => {
+      const state =
+        m.change === 'appearing'
+          ? m.kind === 'sound'
+            ? ', STARTING NOW as you reply'
+            : ', APPEARING NOW as you reply'
+          : m.change === 'removing'
+            ? m.kind === 'sound'
+              ? ', STOPPING NOW as you reply'
+              : ', COMING DOWN NOW as you reply'
+            : m.showing
+              ? m.kind === 'sound'
+                ? ', playing now'
+                : ', showing now'
+              : '';
+      return `- [${MEDIA_NOUN[m.kind]}${state}] ${m.action}`;
+    })
+    .join('\n');
+}
+
 function memoryLines(memory: RememberedItem[]): string {
   return memory.map((m) => `- ${m.label}: ${m.value} (${m.scene})`).join('\n');
 }
@@ -111,6 +137,7 @@ async function analyse(
   userText: string,
   memory: RememberedItem[],
   savedHere: { label: string; value: string }[],
+  media: RoomMedia[],
   abortSignal?: AbortSignal,
 ): Promise<Analysis> {
   const value = (name: string) => state.slots[name] ?? '(not yet)';
@@ -148,7 +175,8 @@ async function analyse(
       'is met" — those happen automatically).\n' +
       "GOAL MET               only if this stage's goal is now fully achieved (including anything the agent must " +
       'confirm).\n' +
-      "OFF TOPIC              if the message has nothing to do with this stage's goal and matches no exit.\n" +
+      "OFF TOPIC              if the message has nothing to do with this stage's goal and matches no exit (asking " +
+      'to see or hear something the room can show — listed under IN THE ROOM — is never off topic).\n' +
       (flow.saveInfo?.trim()
         ? 'SAVE <Label> = <value> for anything the caller has now said or confirmed that "INFORMATION TO SAVE" asks ' +
           'for — a short label in Title Case (e.g. Preferred Doctor, Appointment Date, Appointment Time, Insurance ' +
@@ -171,6 +199,7 @@ async function analyse(
         ? `REFERENCE INFORMATION (use it to judge whether an answer is real — e.g. a doctor who isn't listed is not a valid answer):\n${flow.knowledge.trim()}`
         : '',
       flow.canUse?.trim() ? `ALSO AVAILABLE IN THIS SCENE:\n${flow.canUse.trim()}` : '',
+      media.length > 0 ? `IN THE ROOM (media the scene can show or play):\n${mediaLines(media)}` : '',
       memory.length > 0
         ? `ALREADY KNOWN FROM THE PATIENT'S EARLIER SCENES (counts as given — use it for SET lines where it fits; where it differs from the reference information, it is the newer and correct one):\n${memoryLines(memory)}`
         : '',
@@ -371,6 +400,7 @@ function responderSystem(
   state: SessionState,
   arrivedFrom: Turn['arrivedFrom'],
   memory: RememberedItem[],
+  media: RoomMedia[],
 ): SystemModelMessage[] {
   // The part that's the same every turn (persona, rules, knowledge base) goes
   // first and is cached by Anthropic, so a long knowledge base isn't re-read
@@ -399,6 +429,20 @@ function responderSystem(
       "FROM THE PATIENT'S EARLIER SCENES (what they told us before — use it naturally, never ask for it again; it is " +
         'newer than the reference information and takes priority over it wherever they differ, unless the caller ' +
         `changes it in this call):\n${memoryLines(memory)}`,
+    media.length > 0 &&
+      'IN THE ROOM — pictures, video and sound this scene can show or play on the room\'s screens and speakers. Each ' +
+        'line says what it is and when it happens; the room does it by itself at that moment (you never control it):\n' +
+        `${mediaLines(media)}\n` +
+        'These are real and part of this scene even where the scene description, the rules or the current goal ' +
+        'don\'t mention them — the student added them separately, so never treat one as off-script or unavailable ' +
+        'because the description leaves it out, and asking for one is never off topic. The room decides when each one happens — you don\'t, and you never ' +
+        'contradict it. Anything marked APPEARING NOW or STARTING NOW is going up on the screen (or playing) as you ' +
+        'speak: acknowledge it naturally, e.g. "Of course — here it is, up on the screen." Anything marked COMING DOWN ' +
+        'NOW or STOPPING NOW is being taken away: go along with that too. Never say you can\'t show, or won\'t show, ' +
+        'something that is appearing or showing; never claim something is on screen that isn\'t marked appearing or ' +
+        'showing; never offer or describe anything that isn\'t listed. If the caller asks for something listed that ' +
+        'isn\'t appearing, it simply isn\'t its moment in the scene yet — carry on warmly without refusing outright. ' +
+        'Describe what is in a picture or video only as far as its line and the reference information say.',
     flow.cannotUse?.trim() &&
       `THIS SCENE MUST NOT USE OR BRING UP:\n${flow.cannotUse.trim()}\nDon't mention, ask about or draw on any of this — ` +
         "not even from general knowledge. If the caller raises it, say kindly that it isn't something you can go into here.",
@@ -560,7 +604,7 @@ class ReplyStream {
 }
 
 export async function runTurnStream(
-  { flow, state: incoming, history, userText, anthropicApiKey, holdCues, memory = [], savedHere }: TurnRequest,
+  { flow, state: incoming, history, userText, anthropicApiKey, holdCues, memory = [], savedHere, media = [] }: TurnRequest,
   abortSignal: AbortSignal | undefined,
   emit: (event: TurnStreamEvent) => void,
 ): Promise<void> {
@@ -585,7 +629,7 @@ export async function runTurnStream(
       model,
       abortSignal: abortSignal ? AbortSignal.any([abortSignal, stop.signal]) : stop.signal,
       // Built right now, from the state as it is at this moment.
-      system: responderSystem(flow, stage, state, arrivedFrom, memory),
+      system: responderSystem(flow, stage, state, arrivedFrom, memory, media),
       messages: toModelMessages(history, userText),
       providerOptions: NO_THINKING,
       maxOutputTokens: 300,
@@ -630,7 +674,7 @@ export async function runTurnStream(
     })().catch(() => {});
     const streakBefore = state.offTopicStreak;
     try {
-      const analysis = await timed(timings, 'analyse', analyse(fast, flow, startStage, state, history, userText, memory, savedHere ?? [], abortSignal));
+      const analysis = await timed(timings, 'analyse', analyse(fast, flow, startStage, state, history, userText, memory, savedHere ?? [], media, abortSignal));
       turn.apply(analysis);
     } catch (err) {
       turn.events.push({ type: 'rejected', text: `Analysis failed (${err instanceof Error ? err.message : 'error'}) — replying without it.` });

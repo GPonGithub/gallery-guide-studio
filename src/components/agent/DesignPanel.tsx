@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { boardToFlow, flowToBoard, type ReadTable } from '@/lib/agent/cards';
 import type { SheetConflict, SheetImport } from '@/lib/agent/localProjects';
 import { flowFingerprint, parseSheetUrl } from '@/lib/agent/sheetScenes';
@@ -257,6 +257,8 @@ export function DesignPanel({
   onTryVoice,
   onOnboard,
   onboardPulse = false,
+  updateRequest = 0,
+  onUpdateProgress,
 }: {
   flow: AgentFlow;
   brief: string;
@@ -311,6 +313,10 @@ export function DesignPanel({
   onOnboard?: () => void;
   /** Onboard Me pulses until it's first clicked. */
   onboardPulse?: boolean;
+  /** Goes up by one each time "Refresh this scene" (in the chat) asks for an Update This Scene. */
+  updateRequest?: number;
+  /** An update's progress (for the chat's Refresh button to show the same line), or null when none is running. */
+  onUpdateProgress?: (progress: { startedAt: number; expectedMs: number; done?: boolean } | null) => void;
 }) {
   const [busy, setBusy] = useState<null | 'generate' | 'draw' | 'import' | 'sheet'>(null);
   const [conflicts, setConflicts] = useState<SheetConflict[]>([]);
@@ -522,6 +528,25 @@ export function DesignPanel({
       setGenerating((g) => (g?.source === 'update' && !g.done ? null : g));
     }
   };
+
+  // "Refresh this scene" in the chat: the same as Update This Scene.
+  const updateNow = useRef(updateScene);
+  useEffect(() => {
+    updateNow.current = updateScene;
+  });
+  const lastRequest = useRef(updateRequest);
+  useEffect(() => {
+    if (updateRequest === lastRequest.current) return;
+    lastRequest.current = updateRequest;
+    if (!updating) void updateNow.current();
+  }, [updateRequest, updating]);
+  // …and its progress line, shown on that button too.
+  const progress = generating?.source === 'update' ? generating : null;
+  useEffect(() => {
+    onUpdateProgress?.(progress && { startedAt: progress.startedAt, expectedMs: progress.expectedMs, done: progress.done });
+    // Only the line itself matters, not the callback's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [progress?.startedAt, progress?.expectedMs, progress?.done]);
 
   // --- scenes from a Google Sheet -------------------------------------------
 
@@ -959,7 +984,7 @@ export function DesignPanel({
           </button>
         }
       >
-        <ImmersiveMedia sheetUrl={sheetUrl} sheetScriptUrl={sheetScriptUrl} sceneSheet={sceneSheet} sceneName={sceneSheet?.importedName ?? scene.heading} onTryVoice={onTryVoice} />
+        <ImmersiveMedia sheetUrl={sheetUrl} sheetScriptUrl={sheetScriptUrl} sceneSheet={sceneSheet} sceneName={sceneSheet?.importedName ?? scene.heading} onTryVoice={onTryVoice} anthropicApiKey={anthropicApiKey} />
       </ProcessSection>
 
       {/* Progress and problems stay outside the panels, so they're seen even with every panel folded. */}

@@ -193,6 +193,21 @@ export type TurnRequest = {
   memory?: RememberedItem[];
   /** What this scene has already saved for the patient — so the same thing keeps its label, and a correction replaces it. */
   savedHere?: { label: string; value: string }[];
+  /**
+   * The scene's media actions (row 8) that have a file connected in the Media
+   * Library — so the agent knows what the room can show or play, and goes
+   * along with it instead of saying it can't.
+   */
+  media?: RoomMedia[];
+};
+
+/** A media action the room can carry out, and whether its picture, video or sound is showing (or playing) now. */
+export type RoomMedia = {
+  action: string;
+  kind: 'image' | 'video' | 'sound';
+  showing: boolean;
+  /** What the caller just said makes the room put it up (or play it) — or take it down — as the agent replies. */
+  change?: 'appearing' | 'removing';
 };
 
 export type TurnResponse = {

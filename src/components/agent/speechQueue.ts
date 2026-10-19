@@ -33,6 +33,8 @@ export type SpeechQueueOptions = {
 export class SpeechQueue {
   private clips: { text: string; previous: string; clip: Promise<StreamedClip | null> }[] = [];
   private spokenSoFar = '';
+  // The sentences that have actually started playing — what the caller has heard if they interrupt.
+  private heardSoFar: string[] = [];
   private playing: HTMLAudioElement | null = null;
   private finished = false;
   private cancelled = false;
@@ -114,12 +116,12 @@ export class SpeechQueue {
       return;
     }
     if (!clip) return this.playNext();
-    this.play(clip.src, clip.release, () => this.playFallback(next));
+    this.play(next.text, clip.src, clip.release, () => this.playFallback(next));
   }
 
   // Plays one source; `onFail` runs instead of moving on if it can't play.
   // `release` frees the source once it's done with, either way.
-  private play(src: string, release: () => void, onFail: (detail: string) => void) {
+  private play(text: string, src: string, release: () => void, onFail: (detail: string) => void) {
     const audio = new Audio(src);
     this.playing = audio;
     if (this.options.expressive) {
@@ -140,7 +142,10 @@ export class SpeechQueue {
       release();
       void this.playNext();
     };
-    audio.onplaying = () => this.options.onPlay?.();
+    audio.onplaying = () => {
+      if (this.heardSoFar.at(-1) !== text) this.heardSoFar.push(text);
+      this.options.onPlay?.();
+    };
     audio.onerror = () => fail(`error code ${audio.error?.code ?? '?'}${audio.error?.message ? `: ${audio.error.message}` : ''}`);
     audio.play().catch((err: unknown) => fail(err instanceof Error ? err.message : 'could not start'));
   }
@@ -152,7 +157,7 @@ export class SpeechQueue {
       const blob = await this.options.requestClip(item.text, item.previous);
       if (this.cancelled) return;
       const url = URL.createObjectURL(blob);
-      this.play(url, () => URL.revokeObjectURL(url), (detail) => {
+      this.play(item.text, url, () => URL.revokeObjectURL(url), (detail) => {
         this.options.onError(`Voice playback stopped unexpectedly (${detail}) — try again, or check the voice in the Voice panel.`);
         void this.playNext();
       });
@@ -160,6 +165,11 @@ export class SpeechQueue {
       this.options.onError(`Voice failed: ${err instanceof Error ? err.message : 'unknown error'}`);
       void this.playNext();
     }
+  }
+
+  /** The sentences the caller has heard so far (each one counts once it starts playing). */
+  get heard(): string {
+    return this.heardSoFar.join(' ');
   }
 
   /** Nothing playing or waiting to play (e.g. a reply with nothing to say). */

@@ -6,7 +6,12 @@ import { buttonGhost, buttonOutline } from '@/lib/styles';
 import { parseSheetUrl } from '@/lib/agent/sheetScenes';
 import { isScriptUrl } from '@/lib/agent/sheetScript';
 import {
+  ACTION_KINDS,
   KIND_BADGE,
+  KIND_HELP,
+  LOOP_WHEN_BADGE,
+  LOOP_WHEN_HELP,
+  wordsSayLoop,
   KIND_LABEL,
   VOICE_LABEL,
   WHEN_LABEL,
@@ -14,6 +19,7 @@ import {
   mergeMedia,
   readActionTiming,
   toRow,
+  type ActionKind,
   type EveryWhen,
   type MediaAsset,
   type MediaKind,
@@ -21,6 +27,7 @@ import {
   type VoiceWait,
 } from '@/lib/agent/media';
 import { isSoundPlaying, onSoundsChange, playSound, stopSounds } from '@/lib/agent/mediaPlayback';
+import { areasOf, areasText, hideVisual, showVisual, useShowing } from '@/lib/agent/mediaShow';
 import {
   allowed,
   canPickFolder,
@@ -35,13 +42,18 @@ import {
   loadThumbnail,
   makeThumbnail,
   followRewording,
+  readActions,
+  loopOf,
+  readingNow,
   timingOf,
+  useActionReadings,
   type MediaFolder,
   type MediaLink,
   type StoredLibrary,
 } from '@/lib/agent/mediaFolder';
 import type { SheetScene } from '@/lib/agent/sheetScenes';
 import type { SheetSource } from '@/lib/agent/projectStore';
+import { DropdownArrow } from './DropdownArrow';
 
 /**
  * Adding Immersive Media Process: the media folder (choose it, refresh the
@@ -102,6 +114,7 @@ export function ImmersiveMedia({
   sceneSheet,
   sceneName,
   onTryVoice,
+  anthropicApiKey,
 }: {
   sheetUrl: string;
   sheetScriptUrl: string;
@@ -110,6 +123,8 @@ export function ImmersiveMedia({
   sceneName: string;
   /** Says a line in the voice in use, resolving once it's finished (Try it). */
   onTryVoice?: (text: string, signal?: AbortSignal) => Promise<void>;
+  /** For Claude to read what each action means (any wording or language). */
+  anthropicApiKey: string;
 }) {
   const [folder, setFolder] = useState<MediaFolder | null>(null);
   const [library, setLibrary] = useState<StoredLibrary | null>(null);
@@ -125,6 +140,12 @@ export function ImmersiveMedia({
   const sheetConnected = Boolean(sheet) && isScriptUrl(scriptUrl);
 
   const links = useMediaLinks();
+  // Claude's readings of the actions: re-renders as they arrive.
+  useActionReadings();
+  const keyRef = useRef(anthropicApiKey);
+  useEffect(() => {
+    keyRef.current = anthropicApiKey;
+  });
   const [actions, setActions] = useState<SceneActions | null>(null);
   const sceneKey = sceneSheet ? `${sceneSheet.sheetId}:${sceneSheet.number}` : null;
 
@@ -144,12 +165,38 @@ export function ImmersiveMedia({
     void readSceneActions(sceneSheet).then((read) => {
       if (gone) return;
       setActions({ key: sceneKey, ...read });
-      if ('list' in read) followActions(sceneSheet, read.list);
+      if ('list' in read) {
+        followActions(sceneSheet, read.list);
+        void readActions(read.list, keyRef.current);
+      }
     });
     return () => {
       gone = true;
     };
   }, [libraryOpen, sceneKey, sceneSheet]);
+
+  // Coming back to the app (from editing the sheet, say): row 8 is read again, so a reworded action's
+  // bars and connections follow it straight away (see followRewording).
+  const lastFocusRead = useRef(0);
+  useEffect(() => {
+    if (!sceneSheet || !sceneKey) return;
+    const back = () => {
+      if (document.visibilityState !== 'visible' || Date.now() - lastFocusRead.current < 2000) return;
+      lastFocusRead.current = Date.now();
+      void readSceneActions(sceneSheet).then((read) => {
+        if (!('list' in read)) return;
+        setActions({ key: sceneKey, ...read });
+        followActions(sceneSheet, read.list);
+        void readActions(read.list, keyRef.current);
+      });
+    };
+    window.addEventListener('focus', back);
+    document.addEventListener('visibilitychange', back);
+    return () => {
+      window.removeEventListener('focus', back);
+      document.removeEventListener('visibilitychange', back);
+    };
+  }, [sceneKey, sceneSheet]);
 
   /** Reading row 8 again (Connect with Action was clicked) — the list shown meanwhile is the last one read. */
   const [rereading, setRereading] = useState(false);
@@ -158,7 +205,10 @@ export function ImmersiveMedia({
     setRereading(true);
     const read = await readSceneActions(sceneSheet);
     setActions({ key: sceneKey, ...read });
-    if ('list' in read) followActions(sceneSheet, read.list);
+    if ('list' in read) {
+      followActions(sceneSheet, read.list);
+      void readActions(read.list, anthropicApiKey);
+    }
     setRereading(false);
   };
 
@@ -172,8 +222,9 @@ export function ImmersiveMedia({
       l.action === action;
     const asset = library?.assets.find((a) => a.id === assetId);
     // A new connection also gets a bar on the scene's timeline (placed there when it first shows).
+    const connected = (shared: MediaLink[]) => shared.some(same);
     updateMediaLinks((all) =>
-      all.some(same)
+      connected(all)
         ? all.filter((l) => !same(l))
         : [
             ...all,
@@ -187,12 +238,23 @@ export function ImmersiveMedia({
               assetKind: asset?.kind,
             },
           ],
+      `${connected(links) ? 'Disconnect' : 'Connect'} ${assetId}`,
     );
   };
-  const removeLink = (link: MediaLink) => updateMediaLinks((all) => all.filter((l) => l !== link));
+  const removeLink = (link: MediaLink) =>
+    updateMediaLinks((all) => all.filter((l) => l !== link), `Disconnect ${link.assetId}`);
+  /** "When it plays": its kind, and for "once, when user instructs" whether it loops — one change, one undo. */
+  const setPlays = (link: MediaLink, kind: ActionKind, loop: boolean | undefined) =>
+    updateMediaLinks(
+      (all) => all.map((l) => (l === link ? { ...l, timing: { ...l.timing, kind }, loop } : l)),
+      `Change when ${link.assetId} plays`,
+    );
   /** The student's choice of when a connection fires, or what the voice does. */
   const setTiming = (link: MediaLink, change: NonNullable<MediaLink['timing']>) =>
-    updateMediaLinks((all) => all.map((l) => (l === link ? { ...l, timing: { ...l.timing, ...change } } : l)));
+    updateMediaLinks(
+      (all) => all.map((l) => (l === link ? { ...l, timing: { ...l.timing, ...change } } : l)),
+      `Change when ${link.assetId} plays`,
+    );
 
   const refresh = async (chooseAgain: boolean) => {
     setNote(null);
@@ -358,6 +420,7 @@ export function ImmersiveMedia({
                 onToggle: toggleLink,
                 onRemove: removeLink,
                 onTiming: setTiming,
+                onPlays: setPlays,
                 onTryVoice,
               }}
             />
@@ -463,19 +526,24 @@ function ThumbnailTools() {
 }
 
 /** How the Media Library is arranged: as first listed (by ID), newest first, by name, or one kind first. */
-type ListOrder = 'listed' | 'recent' | 'name' | MediaKind;
+type ListOrder = 'listed' | 'recent' | 'actions' | 'name' | MediaKind;
 const ORDERS: { value: ListOrder; label: string; hint: string }[] = [
   { value: 'listed', label: 'Listed', hint: 'In the order the files first appeared (by ID)' },
   { value: 'recent', label: 'Most recent', hint: 'The newest files first' },
+  { value: 'actions', label: 'With actions', hint: 'Files connected to an action in this scene first' },
   { value: 'name', label: 'Name', hint: 'A–Z by file name' },
   { value: 'video', label: 'Video', hint: 'Videos first' },
   { value: 'sound', label: 'Sound', hint: 'Sounds first' },
   { value: 'image', label: 'Image', hint: 'Images first' },
 ];
 
-/** The list in `order` — a kind's files first, the rest after them as listed. */
-function arrange(assets: MediaAsset[], order: ListOrder): MediaAsset[] {
+/**
+ * The list in `order` — a kind's files first, the rest after them as listed;
+ * "With actions": the files connected to an action (`connected`) first.
+ */
+function arrange(assets: MediaAsset[], order: ListOrder, connected: Set<string>): MediaAsset[] {
   if (order === 'listed') return assets;
+  if (order === 'actions') return [...assets.filter((a) => connected.has(a.id)), ...assets.filter((a) => !connected.has(a.id))];
   // Newest first: by the day it was added, then by ID (IDs are given out in order).
   if (order === 'recent') return [...assets].reverse().sort((a, b) => (b.added || '').localeCompare(a.added || ''));
   if (order === 'name')
@@ -533,6 +601,8 @@ type Connect = {
   onToggle: (assetId: string, action: string) => void;
   onRemove: (link: MediaLink) => void;
   onTiming: (link: MediaLink, change: NonNullable<MediaLink['timing']>) => void;
+  /** "When it plays" picked: its kind, and (for "once") whether it loops until removed. */
+  onPlays: (link: MediaLink, kind: ActionKind, loop: boolean | undefined) => void;
   onTryVoice?: (text: string, signal?: AbortSignal) => Promise<void>;
 };
 
@@ -584,10 +654,16 @@ function MediaList({
   };
   const [order, setOrder] = useState<ListOrder>('listed');
   const [search, setSearch] = useState('');
-  const shown = bySearch(arrange(assets, order), search);
+  // The files connected to an action in the open scene (any scene, if it isn't from the sheet).
+  const connected = new Set(
+    connect.links
+      .filter((l) => !connect.scene || (l.sheetId === connect.scene.sheetId && l.sceneNumber === connect.scene.number))
+      .map((l) => l.assetId),
+  );
+  const shown = bySearch(arrange(assets, order, connected), search);
   return (
     <div>
-      <div className="mb-1.5 flex flex-wrap gap-0.5" role="group" aria-label="Arrange the Media Library">
+      <div className="mb-1 flex flex-wrap gap-0.5" role="group" aria-label="Arrange the Media Library">
         {ORDERS.map((o) => (
           <button
             key={o.value}
@@ -601,6 +677,9 @@ function MediaList({
             {o.label}
           </button>
         ))}
+      </div>
+      {/* The search box: its own line, under the arrange buttons. */}
+      <div className="mb-1.5 flex">
         <input
           type="search"
           value={search}
@@ -641,11 +720,12 @@ function MediaList({
                   }}
                   aria-expanded={connecting === a.id}
                   data-connect-toggle={a.id}
-                  className={`mt-auto h-10 self-start border border-ink px-2 font-label text-[10px] uppercase transition-colors ${
+                  className={`mt-auto inline-flex h-10 items-center gap-1.5 self-start border border-ink px-3 font-label text-[10px] uppercase transition-colors ${
                     connecting === a.id ? 'bg-ink text-paper' : 'bg-paper text-ink hover:bg-ink/10'
                   }`}
                 >
-                  Connect with Action {connecting === a.id ? '▴' : '▾'}
+                  <span className="text-left leading-tight">Connect with Action</span>
+                  <DropdownArrow open={connecting === a.id} />
                 </button>
               </div>
             </div>
@@ -696,36 +776,100 @@ function MediaList({
   );
 }
 
-/** The actions a file is connected to, each with × to disconnect it. */
+// Which connection boxes are open (folded to one line otherwise) — remembered in this browser.
+const OPEN_KEY = 'media-open-connections';
+const connectionKey = (l: MediaLink) => `${l.sheetId}|${l.sceneNumber}|${l.assetId}|${l.action}`;
+function loadOpen(): Set<string> {
+  try {
+    return new Set(JSON.parse(window.localStorage.getItem(OPEN_KEY) ?? '[]') as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+/** When a connection plays, in a few words (for its folded line). */
+function playsText(l: MediaLink, asset: MediaAsset): string {
+  const t = timingOf(l);
+  if (t.kind === 'once' && asset.kind !== 'image' && loopOf(l)) return LOOP_WHEN_BADGE;
+  return t.kind === 'every' ? `${KIND_BADGE.every} · ${WHEN_LABEL[t.when]}` : KIND_BADGE[t.kind];
+}
+
+/**
+ * The actions a file is connected to, each with × to disconnect it. Each is
+ * folded to one line (the action and when it plays) until clicked open — so a
+ * long library stays compact but still shows what's connected.
+ */
 function Connections({ asset, connect }: { asset: MediaAsset; connect: Connect }) {
+  const [open, setOpen] = useState<Set<string>>(() => (typeof window === 'undefined' ? new Set() : loadOpen()));
   const mine = connect.links.filter((l) => l.assetId === asset.id);
   if (mine.length === 0) return null;
   const current = connect.actions && 'list' in connect.actions ? connect.actions.list : null;
+  const toggle = (l: MediaLink) => {
+    const next = loadOpen();
+    if (next.has(connectionKey(l))) next.delete(connectionKey(l));
+    else next.add(connectionKey(l));
+    try {
+      window.localStorage.setItem(OPEN_KEY, JSON.stringify([...next]));
+    } catch {
+      // Not remembered.
+    }
+    setOpen(next);
+  };
   return (
     <ul className="mt-1.5 flex flex-col gap-1" aria-label={`Actions ${asset.id} is connected to`}>
       {mine.map((l, i) => {
         const here = connect.scene && l.sheetId === connect.scene.sheetId && l.sceneNumber === connect.scene.number;
         const gone = here && current !== null && !current.includes(l.action);
+        const isOpen = open.has(connectionKey(l));
+        const reading = readingNow(l.action);
+        const unsure = reading && !reading.clear && !l.timing?.kind;
         return (
           <li
             key={i}
             className="flex items-start gap-1.5 border-l-4 border-[#3c5eac] bg-[#3c5eac]/10 py-0.5 pl-1.5 font-body text-[11px] text-ink"
           >
-            <span className="min-w-0 flex-1">
-              <span className="font-label text-[9px] uppercase tracking-wide text-muted-ink">
-                Scene {l.sceneNumber}
-                {l.sceneName ? ` · ${l.sceneName}` : ''}
+            {isOpen ? (
+              <span className="min-w-0 flex-1">
+                <button
+                  onClick={() => toggle(l)}
+                  aria-expanded
+                  title="Fold this away to one line"
+                  className="flex w-full items-center gap-1 text-left font-label text-[9px] uppercase tracking-wide text-muted-ink hover:text-ink"
+                >
+                  <span className="text-[8px]">▼</span>
+                  Scene {l.sceneNumber}
+                  {l.sceneName ? ` · ${l.sceneName}` : ''}
+                </button>
+                {l.action}
+                {gone && <span className="text-[#b91c1c]"> — no longer in row 8 of the sheet</span>}
+                <ActionTimingControls link={l} asset={asset} connect={connect} />
               </span>
-              <br />
-              {l.action}
-              {gone && <span className="text-[#b91c1c]"> — no longer in row 8 of the sheet</span>}
-              <ActionTimingControls link={l} asset={asset} connect={connect} />
-            </span>
+            ) : (
+              // Folded: one line — the action, and when it plays.
+              <button
+                onClick={() => toggle(l)}
+                aria-expanded={false}
+                title={`${l.action}\nScene ${l.sceneNumber} · ${playsText(l, asset)} — click to open its settings`}
+                className="flex min-w-0 flex-1 items-center gap-1 self-center py-1 text-left hover:text-[#3c5eac]"
+              >
+                <span className="shrink-0 text-[8px]">▶</span>
+                <span className="min-w-0 flex-1 truncate">{l.action}</span>
+                <span
+                  className={`shrink-0 font-label text-[9px] uppercase tracking-wide ${
+                    gone || unsure ? 'text-[#b91c1c]' : 'text-muted-ink'
+                  }`}
+                >
+                  {gone ? 'Not in sheet' : unsure ? '? Pick when' : playsText(l, asset)}
+                </span>
+              </button>
+            )}
             <button
               onClick={() => connect.onRemove(l)}
               aria-label={`Disconnect ${asset.id} from “${l.action}”`}
               title="Disconnect this file from this action"
-              className="flex h-8 w-8 shrink-0 items-center justify-center text-2xl leading-none text-ink hover:bg-[#3c5eac]/20 hover:text-[#b91c1c]"
+              className={`flex shrink-0 items-center justify-center leading-none text-ink hover:bg-[#3c5eac]/20 hover:text-[#b91c1c] ${
+                isOpen ? 'h-8 w-8 text-2xl' : 'h-6 w-6 self-center text-lg'
+              }`}
             >
               ×
             </button>
@@ -750,12 +894,13 @@ function ActionTimingControls({ link, asset, connect }: { link: MediaLink; asset
   const [problem, setProblem] = useState('');
   /** Stops a Try it under way (the button turns into Stop while it plays). */
   const stopper = useRef<AbortController | null>(null);
-  const badge = (
-    <span className="mr-1 inline-block bg-[#3c5eac] px-1 font-label text-[9px] uppercase tracking-wide text-paper">
-      {KIND_BADGE[timing.kind]}
-    </span>
-  );
-  if (timing.kind !== 'every') return <span className="mt-1 block">{badge}</span>;
+  // Claude's reading of the action; if it could mean more than one thing, the student picks.
+  const reading = readingNow(link.action);
+  const unsure = reading && !reading.clear && !link.timing?.kind;
+  // "Loop, when user instructs" (video and sound).
+  const loopsWhen = timing.kind === 'once' && asset.kind !== 'image' && loopOf(link);
+  // An image or video showing in the room now (from Try it or the conversation).
+  const shownNow = useShowing().some((m) => m.assetId === asset.id);
 
   const tryIt = async () => {
     const stop = new AbortController();
@@ -773,9 +918,9 @@ function ActionTimingControls({ link, asset, connect }: { link: MediaLink; asset
     setTrying(true);
     setProblem('');
     try {
-      if (asset.kind !== 'sound')
-        throw new Error('Only sound files play here for now — images and video will show in the room.');
-      if (timing.when === 'before-reply') {
+      if (timing.kind !== 'every') {
+        await sound();
+      } else if (timing.when === 'before-reply') {
         // The voice waits for the sound, waits a set time, or starts with it.
         const playing = sound();
         if (timing.voice === 'wait') await playing;
@@ -808,66 +953,139 @@ function ActionTimingControls({ link, asset, connect }: { link: MediaLink; asset
 
   return (
     <span className="mt-1 flex flex-col gap-1">
-      <span>{badge}</span>
+      {unsure && (
+        <span className="flex flex-col gap-1 border border-[#3c5eac] bg-paper p-1.5">
+          <span>Not sure when this should play — pick one:</span>
+          <span className="flex flex-wrap gap-1">
+            {(reading.options?.length ? reading.options : ACTION_KINDS).map((k) => (
+              <button
+                key={k}
+                onClick={() => connect.onTiming(link, { kind: k })}
+                title={`Plays ${KIND_HELP[k]}`}
+                className="border border-[#3c5eac] bg-[#3c5eac]/10 px-1.5 py-0.5 font-label text-[10px] uppercase text-ink hover:bg-[#3c5eac] hover:text-paper"
+              >
+                {KIND_BADGE[k]}
+              </button>
+            ))}
+          </span>
+        </span>
+      )}
       <span className="flex flex-wrap items-center gap-1">
         <select
-          value={timing.when}
-          onChange={(e) => connect.onTiming(link, { when: e.target.value as EveryWhen })}
-          className={selectClass}
-          title="When it plays"
+          value={loopsWhen ? 'once-loop' : timing.kind}
+          onChange={(e) => {
+            const v = e.target.value;
+            if (v === 'once-loop') connect.onPlays(link, 'once', true);
+            else connect.onPlays(link, v as ActionKind, v === 'once' ? false : undefined);
+          }}
+          className={`${selectClass} font-label uppercase`}
+          title={`Plays ${loopsWhen ? LOOP_WHEN_HELP : KIND_HELP[timing.kind]}`}
           aria-label="When it plays"
         >
-          {(Object.keys(WHEN_LABEL) as EveryWhen[]).map((w) => (
-            <option key={w} value={w}>
-              {WHEN_LABEL[w]}
-            </option>
-          ))}
-        </select>
-        {timing.when === 'before-reply' && (
-          <select
-            value={timing.voice}
-            onChange={(e) => connect.onTiming(link, { voice: e.target.value as VoiceWait })}
-            className={selectClass}
-            title="What the chatbot's voice does"
-            aria-label="What the voice does"
-          >
-            {(Object.keys(VOICE_LABEL) as VoiceWait[]).map((v) => (
-              <option key={v} value={v}>
-                {VOICE_LABEL[v]}
+          {ACTION_KINDS.flatMap((k) => [
+            <option key={k} value={k}>
+              {KIND_BADGE[k]}
+            </option>,
+            // A picture just stays up: only video and sound can loop.
+            k === 'once' && asset.kind !== 'image' && (
+              <option key="once-loop" value="once-loop">
+                {LOOP_WHEN_BADGE}
               </option>
-            ))}
-          </select>
+            ),
+          ])}
+        </select>
+        {timing.kind === 'every' && (
+          <>
+            <select
+              value={timing.when}
+              onChange={(e) => connect.onTiming(link, { when: e.target.value as EveryWhen })}
+              className={selectClass}
+              title="Each time what happens"
+              aria-label="Each time what happens"
+            >
+              {(Object.keys(WHEN_LABEL) as EveryWhen[]).map((w) => (
+                <option key={w} value={w}>
+                  {WHEN_LABEL[w]}
+                </option>
+              ))}
+            </select>
+            {timing.when === 'before-reply' && (
+              <select
+                value={timing.voice}
+                onChange={(e) => connect.onTiming(link, { voice: e.target.value as VoiceWait })}
+                className={selectClass}
+                title="What the chatbot's voice does"
+                aria-label="What the voice does"
+              >
+                {(Object.keys(VOICE_LABEL) as VoiceWait[]).map((v) => (
+                  <option key={v} value={v}>
+                    {VOICE_LABEL[v]}
+                  </option>
+                ))}
+              </select>
+            )}
+            {timing.when === 'before-reply' && timing.voice === 'delay' && (
+              <span className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={0.5}
+                  value={timing.delay}
+                  onChange={(e) =>
+                    connect.onTiming(link, { delay: Math.min(10, Math.max(0, Number(e.target.value) || 0)) })
+                  }
+                  aria-label="Seconds the voice waits"
+                  className={`w-14 ${selectClass}`}
+                />
+                s
+              </span>
+            )}
+          </>
         )}
-        {timing.when === 'before-reply' && timing.voice === 'delay' && (
-          <span className="flex items-center gap-1">
-            <input
-              type="number"
-              min={0}
-              max={10}
-              step={0.5}
-              value={timing.delay}
-              onChange={(e) =>
-                connect.onTiming(link, { delay: Math.min(10, Math.max(0, Number(e.target.value) || 0)) })
-              }
-              aria-label="Seconds the voice waits"
-              className={`w-14 ${selectClass}`}
-            />
-            s
-          </span>
+        {asset.kind === 'sound' && (
+          <button
+            onClick={() => (trying ? stopTry() : void tryIt())}
+            className={`border border-ink px-1.5 py-0.5 font-label text-[10px] uppercase ${
+              trying ? 'bg-ink text-paper hover:bg-ink/80' : 'bg-paper text-ink hover:bg-ink/10'
+            }`}
+            title={
+              trying
+                ? 'Stop the sound and the sample line'
+                : "Play the sound and a sample line in the scene's voice, with this timing"
+            }
+          >
+            {trying ? '■ Stop' : '▶ Try it'}
+          </button>
         )}
-        <button
-          onClick={() => (trying ? stopTry() : void tryIt())}
-          className={`border border-ink px-1.5 py-0.5 font-label text-[10px] uppercase ${
-            trying ? 'bg-ink text-paper hover:bg-ink/80' : 'bg-paper text-ink hover:bg-ink/10'
-          }`}
-          title={
-            trying
-              ? 'Stop the sound and the sample line'
-              : "Play the sound and a sample line in the scene's voice, with this timing"
-          }
-        >
-          {trying ? '■ Stop' : '▶ Try it'}
-        </button>
+        {asset.kind !== 'sound' && (
+          <button
+            onClick={() => {
+              setProblem('');
+              if (shownNow) hideVisual(asset.id);
+              else
+                showVisual({ link, asset, timing, areas: areasOf(link) }, true).catch((err: unknown) =>
+                  setProblem(err instanceof Error ? err.message : 'It couldn’t be shown.'),
+                );
+            }}
+            className={`border border-ink px-1.5 py-0.5 font-label text-[10px] uppercase ${
+              shownNow ? 'bg-ink text-paper hover:bg-ink/80' : 'bg-paper text-ink hover:bg-ink/10'
+            }`}
+            title={
+              shownNow
+                ? 'Hide it — take it out of the room'
+                : `Show it in ${areasText(areasOf(link))} of the room (its bars' tracks on the timeline)`
+            }
+          >
+            {/* Both labels share one cell, so the button keeps its "Try it" width while it says Hide. */}
+            <span className="grid">
+              <span className={`col-start-1 row-start-1 ${shownNow ? 'invisible' : ''}`}>
+                ▶ Try it in {areasText(areasOf(link))}
+              </span>
+              <span className={`col-start-1 row-start-1 text-center ${shownNow ? '' : 'invisible'}`}>■ Hide</span>
+            </span>
+          </button>
+        )}
       </span>
       {problem && <span className="text-[#b91c1c]">{problem}</span>}
     </span>
@@ -941,7 +1159,15 @@ function ActionPicker({ asset, connect, onDone }: { asset: MediaAsset; connect: 
               <span className="w-3 shrink-0 font-label text-[11px]">{linked(action) ? '✓' : ''}</span>
               <span className="min-w-0 flex-1">{action}</span>
               <span className="shrink-0 font-label text-[9px] uppercase tracking-wide text-muted-ink">
-                {KIND_BADGE[readActionTiming(action).kind]}
+                {readingNow(action)
+                  ? readingNow(action)!.clear
+                    ? readingNow(action)!.kind === 'once' && readingNow(action)!.loop
+                      ? LOOP_WHEN_BADGE
+                      : KIND_BADGE[readingNow(action)!.kind]
+                    : '? Not sure'
+                  : readActionTiming(action).kind === 'once' && wordsSayLoop(action)
+                    ? LOOP_WHEN_BADGE
+                    : KIND_BADGE[readActionTiming(action).kind]}
               </span>
             </button>
           </li>

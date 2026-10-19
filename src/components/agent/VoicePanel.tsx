@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_VOICE_SETTINGS } from '@/lib/storage';
 import type { VoiceSettings } from '@/lib/types';
-import { buttonOutline, fieldInput, fieldLabel } from '@/lib/styles';
+import { buttonOutline, buttonOutlineCompact, fieldInput, fieldLabel, toolbarButtonWidth } from '@/lib/styles';
 import { DropdownArrow } from './DropdownArrow';
 
 // The ElevenLabs voice controls, in a panel that pops open from the chat
@@ -64,6 +64,8 @@ export function VoicePanel({
   onSpokenRepliesChange,
   pauseSeconds,
   onPauseSecondsChange,
+  interruptByVoice,
+  onInterruptByVoiceChange,
   onSettingsChange,
   onVoicesChange,
   onTest,
@@ -84,6 +86,9 @@ export function VoicePanel({
   /** Open mic: seconds of quiet before what was said is sent. */
   pauseSeconds: number;
   onPauseSecondsChange: (seconds: number) => void;
+  /** Open mic: talking over the agent interrupts it. */
+  interruptByVoice: boolean;
+  onInterruptByVoiceChange: (on: boolean) => void;
   onSettingsChange: (settings: VoiceSettings) => void;
   onVoicesChange: (voices: SavedVoice[], activeVoice: number) => void;
   /** Speaks a sample line in this voice with the normal model; resolves when it starts (or fails). */
@@ -193,16 +198,19 @@ export function VoicePanel({
   const active = voices[activeVoice];
 
   return (
-    <div ref={wrapperRef} className="relative">
+    <div ref={wrapperRef} className="relative flex">
       <button
         onClick={() => setOpen((o) => !o)}
-        className={`inline-flex h-10 items-center gap-2 ${buttonOutline}`}
+        className={`inline-flex h-10 items-center gap-1.5 ${toolbarButtonWidth} ${buttonOutlineCompact}`}
         aria-expanded={open}
         data-tour="voice-button"
-        title="Voices and voice settings"
+        title={`Voices and voice settings — ${active?.name.trim() || `Voice ${activeVoice + 1}`}${expressive ? ' (expressive)' : ''}`}
       >
-        Voice: {active?.name.trim() || `Voice ${activeVoice + 1}`}
-        {expressive ? ' ✦' : ''}
+        {/* A long voice name is cut short so the button keeps the toolbar's width. */}
+        <span className="min-w-0 truncate">
+          Voice: {active?.name.trim() || `Voice ${activeVoice + 1}`}
+          {expressive ? ' ✦' : ''}
+        </span>
         <DropdownArrow open={open} />
       </button>
       {/* Narrow screens: a full-width panel pinned under the header, so it can't open
@@ -238,6 +246,21 @@ export function VoicePanel({
               />
               <span className="font-body text-xs leading-snug text-muted-ink">
                 Open mic (blue): how long you need to be quiet before what you said is sent.
+              </span>
+            </label>
+            <label className="flex items-start gap-2 font-label text-[11px] uppercase tracking-widest text-ink">
+              <input
+                type="checkbox"
+                checked={interruptByVoice}
+                onChange={(e) => onInterruptByVoiceChange(e.target.checked)}
+                className="mt-0.5 accent-[#18a0fb]"
+              />
+              <span>
+                Talk to interrupt
+                <span className="block font-body text-xs normal-case leading-snug tracking-normal text-muted-ink">
+                  Open mic: start talking while the agent speaks and it stops to listen. Its own voice coming back
+                  through the speakers is ignored; headphones make it surest. The Interrupt button (or Esc) always works.
+                </span>
               </span>
             </label>
           </section>

@@ -139,14 +139,49 @@ export type MediaMessage =
  * to see it"); "every time" actions on a repeating event ("Play the ding every
  * time before you speak"); "throughout" ones for the whole scene.
  */
-export type ActionKind = 'once' | 'every' | 'throughout';
+export type ActionKind = 'once' | 'every' | 'throughout' | 'start' | 'end';
 /** The repeating events an "every time" action can follow. */
 export type EveryWhen = 'before-reply' | 'reply-start' | 'after-reply' | 'caller-speaks';
 /** What the chatbot's voice does about the sound: wait for it to finish, play over it, or wait a set time. */
 export type VoiceWait = 'wait' | 'over' | 'delay';
 export type ActionTiming = { kind: ActionKind; when: EveryWhen; voice: VoiceWait; /** Seconds, for 'delay'. */ delay: number };
 
-export const KIND_BADGE: Record<ActionKind, string> = { once: 'Once, when…', every: '↻ Every time', throughout: 'Throughout the scene' };
+export const KIND_BADGE: Record<ActionKind, string> = {
+  once: 'Once, when user instructs',
+  every: '↻ Every time',
+  throughout: 'Throughout the scene',
+  start: 'At the start',
+  end: 'At the end',
+};
+/** Each kind, in a few words — for picking one when an action isn't clear. */
+export const KIND_HELP: Record<ActionKind, string> = {
+  once: 'once, when the user asks for it (or its moment comes) — a video then holds its last frame',
+  every: 'each time something happens (e.g. before every reply)',
+  throughout: 'for the whole scene, from the start of the call to the end',
+  start: 'once, when the call begins',
+  end: 'once, when the call ends',
+};
+export const ACTION_KINDS: ActionKind[] = ['once', 'every', 'throughout', 'start', 'end'];
+/** A "once, when…" action that loops (video, sound) until it's removed. */
+export const LOOP_WHEN_BADGE = 'Loop, when user instructs';
+export const LOOP_WHEN_HELP = 'when the user asks for it (or its moment comes), looping until it is removed';
+
+/** The words ask for it to loop ("loop", "on repeat", "keep playing"…) — the starting point, before Claude's reading. */
+export const wordsSayLoop = (text: string) =>
+  /\b(?:loop(?:s|ing|ed)?|repeat(?:s|ing|edly)?|over\s+and\s+over|continuous(?:ly)?|keep\s+(?:playing|looping|going))\b/i.test(text);
+
+/**
+ * What an action (a row 8 line) means, as Claude read it — in any wording or
+ * language. `clear` is false when it could mean more than one thing; then
+ * `options` are the likely kinds for the student to pick from.
+ */
+export type ActionReading = Partial<Pick<ActionTiming, 'when' | 'voice'>> & {
+  kind: ActionKind;
+  /** For "once": it should loop until removed. */
+  loop?: boolean;
+  clear: boolean;
+  options?: ActionKind[];
+};
 export const WHEN_LABEL: Record<EveryWhen, string> = {
   'before-reply': 'Before each reply',
   'reply-start': 'As each reply starts',
@@ -165,13 +200,17 @@ const CALLER_SPEAKS = /\b(caller|patient|nurse|user|person|visitor|they)\s+(?:sp
 export function readActionTiming(text: string): ActionTiming {
   const t = text.toLowerCase();
   const every = /\b(?:every\s*time|each\s+time|whenever|always|every\s+(?:reply|response|line|answer|turn)|each\s+(?:reply|response|line|answer|turn))\b/.test(t);
-  const throughout = /\b(?:throughout|the\s+whole\s+(?:scene|call)|all\s+through|in\s+the\s+background)\b/.test(t);
+  // The fallback when Claude can't read it (no key, no connection) — English phrases only.
+  const throughout =
+    /\b(?:throughout|during\s+the\s+(?:whole\s+|entire\s+)?(?:scene|call|conversation)|(?:the\s+)?(?:whole|entire)\s+(?:scene|call|conversation|time)|all\s+through|in\s+the\s+background|background\s+(?:music|sound|soundscape|ambience|ambiance|noise)|loop(?:s|ing|ed)?\b|continuous(?:ly)?)\b/.test(t);
+  const start = /\b(?:at\s+the\s+(?:start|beginning)|when\s+the\s+(?:call|scene|conversation)\s+(?:starts|begins|opens)|to\s+(?:start|begin|open)\s+the\s+(?:call|scene))\b/.test(t);
+  const end = /\b(?:at\s+the\s+end|when\s+the\s+(?:call|scene|conversation)\s+(?:ends|finishes|is\s+over)|to\s+(?:end|close|finish)\s+the\s+(?:call|scene))\b/.test(t);
   let when: EveryWhen = 'before-reply';
   if (CALLER_SPEAKS.test(t)) when = 'caller-speaks';
   else if (/\bafter\b/.test(t)) when = 'after-reply';
   else if (/\b(?:while|as)\s+(?:you|it|the\s+\w+)\s+(?:speaks?|talks?|says?|replies|responds?)/.test(t)) when = 'reply-start';
   return {
-    kind: every ? 'every' : throughout ? 'throughout' : 'once',
+    kind: every ? 'every' : throughout ? 'throughout' : start ? 'start' : end ? 'end' : 'once',
     when,
     voice: when === 'before-reply' ? 'wait' : 'over',
     delay: 1,

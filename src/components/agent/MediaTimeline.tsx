@@ -3,7 +3,20 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { buttonIcon } from '@/lib/styles';
 import { kindOf } from '@/lib/agent/media';
-import { timingOf, updateMediaLinks, useMediaLinks, type MediaLink } from '@/lib/agent/mediaFolder';
+import { stopSounds } from '@/lib/agent/mediaPlayback';
+import { hideVisualExcept } from '@/lib/agent/mediaShow';
+import {
+  areaOfTrack,
+  barsOf,
+  loopOf,
+  timingOf,
+  useActionReadings,
+  updateMediaLinks,
+  useHistoryNote,
+  useMediaLinks,
+  type MediaLink,
+  type TimelineBar,
+} from '@/lib/agent/mediaFolder';
 
 /**
  * The media timeline: one column per conversation stage of the open scene
@@ -19,19 +32,88 @@ import { timingOf, updateMediaLinks, useMediaLinks, type MediaLink } from '@/lib
  * a bar, named with the action's words: images and video on a projection
  * track, sounds on the sound track at the bottom. Drag a bar's ends to
  * stretch it across stages; drag its middle to move it to other stages, or
- * (images and video) to another projection track.
+ * (images and video) to another projection track. Hold Option (Alt) while
+ * dragging to duplicate it instead — the same action on another screen too.
+ * Its × deletes it (the last bar of a connection disconnects the file).
  */
 
 export const TRACKS = 11;
-/** The tracks, top to bottom: the 11 projection areas, then sound. */
-type Track = number | 'sound';
-const ROWS: Track[] = [...Array.from({ length: TRACKS }, (_, i) => i + 1), 'sound'];
-type Bar = NonNullable<MediaLink['bar']>;
+/**
+ * Sound tracks: the ♪ row opens (its arrow) into up to this many, so sounds
+ * that overlap in time each get a row. (Chrome could play far more at once —
+ * about 75 media players a page — but five keeps the mix clear.)
+ */
+export const MAX_SOUND_TRACKS = 5;
+/** Each projection area's number opens (its arrow) into this many tracks — several media for one screen. */
+export const MAX_AREA_TRACKS = 5;
+/** The tracks, top to bottom: the 11 projection areas (each perhaps opened into more), then the sound tracks. */
+type Track = TimelineBar['track'];
+const PROJECTION_ROWS: Track[] = Array.from({ length: TRACKS }, (_, i) => i + 1);
+const areaTrack = (area: number, k: number): Track => (k <= 1 ? area : `${area}-${k}`);
+/** An area's extra tracks (5-2 … 5-5). */
+const extraTracks = (area: number): Track[] =>
+  Array.from({ length: MAX_AREA_TRACKS - 1 }, (_, i) => areaTrack(area, i + 2));
+const soundTrack = (n: number): Track => (n <= 1 ? 'sound' : `sound-${n}`);
+const isSoundTrack = (t: Track) => typeof t === 'string' && t.startsWith('sound');
+/** A track's number within its group: an area's 1–5, or a sound track's 1–5. */
+const laneOf = (t: Track) => (typeof t === 'number' || t === 'sound' ? 1 : Number(/(\d+)$/.exec(t)?.[1] ?? 1) || 1);
+const SOUND_TRACKS: Track[] = Array.from({ length: MAX_SOUND_TRACKS }, (_, i) => soundTrack(i + 1));
+/** Where new pictures and video go: the 11 areas' own tracks first, then their extra ones. */
+const PLACE_TRACKS: Track[] = [...PROJECTION_ROWS, ...PROJECTION_ROWS.flatMap((a) => extraTracks(a as number))];
+const SOUNDS_OPEN_KEY = 'timeline-sounds-open';
+const AREAS_OPEN_KEY = 'timeline-areas-open';
+type Bar = TimelineBar;
 
 const linkKey = (l: MediaLink) => `${l.assetId}|${l.action}`;
+/** One bar: its connection, and which of the connection's bars (0 = the first, then its duplicates). */
+const barKey = (l: MediaLink, i: number) => `${linkKey(l)}#${i}`;
+/** The same connection (by file, action and scene — the stored copy may be a newer object). */
+const sameLink = (a: MediaLink, b: MediaLink) =>
+  a === b || (linkKey(a) === linkKey(b) && a.sheetId === b.sheetId && a.sceneNumber === b.sceneNumber);
+
+/** A connection with its bar number `i` changed (`to`), or removed (`to` null). */
+function withBar(l: MediaLink, i: number, to: Bar | null): MediaLink {
+  const bars = barsOf(l);
+  if (to) bars[i] = to;
+  else bars.splice(i, 1);
+  const [bar, ...copies] = bars;
+  return { ...l, bar, copies };
+}
 const isSound = (l: MediaLink) => (l.assetKind ?? kindOf(l.assetName ?? '')) === 'sound';
 
 export type TimelineStage = { code: string; name: string };
+
+type Placed = { track: Track; from: number; to: number };
+
+/**
+ * Where a new bar goes: the first empty space for it, never on top of another
+ * bar if there's room anywhere. It tries, in order: its own stages on each
+ * track (top first); the same length at the nearest other stages; then
+ * (`canShrink`) shorter and shorter, down to a single stage. Only a timeline
+ * with no room at all puts it over another bar, where it wanted to be.
+ */
+function findSpace(
+  placed: Placed[],
+  tracks: Track[],
+  from: number,
+  to: number,
+  count: number,
+  canShrink: boolean,
+): Placed {
+  const free = (track: Track, a: number, b: number) =>
+    !placed.some((p) => p.track === track && p.from <= b && a <= p.to);
+  const want = to - from + 1;
+  for (let length = want; length >= (canShrink ? 1 : want); length--) {
+    // Starting stages nearest the one it wanted first.
+    const starts = Array.from({ length: count - length + 1 }, (_, i) => i).sort(
+      (a, b) => Math.abs(a - from) - Math.abs(b - from) || a - b,
+    );
+    for (const start of starts)
+      for (const track of tracks)
+        if (free(track, start, start + length - 1)) return { track, from: start, to: start + length - 1 };
+  }
+  return { track: tracks[0], from, to };
+}
 
 const branchNumber = (code: string) => /^(\d+)[A-Za-z]+$/.exec(code.trim())?.[1] ?? null;
 
@@ -97,11 +179,63 @@ export function MediaTimeline({
 
   const at = (i: number) => `${(i / Math.max(count, 1)) * 100}%`;
   const width = `${100 / Math.max(count, 1)}%`;
-  const rows: CSSProperties = { gridTemplateRows: `repeat(${ROWS.length}, minmax(22px, 1fr))` };
-
   // This scene's connections — its bars.
   const allLinks = useMediaLinks();
   const mine = scene ? allLinks.filter((l) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number) : [];
+
+  // The sound tracks: one ♪ row, which its arrow opens into all MAX_SOUND_TRACKS (remembered). Closed,
+  // every sound shows on the one row. They're tinted light blue, for audio.
+  const [soundsOpen, setSoundsOpen] = useState(false);
+  useEffect(() => {
+    try {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
+      setSoundsOpen(window.localStorage.getItem(SOUNDS_OPEN_KEY) === 'true');
+    } catch {
+      // Storage blocked: closed.
+    }
+  }, []);
+  const toggleSounds = () => {
+    setSoundsOpen((open) => {
+      try {
+        window.localStorage.setItem(SOUNDS_OPEN_KEY, String(!open));
+      } catch {
+        // Not remembered.
+      }
+      return !open;
+    });
+  };
+  // Each projection area's number opens (its arrow) into MAX_AREA_TRACKS tracks — remembered.
+  const [areasOpen, setAreasOpen] = useState<number[]>([]);
+  useEffect(() => {
+    try {
+      const kept = JSON.parse(window.localStorage.getItem(AREAS_OPEN_KEY) ?? '[]') as number[];
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
+      if (Array.isArray(kept)) setAreasOpen(kept.filter((a) => typeof a === 'number'));
+    } catch {
+      // Storage blocked: all closed.
+    }
+  }, []);
+  const toggleArea = (area: number) =>
+    setAreasOpen((open) => {
+      const next = open.includes(area) ? open.filter((a) => a !== area) : [...open, area];
+      try {
+        window.localStorage.setItem(AREAS_OPEN_KEY, JSON.stringify(next));
+      } catch {
+        // Not remembered.
+      }
+      return next;
+    });
+  const lanes = soundsOpen ? MAX_SOUND_TRACKS : 1;
+  const projectionRows: Track[] = PROJECTION_ROWS.flatMap((a) =>
+    areasOpen.includes(a as number) ? [a, ...extraTracks(a as number)] : [a],
+  );
+  const soundRows = SOUND_TRACKS.slice(0, lanes);
+  const trackRows: Track[] = [...projectionRows, ...soundRows];
+  /** The row a track shows on: its own, or — its group closed — its area's (or the first ♪) row. */
+  const visibleTrack = (t: Track): Track =>
+    trackRows.includes(t) ? t : isSoundTrack(t) ? 'sound' : (areaOfTrack(t) ?? 1);
+  const rowOf = (t: Track) => trackRows.indexOf(visibleTrack(t));
+  const rows: CSSProperties = { gridTemplateRows: `repeat(${trackRows.length}, minmax(22px, 1fr))` };
   const indexOf = (code: string, fallback: number) => {
     const i = stages.findIndex((s) => s.code === code);
     return i >= 0 ? i : fallback;
@@ -111,44 +245,79 @@ export function MediaTimeline({
     return { from, to: Math.max(from, indexOf(bar.to, count - 1)) };
   };
 
-  // A new connection's bar: "every time" and "throughout" actions span the scene, "once" ones a
-  // stage; sounds on the sound track, images and video on the first projection track free there.
+  // A new connection's bar: "every time" and "throughout" actions span the scene, "once" and "at
+  // the start" ones the first stage, "at the end" ones the last; sounds on the sound track, images and
+  // video on a projection track — in the first empty space for it (see findSpace).
+  // And when a connection's "When it plays" changes (in the Media Library, or a new reading of its
+  // words), its bars are laid out again for it — on the same tracks: across the scene, the last stage,
+  // or (once, at the start) the one stage they start at.
+  const readings = useActionReadings();
+  const kindNow = (l: MediaLink) => timingOf(l).kind;
   useEffect(() => {
-    if (!scene || count === 0 || !mine.some((l) => !l.bar)) return;
+    if (!scene || count === 0) return;
+    const ours = (l: MediaLink) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number;
+    if (!mine.some((l) => !l.bar || l.barsKind !== kindNow(l))) return;
     updateMediaLinks((all) => {
       const placed: { track: Track; from: number; to: number }[] = all
-        .filter((l) => l.bar && l.sheetId === scene.sheetId && l.sceneNumber === scene.number)
-        .map((l) => ({ track: l.bar!.track, ...span(l.bar!) }));
+        .filter(ours)
+        .flatMap((l) => barsOf(l).map((b) => ({ track: b.track, ...span(b) })));
       return all.map((l) => {
-        if (l.bar || l.sheetId !== scene.sheetId || l.sceneNumber !== scene.number) return l;
-        const whole = timingOf(l).kind !== 'once';
-        const from = 0;
-        const to = whole ? count - 1 : 0;
-        let track: Track = 'sound';
-        if (!isSound(l)) {
-          track =
-            ROWS.find((t) => t !== 'sound' && !placed.some((p) => p.track === t && p.from <= to && from <= p.to)) ?? 1;
+        if (!ours(l)) return l;
+        const kind = kindNow(l);
+        if (l.bar && l.barsKind === kind) return l;
+        // Laid out before this was kept: take it as it is.
+        if (l.bar && l.barsKind === undefined) return { ...l, barsKind: kind };
+        if (l.bar) {
+          const respan = (b: Bar): Bar => {
+            const { from } = span(b);
+            const [a, z] =
+              kind === 'every' || kind === 'throughout'
+                ? [0, count - 1]
+                : kind === 'end'
+                  ? [count - 1, count - 1]
+                  : [from, from];
+            return { ...b, from: stages[a].code, to: stages[z].code };
+          };
+          const [bar, ...copies] = barsOf(l).map(respan);
+          return { ...l, bar, copies, barsKind: kind };
         }
-        placed.push({ track, from, to });
-        return { ...l, bar: { track, from: stages[from].code, to: stages[to].code } };
+        // Every time / throughout: the whole scene; at the end: the last stage; once / at the start: the first.
+        const from = kind === 'end' ? count - 1 : 0;
+        const to = kind === 'every' || kind === 'throughout' || kind === 'end' ? count - 1 : 0;
+        // Sounds keep their length (the sound track is the only place for them); pictures and video
+        // would rather be shorter than sit on another bar.
+        const spot = isSound(l)
+          ? findSpace(placed, SOUND_TRACKS, from, to, count, false)
+          : findSpace(placed, PLACE_TRACKS, from, to, count, true);
+        placed.push(spot);
+        return {
+          ...l,
+          bar: { track: spot.track, from: stages[spot.from].code, to: stages[spot.to].code },
+          barsKind: kind,
+        };
       });
     });
     // span() reads `stages`, which is in the dependencies.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene?.sheetId, scene?.number, count, stages, allLinks]);
+  }, [scene?.sheetId, scene?.number, count, stages, allLinks, readings]);
 
   // A bar being dragged: where it would land (shown as it moves, saved on letting go).
   const tracksBox = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<{
     key: string;
+    /** Which of its connection's bars. */
+    index: number;
     mode: 'move' | 'from' | 'to';
+    /** Option (Alt) held as the drag began: a duplicate is made where it's let go; the bar stays put. */
+    copy: boolean;
     x: number;
     y: number;
     start: { track: Track; from: number; to: number };
     now: { track: Track; from: number; to: number };
   } | null>(null);
-  const grab = (e: React.PointerEvent, l: MediaLink, mode: 'move' | 'from' | 'to') => {
-    if (e.button !== 0 || !l.bar) return;
+  const grab = (e: React.PointerEvent, l: MediaLink, i: number, mode: 'move' | 'from' | 'to') => {
+    const bar = barsOf(l)[i];
+    if (e.button !== 0 || !bar) return;
     e.preventDefault();
     e.stopPropagation();
     try {
@@ -156,22 +325,27 @@ export function MediaTimeline({
     } catch {
       // Not a real pointer — following still works on the bar.
     }
-    const start = { track: l.bar.track, ...span(l.bar) };
-    setDrag({ key: linkKey(l), mode, x: e.clientX, y: e.clientY, start, now: start });
+    const start = { track: bar.track, ...span(bar) };
+    const copy = mode === 'move' && e.altKey;
+    setDrag({ key: barKey(l, i), index: i, mode, copy, x: e.clientX, y: e.clientY, start, now: start });
   };
-  const follow = (e: React.PointerEvent, l: MediaLink) => {
-    if (!drag || drag.key !== linkKey(l)) return;
+  const follow = (e: React.PointerEvent, l: MediaLink, i: number) => {
+    if (!drag || drag.key !== barKey(l, i)) return;
     const box = tracksBox.current?.getBoundingClientRect();
     if (!box) return;
     const columns = Math.round((e.clientX - drag.x) / (box.width / count));
-    const rowsMoved = Math.round((e.clientY - drag.y) / (box.height / ROWS.length));
+    const rowsMoved = Math.round((e.clientY - drag.y) / (box.height / trackRows.length));
     const { start } = drag;
     let now = start;
     if (drag.mode === 'move') {
       const length = start.to - start.from;
       const from = Math.min(Math.max(0, start.from + columns), count - 1 - length);
       let track = start.track;
-      if (track !== 'sound') track = Math.min(TRACKS, Math.max(1, track + rowsMoved));
+      // Pictures and video move among the projection tracks shown (an area's extra ones too, if open);
+      // sounds among the open sound tracks.
+      const group = isSoundTrack(track) ? soundRows : projectionRows;
+      const pos = group.indexOf(visibleTrack(track));
+      track = group[Math.min(group.length - 1, Math.max(0, pos + rowsMoved))];
       now = { track, from, to: from + length };
     } else if (drag.mode === 'from') {
       now = { ...start, from: Math.min(start.to, Math.max(0, start.from + columns)) };
@@ -180,47 +354,102 @@ export function MediaTimeline({
     }
     if (now.track !== drag.now.track || now.from !== drag.now.from || now.to !== drag.now.to) setDrag({ ...drag, now });
   };
-  const letGo = (l: MediaLink) => {
-    if (!drag || drag.key !== linkKey(l)) return;
-    const { now } = drag;
+  const letGo = (l: MediaLink, i: number) => {
+    if (!drag || drag.key !== barKey(l, i)) return;
+    const { now, start, copy } = drag;
     setDrag(null);
-    updateMediaLinks((all) =>
-      all.map((x) =>
-        x === l || (linkKey(x) === drag.key && x.sheetId === l.sheetId && x.sceneNumber === l.sceneNumber)
-          ? { ...x, bar: { track: now.track, from: stages[now.from].code, to: stages[now.to].code } }
-          : x,
-      ),
+    const placed: Bar = { track: now.track, from: stages[now.from].code, to: stages[now.to].code };
+    // Let go where it started: nothing changed (and a duplicate dropped there isn't one).
+    const moved = now.track !== start.track || now.from !== start.from || now.to !== start.to;
+    if (!moved) return;
+    updateMediaLinks(
+      (all) =>
+        all.map((x) => {
+          if (!sameLink(x, l)) return x;
+          return copy ? { ...x, copies: [...(x.copies ?? []), placed] } : withBar(x, i, placed);
+        }),
+      copy ? 'Duplicate bar' : drag.mode === 'move' ? 'Move bar' : 'Stretch bar',
     );
   };
+  // Its × : the bar goes. A connection's last bar takes the connection with it (the file is disconnected
+  // from the action — otherwise a new bar would simply take its place).
+  // What it was showing (or playing) in the room comes down with it: from that bar's screen, or — its
+  // connection's last bar — altogether (unless the same file has bars for another action there).
+  const remove = (l: MediaLink, i: number) => {
+    const last = barsOf(l).length <= 1;
+    const others = mine.filter((x) => x.assetId === l.assetId && !sameLink(x, l));
+    const keep = [...others, ...(last ? [] : [withBar(l, i, null)])].flatMap((x) =>
+      barsOf(x).flatMap((b) => areaOfTrack(b.track) ?? []),
+    );
+    hideVisualExcept(l.assetId, keep);
+    if (last && others.length === 0) stopSounds(l.assetId);
+    updateMediaLinks(
+      (all) =>
+        barsOf(l).length <= 1
+          ? all.filter((x) => !sameLink(x, l))
+          : all.map((x) => (sameLink(x, l) ? withBar(x, i, null) : x)),
+      'Delete bar',
+    );
+  };
+  // Option (Alt) held: the bars show they'll be duplicated when dragged.
+  const [optionHeld, setOptionHeld] = useState(false);
+  useEffect(() => {
+    const watch = (e: KeyboardEvent) => setOptionHeld(e.altKey);
+    const clear = () => setOptionHeld(false);
+    window.addEventListener('keydown', watch);
+    window.addEventListener('keyup', watch);
+    window.addEventListener('blur', clear);
+    return () => {
+      window.removeEventListener('keydown', watch);
+      window.removeEventListener('keyup', watch);
+      window.removeEventListener('blur', clear);
+    };
+  }, []);
   const current = stages[index];
   const runs = branchRuns(stages);
 
+  // A moment's notice of an undo or redo (⌘Z, ⌘⇧Z / ⌘X): what it did.
+  const historyNote = useHistoryNote();
+  const [noteShown, setNoteShown] = useState<number | null>(null);
+  useEffect(() => {
+    if (!historyNote) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- a timed notice for an outside change
+    setNoteShown(historyNote.at);
+    const timer = setTimeout(() => setNoteShown(null), 2500);
+    return () => clearTimeout(timer);
+  }, [historyNote]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* The scene, and under it the stage the playhead is on; ◀ ▶ together on the right. */}
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate font-display text-lg text-ink" title={sceneTitle}>
-            Timeline <span className="font-body text-sm text-muted-ink">· {sceneTitle}</span>
-          </p>
-          {current && (
+      {/* One line: the scene on the left; on the right the stage the playhead is on, then ◀ ▶ —
+          kept low, so the tracks get the room. */}
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <p className="min-w-0 truncate font-display text-lg leading-tight text-ink" title={sceneTitle}>
+          Timeline <span className="font-body text-sm text-muted-ink">· {sceneTitle}</span>
+        </p>
+        {current && (
+          <div className="flex min-w-0 shrink items-center gap-1">
+            {historyNote && noteShown === historyNote.at && (
+              <span
+                role="status"
+                className="mr-2 bg-ink px-2 py-1 font-label text-[10px] uppercase tracking-widest text-paper"
+              >
+                {historyNote.did} · {historyNote.label}
+              </span>
+            )}
             <p
-              className="truncate font-body text-sm text-ink"
+              className="mr-1 min-w-0 truncate font-body text-sm text-ink"
               aria-live="polite"
               title={`Stage ${current.code} · ${current.name}`}
             >
               Stage {current.code}
               <span className="text-muted-ink"> · {current.name}</span>
             </p>
-          )}
-        </div>
-        {current && (
-          <div className="flex shrink-0 items-center gap-1">
             <button
               onClick={() => moveTo((i) => i - 1)}
               disabled={index === 0}
               aria-label="Previous stage"
-              className={`h-8 w-8 text-xs ${buttonIcon}`}
+              className={`h-4 w-8 shrink-0 text-[9px] leading-none ${buttonIcon}`}
             >
               ◀
             </button>
@@ -228,7 +457,7 @@ export function MediaTimeline({
               onClick={() => moveTo((i) => i + 1)}
               disabled={index === count - 1}
               aria-label="Next stage"
-              className={`h-8 w-8 text-xs ${buttonIcon}`}
+              className={`h-4 w-8 shrink-0 text-[9px] leading-none ${buttonIcon}`}
             >
               ▶
             </button>
@@ -323,17 +552,51 @@ export function MediaTimeline({
             ))}
           </div>
 
-          {/* Track numbers, and the sound track. */}
+          {/* Track numbers, and the sound tracks (the first one's arrow opens and closes the rest). */}
           <div className="grid" style={rows}>
-            {ROWS.map((t) => (
-              <span
-                key={t}
-                className="flex items-center font-body text-[11px] text-ink"
-                title={t === 'sound' ? 'Sound' : `Projection area ${t}`}
-              >
-                {t === 'sound' ? '♪' : t}
-              </span>
-            ))}
+            {trackRows.map((t) =>
+              t === 'sound' ? (
+                <button
+                  key={t}
+                  onClick={toggleSounds}
+                  aria-expanded={soundsOpen}
+                  title={
+                    soundsOpen ? 'Close the sound tracks into one' : 'Open more sound tracks, for sounds that overlap'
+                  }
+                  className="flex items-center gap-0.5 font-body text-[11px] text-[#3c5eac] hover:text-ink"
+                >
+                  ♪<span className="text-[8px] leading-none">{soundsOpen ? '▼' : '▶'}</span>
+                </button>
+              ) : typeof t === 'number' ? (
+                // A projection area: its number, and an arrow that opens it into MAX_AREA_TRACKS tracks.
+                <button
+                  key={t}
+                  onClick={() => toggleArea(t)}
+                  aria-expanded={areasOpen.includes(t)}
+                  title={
+                    areasOpen.includes(t)
+                      ? `Close projection area ${t}'s tracks into one`
+                      : `Projection area ${t} — open ${MAX_AREA_TRACKS} tracks for it`
+                  }
+                  className="flex items-center gap-0.5 font-body text-[11px] text-ink hover:text-[#3c5eac]"
+                >
+                  {t}
+                  <span className="text-[7px] leading-none">{areasOpen.includes(t) ? '▼' : '▶'}</span>
+                </button>
+              ) : (
+                <span
+                  key={t}
+                  className={`flex items-center font-body text-[11px] ${isSoundTrack(t) ? 'text-[#3c5eac]' : 'pl-1 text-[9px] text-muted-ink'}`}
+                  title={
+                    isSoundTrack(t)
+                      ? `Sound track ${laneOf(t)}`
+                      : `Projection area ${areaOfTrack(t)}, track ${laneOf(t)}`
+                  }
+                >
+                  {isSoundTrack(t) ? `♪${laneOf(t)}` : `${areaOfTrack(t)}.${laneOf(t)}`}
+                </span>
+              ),
+            )}
           </div>
 
           {/* The tracks, and the playhead through them. */}
@@ -343,79 +606,117 @@ export function MediaTimeline({
               style={{ left: at(index), width }}
               aria-hidden="true"
             />
-            {ROWS.map((t) => (
-              <div key={t} className="relative" aria-label={t === 'sound' ? 'Sound track' : `Track ${t}`}>
+            {trackRows.map((t) => (
+              <div
+                key={t}
+                className="relative"
+                aria-label={
+                  isSoundTrack(t)
+                    ? `Sound track ${laneOf(t)}`
+                    : typeof t === 'number'
+                      ? `Track ${t}`
+                      : `Track ${areaOfTrack(t)}.${laneOf(t)}`
+                }
+              >
                 {Array.from({ length: count + 1 }, (_, i) => (
                   <div key={i} className="absolute inset-y-0 w-px bg-ink/15" style={{ left: at(i) }} />
                 ))}
                 <div
-                  className={`absolute inset-x-0 bottom-[2.5px] top-[2.5px] border border-dashed ${t === 'sound' ? 'border-[#3c5eac]/60' : 'border-ink/50'}`}
+                  className={`absolute inset-x-0 bottom-[2.5px] top-[2.5px] border border-dashed ${isSoundTrack(t) ? 'border-[#3c5eac]/60 bg-[#3c5eac]/15' : 'border-ink/50'}`}
                 />
               </div>
             ))}
             {/* The bars, on one layer over the tracks — so a bar dragged to another track stays the same element. */}
-            {mine.map((l) => {
-              if (!l.bar) return null;
-              const dragging = drag?.key === linkKey(l) ? drag.now : null;
-              const place = dragging ?? { track: l.bar.track, ...span(l.bar) };
-              const row = ROWS.indexOf(place.track);
-              const every = timingOf(l).kind === 'every';
-              const stagesText =
-                place.from === place.to
-                  ? `stage ${stages[place.from].code}`
-                  : `stages ${stages[place.from].code}–${stages[place.to].code}`;
-              return (
-                <div
-                  key={linkKey(l)}
-                  onPointerDown={(e) => grab(e, l, 'move')}
-                  onPointerMove={(e) => follow(e, l)}
-                  onPointerUp={() => letGo(l)}
-                  onPointerCancel={() => setDrag(null)}
-                  title={`${l.action}\n${l.assetId}${l.assetName ? ` ${l.assetName}` : ''} · ${stagesText} — drag to move, drag an end to stretch`}
-                  className={`absolute z-10 flex cursor-grab touch-none select-none items-center overflow-hidden border border-[#3c5eac] bg-[#3c5eac] text-paper shadow-sm active:cursor-grabbing ${
-                    dragging ? 'opacity-80 ring-2 ring-ink' : ''
-                  }`}
-                  style={{
-                    left: `calc(${at(place.from)} + 2px)`,
-                    width: `calc(${at(place.to + 1)} - ${at(place.from)} - 4px)`,
-                    // Nearly the whole row: about 5px between one track's bars and the next.
-                    top: `calc(${(row / ROWS.length) * 100}% + 2.5px)`,
-                    height: `calc(${100 / ROWS.length}% - 5px)`,
-                  }}
-                >
-                  <span
-                    onPointerDown={(e) => grab(e, l, 'from')}
-                    onPointerMove={(e) => {
-                      e.stopPropagation();
-                      follow(e, l);
-                    }}
-                    onPointerUp={(e) => {
-                      e.stopPropagation();
-                      letGo(l);
-                    }}
-                    className="h-full w-2 shrink-0 cursor-ew-resize border-r border-paper/50 bg-ink/20"
-                    aria-hidden="true"
-                  />
+            {mine.flatMap((l) =>
+              barsOf(l).map((bar, i) => {
+                const key = barKey(l, i);
+                const dragging = drag?.key === key ? drag : null;
+                const here = { track: bar.track, ...span(bar) };
+                // Duplicating: the bar stays where it is, and a copy follows the pointer.
+                const place = dragging && !dragging.copy ? dragging.now : here;
+                const every = timingOf(l).kind === 'every';
+                // "Loop, when user instructs" (video, sound): ∞ on its bar, as ↻ marks "every time".
+                const loops = timingOf(l).kind === 'once' && l.assetKind !== 'image' && loopOf(l);
+                const stagesText = (p: { from: number; to: number }) =>
+                  p.from === p.to
+                    ? `stage ${stages[p.from].code}`
+                    : `stages ${stages[p.from].code}–${stages[p.to].code}`;
+                const box = (p: { track: Track; from: number; to: number }): CSSProperties => ({
+                  left: `calc(${at(p.from)} + 2px)`,
+                  width: `calc(${at(p.to + 1)} - ${at(p.from)} - 4px)`,
+                  // Nearly the whole row: about 5px between one track's bars and the next.
+                  top: `calc(${(rowOf(p.track) / trackRows.length) * 100}% + 2.5px)`,
+                  height: `calc(${100 / trackRows.length}% - 5px)`,
+                });
+                const label = (
                   <span className="min-w-0 flex-1 truncate px-1 font-body text-[15px] leading-none">
-                    {every ? '↻ ' : ''}
+                    {every ? '↻ ' : loops ? '∞ ' : ''}
                     {l.action}
                   </span>
+                );
+                const handle = (end: 'from' | 'to') => (
                   <span
-                    onPointerDown={(e) => grab(e, l, 'to')}
+                    onPointerDown={(e) => grab(e, l, i, end)}
                     onPointerMove={(e) => {
                       e.stopPropagation();
-                      follow(e, l);
+                      follow(e, l, i);
                     }}
                     onPointerUp={(e) => {
                       e.stopPropagation();
-                      letGo(l);
+                      letGo(l, i);
                     }}
-                    className="h-full w-2 shrink-0 cursor-ew-resize border-l border-paper/50 bg-ink/20"
+                    className={`h-full w-2 shrink-0 cursor-ew-resize bg-ink/20 ${end === 'from' ? 'border-r' : 'border-l'} border-paper/50`}
                     aria-hidden="true"
                   />
-                </div>
-              );
-            })}
+                );
+                return [
+                  <div
+                    key={key}
+                    onPointerDown={(e) => grab(e, l, i, 'move')}
+                    onPointerMove={(e) => follow(e, l, i)}
+                    onPointerUp={() => letGo(l, i)}
+                    onPointerCancel={() => setDrag(null)}
+                    title={`${l.action}\n${l.assetId}${l.assetName ? ` ${l.assetName}` : ''} · ${stagesText(place)} — drag to move, drag an end to stretch, Option-drag to duplicate`}
+                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border border-[#3c5eac] bg-[#3c5eac] text-paper shadow-sm ${
+                      optionHeld ? 'cursor-copy' : 'cursor-grab active:cursor-grabbing'
+                    } ${dragging && !dragging.copy ? 'opacity-80 ring-2 ring-ink' : ''}`}
+                    style={box(place)}
+                  >
+                    {handle('from')}
+                    {label}
+                    <button
+                      // Not a drag: pressing it mustn't pick the bar up.
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        remove(l, i);
+                      }}
+                      aria-label={`Delete this bar (${l.action})`}
+                      title={
+                        barsOf(l).length > 1
+                          ? 'Delete this bar'
+                          : 'Delete this bar — its file is disconnected from the action (connect it again in the Media Library)'
+                      }
+                      className="flex h-full w-6 shrink-0 cursor-pointer items-center justify-center font-body text-base leading-none text-paper/80 hover:bg-ink/30 hover:text-paper"
+                    >
+                      ×
+                    </button>
+                    {handle('to')}
+                  </div>,
+                  dragging?.copy && (
+                    <div
+                      key={`${key}-copy`}
+                      className="pointer-events-none absolute z-20 flex items-center overflow-hidden border-2 border-dashed border-ink bg-[#3c5eac]/70 text-paper"
+                      style={box(dragging.now)}
+                      aria-hidden="true"
+                    >
+                      <span className="shrink-0 pl-1 font-body text-[15px] leading-none">+</span>
+                      {label}
+                    </div>
+                  ),
+                ];
+              }),
+            )}
             <div
               className="pointer-events-none absolute inset-y-0 z-20 w-[2px] -translate-x-px bg-ink"
               style={{ left: at(index) }}

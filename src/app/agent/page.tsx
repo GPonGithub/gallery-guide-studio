@@ -17,7 +17,26 @@ import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, sa
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { CueMarker, CueMonitor, type SentCue } from '@/components/agent/CueMonitor';
 import { MediaMarker, type PlayedSound } from '@/components/agent/MediaMarker';
-import { playEvent, soundsFor, type PlannedSound } from '@/lib/agent/mediaPlayback';
+import {
+  duckSounds,
+  playEvent,
+  sceneSounds,
+  soundsFor,
+  startLoop,
+  playSound,
+  stopLoops,
+  stopSounds,
+  isSoundPlaying,
+  anySoundPlaying,
+  onSoundsChange,
+  setSoundLevels,
+  type PlannedSound,
+} from '@/lib/agent/mediaPlayback';
+import { clearVisuals, everyVisuals, hideVisual, isShowing, sceneMedia, showVisual, type PlannedMedia } from '@/lib/agent/mediaShow';
+import { followRewording, loopOf, redoMediaLinks, undoMediaLinks, updateMediaLinks } from '@/lib/agent/mediaFolder';
+
+/** A "once" media action an exchange triggered: show (or play) it, or remove (or stop) it. */
+type JudgedMedia = { media: PlannedMedia; do: 'show' | 'remove' };
 import {
   CHAT_FOLD_BELOW,
   CHAT_WIDTH,
@@ -65,8 +84,11 @@ import { ProjectsMenu, saveProjectRequest, type CurrentProject } from '@/compone
 import type { AgentProject, ProjectMusic, ProjectVoice, SheetSource } from '@/lib/agent/projectStore';
 import { Inspector, type TurnLog } from '@/components/agent/Inspector';
 import { blankStage, emptyFlow, initialState, sampleFlow, sortStages, startStage } from '@/lib/agent/flow';
-import type { AgentEvent, AgentFlow, ChatTurn, CueEvent, CueStatus, SessionState, Stage, TurnResponse } from '@/lib/agent/types';
-import { buttonIcon, buttonOutline, buttonPrimary, buttonSaved, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
+import type { AgentEvent, AgentFlow, ChatTurn, CueEvent, CueStatus, RoomMedia, SessionState, Stage, TurnResponse } from '@/lib/agent/types';
+import { ACTION_KINDS, type EveryWhen } from '@/lib/agent/media';
+import { buttonBusyCompact, buttonIcon, buttonOutline, buttonOutlineCompact, buttonPrimary, toolbarButtonWidth, buttonSaved, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
+import { ProgressLine } from '@/components/agent/ProgressLine';
+import { Spinner } from '@/components/agent/Spinner';
 
 // v4 prototype: define a goal-driven agent by typing stage cards (no
 // image, no FigJam yet) and test it in the same page — chat in the
@@ -123,6 +145,8 @@ type Saved = {
   savedSnapshot: string;
   /** Open mic: seconds of quiet before what was said is sent. */
   pauseSeconds: number;
+  /** Open mic: the caller can talk over the agent to interrupt it (the mic keeps listening while it speaks). */
+  interruptByVoice: boolean;
   /** Up to ten saved ElevenLabs voices (empty ID = the default voice). */
   voices: SavedVoice[];
   /** Index into `voices` of the one the agent speaks with. */
@@ -189,7 +213,8 @@ const toRemembered = (it: MemoryItem): RememberedItem => ({
 });
 
 // Restart is the conversation's main reset, so its outline is twice as heavy as other buttons'.
-const restartButton = buttonOutline.replace('border-2 ', 'border-4 ');
+// The chat toolbar's buttons are the compact kind, so the row stays on one line.
+const restartButton = buttonOutlineCompact.replace('border-2 ', 'border-4 ');
 
 // Performance cues ([warmly], [laughs softly]…) are for the voice, not the reader.
 const withoutCues = (text: string) => text.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
@@ -247,6 +272,7 @@ function loadSaved(): Saved {
     projectName: 'Untitled scene',
     savedSnapshot: '',
     pauseSeconds: 1.0,
+    interruptByVoice: true,
     voices: [],
     activeVoice: 0,
     voiceExpressive: false,
@@ -306,6 +332,20 @@ export default function AgentStudioPage() {
   const [cueLog, setCueLog] = useState<SentCue[]>([]);
   // Every sound the conversation played for a media action (see mediaPlayback.ts), and where.
   const [soundLog, setSoundLog] = useState<PlayedSound[]>([]);
+  // "Refresh this scene" asks the Design Process to update the scene; its progress shows on the button.
+  const [updateRequest, setUpdateRequest] = useState(0);
+  const [updateProgress, setUpdateProgress] = useState<{ startedAt: number; expectedMs: number; done?: boolean } | null>(
+    null,
+  );
+  // Each turn's number, and the turn the caller last interrupted (with what they'd heard of its reply).
+  const turnIdRef = useRef(0);
+  const interruptedRef = useRef<{ turn: number; heard: string } | null>(null);
+  // The latest interrupt (it's defined further down), for Escape.
+  const interruptRef = useRef<() => unknown>(() => {});
+  // Images and video on their way into the room (opening takes a moment), so a second check doesn't show them twice.
+  const mediaStarting = useRef(new Set<string>());
+  // The caller's words, judged for media moments (by history length and text) — see judgeCaller.
+  const callerJudgements = useRef(new Map<string, Promise<JudgedMedia[]>>());
   const conversations = useRef<ConversationStore>({ threads: {}, lastStart: {} });
   /** The work put aside while the onboarding's Scenes demo runs (null = no demo). */
   const sceneDemo = useRef<DemoBackup | null>(null);
@@ -477,14 +517,55 @@ export default function AgentStudioPage() {
   }, [musicKey]); // eslint-disable-line react-hooks/exhaustive-deps -- only a different file needs loading
   useEffect(() => {
     if (saved) musicRef.current?.setLevels(saved.musicVolume, saved.musicDip);
+    // The timeline's sounds follow the same Volume and Dip.
+    if (saved) setSoundLevels(saved.musicVolume, saved.musicDip);
   }, [saved?.musicVolume, saved?.musicDip]); // eslint-disable-line react-hooks/exhaustive-deps -- only the two levels matter
   // While "Try the dip" is running, the agent finishing speaking mustn't cut it short (and vice versa).
   const speakingRef = useRef(false);
   const tryingDipRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     speakingRef.current = speaking;
-    if (!tryingDipRef.current) musicRef.current?.duck(speaking);
+    if (!tryingDipRef.current) {
+      musicRef.current?.duck(speaking);
+      // The timeline's sounds dip under the voice too.
+      duckSounds(speaking);
+    }
   }, [speaking]);
+  // Undo and redo for the media work (bars, connections, when they play): ⌘Z undoes; ⌘⇧Z — or ⌘X, as
+  // asked for — redoes (Ctrl on Windows). In a text box they're left to the box's own undo and cut.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.defaultPrevented) return;
+      const key = e.key.toLowerCase();
+      if (key !== 'z' && key !== 'x') return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('input, textarea, select, [contenteditable=""], [contenteditable="true"]')) return;
+      // Something selected on the page: ⌘X is still cut.
+      if (key === 'x' && !document.getSelection()?.isCollapsed) return;
+      const done = key === 'z' && !e.shiftKey ? undoMediaLinks() : redoMediaLinks();
+      if (done || key === 'z') e.preventDefault();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+  // Escape interrupts the agent while it speaks.
+  useEffect(() => {
+    if (!speaking) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      e.preventDefault();
+      interruptRef.current();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [speaking]);
+  // Whether any timeline sound is playing (so "Try the dip" can be tried on it).
+  const [soundsPlaying, setSoundsPlaying] = useState(false);
+  useEffect(() => onSoundsChange(() => setSoundsPlaying(anySoundPlaying())), []);
+  // Another scene, or leaving the page: its "throughout the scene" sounds stop.
+  useEffect(() => stopLoops, [saved?.projectId]);
+  // …and the room empties.
+  useEffect(() => clearVisuals, [saved?.projectId]);
   // Once the call has ended and the goodbye has been spoken, the music fades out.
   useEffect(() => {
     if (session?.ended && !speaking) musicRef.current?.stop();
@@ -693,6 +774,24 @@ export default function AgentStudioPage() {
     setSpeaking(false);
   };
 
+  // Interrupting the agent (the Interrupt button, Escape, talking over it with the open mic, or sending
+  // something while it speaks): its voice stops at once, and its reply is cut back to what the caller
+  // actually heard — so the conversation (and the agent, next turn) knows where it was cut off.
+  const cutOff = (heard: string) => (heard ? `${heard} —` : '—');
+  const interrupt = (): ChatTurn[] => {
+    const heard = queueRef.current?.heard ?? '';
+    stopAudio();
+    interruptedRef.current = { turn: turnIdRef.current, heard };
+    // A reply still being written: the conversation is free again straight away.
+    setBusy(false);
+    const last = messages.at(-1);
+    const next: ChatTurn[] =
+      last?.role === 'assistant' ? [...messages.slice(0, -1), { role: 'assistant', text: cutOff(heard) }] : messages;
+    setMessages(next);
+    return next;
+  };
+  interruptRef.current = interrupt;
+
   // The onboarding's Scenes demo: put the open work aside and start a blank
   // scene (no questions, nothing saved over)…
   const beginSceneDemo = async () => {
@@ -760,10 +859,17 @@ export default function AgentStudioPage() {
     if (sheet) void clearSheetRow(sheet, '*', saved.projectId ?? 'unsaved');
   };
 
-  // "Refresh this scene": its conversation starts again, and what it saved for
-  // the selected patient goes — here and in its row 7 cell. Other scenes keep theirs.
+  // "Refresh this scene": the same as Update This Scene (Design Process, section 3) — it reads the
+  // scene's column and the "All scenes" column from the sheet again, brings the scene's conversation
+  // design up to date with anything new, and starts its conversation again. (A scene with no sheet
+  // and no description just starts again.) What it saved for the selected patient goes too — here
+  // and in its row 7 cell. Other scenes keep theirs.
   const refreshScene = () => {
-    restart();
+    // The mics go off: the scene is starting again, and shouldn't pick anything up meanwhile.
+    setOpenMicOn(false);
+    if (listening) recognitionRef.current?.stop();
+    if (saved.sceneSheet || saved.brief.trim()) setUpdateRequest((n) => n + 1);
+    else restart();
     const sceneId = saved.projectId ?? 'unsaved';
     if (activePatient) void clearSceneMemory(activePatient.id, sceneId).then(() => setMemoryVersion((v) => v + 1));
     if (saved.sceneSheet) void clearSheetRow(saved.sceneSheet, saved.sceneSheet.column, sceneId);
@@ -819,6 +925,8 @@ export default function AgentStudioPage() {
   const restart = (code = startAt) => {
     stopAudio();
     musicRef.current?.stop();
+    stopLoops();
+    clearVisuals();
     setCueLog([]);
     setSoundLog([]);
     setSession(initialState(flow, code || undefined));
@@ -835,6 +943,8 @@ export default function AgentStudioPage() {
     setStartAt('');
     stopAudio();
     musicRef.current?.stop();
+    stopLoops();
+    clearVisuals();
     setCueLog([]);
     setSoundLog([]);
     setSession(initialState(next));
@@ -1044,6 +1154,9 @@ export default function AgentStudioPage() {
     if ('error' in data) throw new Error(data.error);
     const scene = data.scenes.find((sc) => sc.number === sheet.number) ?? data.scenes.find((sc) => sc.column === sheet.column);
     if (!scene) throw new Error(`Scene ${sheet.number} isn’t in the sheet any more.`);
+    // Media actions (row 8) reworded in the sheet: every scene's connections and timeline bars follow them.
+    for (const sc of data.scenes)
+      updateMediaLinks((links) => followRewording(links, { sheetId: sheet.sheetId, number: sc.number }, sc.mediaActions) ?? links);
     const same = (a: string | undefined, b: string | undefined) => (a ?? '').trim() === (b ?? '').trim();
     const now = [saved.projectName, saved.brief, flow.knowledge, flow.saveInfo, flow.cannotUse];
     const imported = [sheet.importedName, sheet.importedBrief, sheet.importedKnowledge, sheet.importedSaveInfo, sheet.importedCannotUse];
@@ -1280,6 +1393,21 @@ export default function AgentStudioPage() {
     const done = (async (): Promise<TurnResponse> => {
       // Only what this scene may use from the patient's earlier scenes ever goes to the agent.
       const allowed = (await checkMemory(memoryKey, cannotUseNow, earlierItems, saved.anthropicApiKey)).allowed;
+      // What the room can show or play (the scene's media actions with a file connected), and what's on now —
+      // so the agent goes along with it rather than saying it can't show anything.
+      // What the caller's words are about to put up or take down (waited for, but never for long).
+      const judged = userText
+        ? await Promise.race([judgeCaller(history, userText), new Promise<JudgedMedia[]>((r) => setTimeout(() => r([]), 3000))])
+        : [];
+      const media: RoomMedia[] = (await sceneMedia(sceneRef(), [...ACTION_KINDS])).map((m) => {
+        const change = judged.find((j) => j.media.asset.id === m.asset.id && j.media.link.action === m.link.action)?.do;
+        return {
+          action: m.link.action,
+          kind: m.asset.kind,
+          showing: mediaOn(m),
+          ...(change && { change: change === 'show' ? ('appearing' as const) : ('removing' as const) }),
+        };
+      });
       const res = await fetch('/api/agent/turn', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1293,6 +1421,7 @@ export default function AgentStudioPage() {
           holdCues: options.holdCues || cuesWhenSpoken,
           memory: allowed.map(toRemembered),
           savedHere: savedInScene(activePatient, sceneNow?.id ?? null).map((it) => ({ label: displayLabel(it.label), value: it.value })),
+          media,
         }),
         signal: options.signal,
       });
@@ -1424,11 +1553,117 @@ export default function AgentStudioPage() {
           assetId: sound.asset.id,
           name: sound.asset.name,
           when: sound.timing.when,
+          kind: sound.timing.kind,
           action: sound.link.action,
           problem,
         },
       ];
     });
+
+  // A media action's image or video shown in (or taken out of) its area of the room, or a "once" sound
+  // played or stopped: mark it in the conversation.
+  const noteMedia = (media: PlannedMedia, afterMessage: number, event: 'shown' | 'removed', problem?: string) =>
+    setSoundLog((list) => {
+      // Then it couldn't be shown: its own marker says so.
+      const last = list.findLast((p) => p.assetId === media.asset.id && p.afterMessage === afterMessage && p.event === event);
+      if (problem && last && !last.problem) return list.map((p) => (p === last ? { ...p, problem } : p));
+      return [
+      ...list,
+      {
+        id: crypto.randomUUID(),
+        at: Date.now(),
+        afterMessage,
+        assetId: media.asset.id,
+        name: media.asset.name,
+        when: media.timing.when,
+        kind: media.timing.kind,
+        action: media.link.action,
+        problem,
+        ...(media.asset.kind !== 'sound' && { areas: media.areas }),
+        event,
+      },
+      ];
+    });
+
+  // Shows an image or video in its area, or (a "once" sound) plays it — and marks it.
+  const startMedia = (media: PlannedMedia, afterMessage: number) => {
+    const id = media.asset.id;
+    const fail = (err: unknown) =>
+      noteMedia(media, afterMessage, 'shown', err instanceof Error ? err.message : 'It couldn’t be shown.');
+    noteMedia(media, afterMessage, 'shown');
+    if (media.asset.kind === 'sound') {
+      // "Loop, when user instructs": it loops until removed (or the call ends).
+      (loopOf(media.link) ? startLoop(media.asset) : playSound(media.asset)).catch(fail);
+      return;
+    }
+    mediaStarting.current.add(id);
+    showVisual(media)
+      .catch(fail)
+      .finally(() => mediaStarting.current.delete(id));
+  };
+  const endMedia = (media: PlannedMedia, afterMessage: number) => {
+    noteMedia(media, afterMessage, 'removed');
+    if (media.asset.kind === 'sound') stopSounds(media.asset.id);
+    else hideVisual(media.asset.id);
+  };
+
+  // "Once, when…" media actions: after each part of an exchange (the caller speaking, then the reply),
+  // Claude says which of this scene's actions it triggered — to show (or play) their media, or remove it.
+  const mediaOn = (m: PlannedMedia) =>
+    m.asset.kind === 'sound' ? isSoundPlaying(m.asset.id) : isShowing(m.asset.id) || mediaStarting.current.has(m.asset.id);
+  const sceneRef = () =>
+    saved.sceneSheet ? { sheetId: saved.sceneSheet.sheetId, number: saved.sceneSheet.number } : null;
+
+  // Which "once" actions an exchange triggers — judged, not yet done (see applyMedia).
+  const judgeMediaMoments = async (
+    scene: { sheetId: string; number: string } | null,
+    exchange: { before?: string | null; caller?: string | null; callerChecked?: boolean; reply?: string | null },
+  ): Promise<JudgedMedia[]> => {
+    const once = await sceneMedia(scene, ['once']);
+    if (once.length === 0) return [];
+    try {
+      const res = await fetch('/api/media/moments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          actions: once.map((m) => ({ line: m.link.action, showing: mediaOn(m) })),
+          ...exchange,
+          anthropicApiKey: saved.anthropicApiKey,
+        }),
+      });
+      const data = (await res.json()) as { triggered?: { line: string; do: 'show' | 'remove' }[] };
+      return (data.triggered ?? []).flatMap((t) =>
+        once.filter((m) => m.link.action === t.line).map((media) => ({ media, do: t.do })),
+      );
+    } catch {
+      // A missed moment never interrupts the conversation.
+      return [];
+    }
+  };
+  // Shows (or plays) and removes (or stops) what was judged.
+  const applyMedia = (judged: JudgedMedia[], afterMessage: number) => {
+    for (const { media, do: change } of judged)
+      if (change === 'show' && !mediaOn(media)) startMedia(media, afterMessage);
+      else if (change === 'remove' && mediaOn(media)) endMedia(media, afterMessage);
+  };
+  const checkMediaMoments = async (
+    scene: { sheetId: string; number: string } | null,
+    exchange: { before?: string | null; caller?: string | null; callerChecked?: boolean; reply?: string | null },
+    afterMessage: number,
+  ) => applyMedia(await judgeMediaMoments(scene, exchange), afterMessage);
+
+  // What the caller's words trigger is judged once (from the moment their phrase is confirmed, alongside
+  // an early turn) — before the reply is written, so the agent is told what the room is putting up or
+  // taking down and goes along with it, instead of the two deciding separately and disagreeing.
+  const judgeCaller = (history: ChatTurn[], text: string): Promise<JudgedMedia[]> => {
+    const key = `${history.length}|${text}`;
+    const kept = callerJudgements.current.get(key);
+    if (kept) return kept;
+    const judged = judgeMediaMoments(sceneRef(), { before: history.findLast((m) => m.role === 'assistant')?.text, caller: text });
+    if (callerJudgements.current.size > 20) callerJudgements.current.clear();
+    callerJudgements.current.set(key, judged);
+    return judged;
+  };
 
   // A cue went out (or its status changed): show it in the TouchDesigner
   // window and the conversation, and keep the inspector's copy up to date.
@@ -1517,7 +1752,12 @@ export default function AgentStudioPage() {
       setKeysOpen(true);
       return;
     }
-    const history = messages;
+    // Sent while the agent is still speaking: that's interrupting it.
+    const history = speaking ? interrupt() : messages;
+    const turn = ++turnIdRef.current;
+    // This turn's reply was interrupted (it stays cut back to what was heard), or a newer turn has begun.
+    const cut = () => interruptedRef.current?.turn === turn;
+    const superseded = () => turnIdRef.current !== turn;
     setError(null);
     setBusy(true);
     stopAudio();
@@ -1536,12 +1776,42 @@ export default function AgentStudioPage() {
     };
     const play = (planned: Promise<PlannedSound[]>, afterMessage: number) =>
       planned.then((list) => playEvent(list, (s, problem) => noteSound(s, afterMessage, problem))).catch(() => {});
-    if (userText) void play(soundsFor(mediaScene, 'caller-speaks'), cuePosition);
+    // "Every time" pictures and video start again (from the beginning) at each of their events.
+    const showEvery = (when: EveryWhen, afterMessage: number) =>
+      void everyVisuals(mediaScene, when).then((list) => list.forEach((m) => startMedia(m, afterMessage)));
+    if (userText) {
+      void play(soundsFor(mediaScene, 'caller-speaks'), cuePosition);
+      showEvery('caller-speaks', cuePosition);
+    }
+    // The caller's words alone may be the moment ("when the nurse asks to see it"): checked now, so the
+    // picture can appear as the reply begins rather than after it.
+    if (userText) void judgeCaller(history, userText).then((judged) => applyMedia(judged, cuePosition));
+    // The call begins: "throughout the scene" sounds start looping, "at the start" ones play once.
+    if (history.length === 0) {
+      stopLoops();
+      void sceneSounds(mediaScene, 'throughout').then((list) =>
+        list.forEach((s) => {
+          noteSound(s, 0);
+          startLoop(s.asset).catch((err: unknown) =>
+            noteSound(s, 0, err instanceof Error ? err.message : 'It couldn’t be played.'),
+          );
+        }),
+      );
+      void play(sceneSounds(mediaScene, 'start'), 0);
+      // Images and video "throughout the scene" or "at the start" show in their areas from the start.
+      clearVisuals();
+      void sceneMedia(mediaScene, ['throughout', 'start']).then((list) =>
+        list.filter((m) => m.asset.kind !== 'sound').forEach((m) => startMedia(m, 0)),
+      );
+    }
+    // Set once the reply is in: this reply ends the call ("at the end" sounds follow it).
+    let endsCall = false;
     let replyStarted = false;
     const replyStarts = () => {
       if (replyStarted) return;
       replyStarted = true;
       void play(sounds.start, cuePosition);
+      showEvery('reply-start', cuePosition);
     };
     let turnFailed = false;
     let replyEnded = false;
@@ -1549,6 +1819,20 @@ export default function AgentStudioPage() {
       if (replyEnded || turnFailed) return;
       replyEnded = true;
       void play(sounds.after, cuePosition + 1);
+      if (!endsCall) showEvery('after-reply', cuePosition + 1);
+      // The goodbye has been said: "at the end" sounds, and the loops stop.
+      if (endsCall) {
+        stopLoops();
+        void play(sceneSounds(mediaScene, 'end'), cuePosition + 1);
+        // Images and video: "throughout the scene" and "every time" ones come down, "at the end" ones go up.
+        void sceneMedia(mediaScene, ['throughout', 'every', 'end']).then((list) =>
+          list
+            .filter((m) => m.asset.kind !== 'sound')
+            .forEach((m) =>
+              m.timing.kind === 'end' ? startMedia(m, cuePosition + 1) : isShowing(m.asset.id) && endMedia(m, cuePosition + 1),
+            ),
+        );
+      }
     };
     // "When spoken": this turn's cues wait here until its reply is actually
     // heard — the voice starting, or (voice off) the reply appearing.
@@ -1564,7 +1848,10 @@ export default function AgentStudioPage() {
         ? // If the voice fails and goes quiet without playing, the cues still go.
           newSpeechQueue(Boolean(state.expressive), {
             // "Every time before you speak": the voice waits for those sounds.
-            beforeFirst: () => play(sounds.before, cuePosition),
+            beforeFirst: () => {
+              showEvery('before-reply', cuePosition);
+              return play(sounds.before, cuePosition);
+            },
             onPlay: () => {
               if (clock.voice === null) {
                 clock.voice = performance.now();
@@ -1592,8 +1879,10 @@ export default function AgentStudioPage() {
       // No voice: the reply appearing is when it "starts".
       if (!queue && clock.text === null) {
         void play(sounds.before, cuePosition);
+        showEvery('before-reply', cuePosition);
         replyStarts();
       }
+      if (cut() || superseded()) return;
       clock.text ??= performance.now();
       shown = `${shown} ${sentence}`.trim();
       setMessages([...withCaller, { role: 'assistant', text: shown }]);
@@ -1621,13 +1910,15 @@ export default function AgentStudioPage() {
         stream.listen(onSentence);
         data = await stream.done;
       }
+      endsCall = Boolean(data.state.ended);
       queue?.finish();
       // Nothing to say out loud (or no voice): the reply is "heard" now.
       if (!queue || queue.idle) {
         openGate();
         replyEnds();
       }
-      setMessages([...withCaller, { role: 'assistant', text: data.reply }]);
+      const heardReply = cut() ? cutOff(interruptedRef.current!.heard) : data.reply;
+      if (!superseded()) setMessages([...withCaller, { role: 'assistant', text: heardReply }]);
       setSession(data.state);
       // Cue statuses as last heard (held ones may have been sent since the turn finished).
       const events = data.events.map((e) =>
@@ -1648,17 +1939,21 @@ export default function AgentStudioPage() {
         postWait(waitLine());
       }
       void checkMoments(data.state, userText, data.reply, cuePosition + 1);
+      void checkMediaMoments(mediaScene, { caller: userText, callerChecked: Boolean(userText), reply: heardReply }, cuePosition + 1);
     } catch (err) {
       // A failed turn sends nothing.
       turnFailed = true;
       gate.open = true;
       gate.waiting.length = 0;
       queue?.cancel();
-      setMessages(history);
-      if (userText) setInput(userText);
-      setError(err instanceof Error ? err.message : 'Something went wrong.');
+      if (!superseded()) {
+        setMessages(history);
+        if (userText) setInput(userText);
+        setError(err instanceof Error ? err.message : 'Something went wrong.');
+      }
     } finally {
-      setBusy(false);
+      // An interrupted turn has already freed the conversation — and a newer one may be under way.
+      if (!superseded()) setBusy(false);
     }
   };
 
@@ -1920,6 +2215,8 @@ export default function AgentStudioPage() {
                 }}
                 onClearConversation={() => restart()}
                 onRefreshFromSheet={refreshSceneFromSheet}
+                updateRequest={updateRequest}
+                onUpdateProgress={setUpdateProgress}
                 onMediaOpenChange={setMediaOpen}
                 onTryVoice={sayAndWait}
                 onboardPulse={onboardPulse}
@@ -1964,30 +2261,43 @@ export default function AgentStudioPage() {
           {/* One row of controls, every one exactly 40px tall: the conversation on
               the left, its sound (music, voice) on the right. Its grey (and the
               scene row's) is a step darker than the dialogue's. */}
-          <div className="flex flex-col gap-2 border-b-2 border-ink bg-hair px-3 py-2.5">
-            <div className="flex flex-wrap items-center gap-2">
+          {/* Wide enough for one row (a container query on the chat's own width): Restart and Refresh on the
+              left, sound on the right. Narrower, the row wraps and every button lines up on the right. */}
+          <div className="@container flex flex-col gap-2 border-b-2 border-ink bg-hair px-3 py-2.5">
+            <div className="flex flex-wrap items-center justify-end gap-2 @[700px]:justify-start">
               <button
                 onClick={() => setConfirmCompleteRestart(true)}
                 disabled={busy}
-                className={`h-10 ${restartButton}`}
+                className={`h-10 ${toolbarButtonWidth} ${restartButton}`}
                 title="Clear the conversations in every scene and start this one afresh"
               >
                 Complete restart
               </button>
               <button
                 onClick={refreshScene}
-                disabled={busy}
-                className={`h-10 ${buttonOutline}`}
-                title="Start this scene's conversation again and clear what it saved (here and in row 7 of the sheet) — other scenes keep theirs"
+                disabled={busy || updateProgress !== null}
+                aria-busy={updateProgress !== null}
+                className={`relative h-10 overflow-hidden ${toolbarButtonWidth} ${updateProgress ? buttonBusyCompact : buttonOutlineCompact}`}
+                title="Update this scene: read its column and the “All scenes” column from the sheet again, bring its conversation up to date with anything new, and start it again (clearing what it saved here and in row 7) — as Update This Scene does"
               >
-                Refresh this scene
+                {updateProgress && !updateProgress.done && <Spinner />}
+                {updateProgress && !updateProgress.done ? 'Updating…' : 'Refresh this scene'}
+                {updateProgress && (
+                  <ProgressLine
+                    startedAt={updateProgress.startedAt}
+                    expectedMs={updateProgress.expectedMs}
+                    done={updateProgress.done}
+                  />
+                )}
               </button>
               {/* Sound controls: always together at the right — if the row wraps, they move down as a pair
                   (so the Voice panel opens neatly under its button). */}
-              <div className="ml-auto flex gap-2">
+              {/* The pair wraps too: in a very narrow chat all four make one column on the right. */}
+              <div className="flex flex-wrap justify-end gap-2 @[700px]:ml-auto">
                 <MusicPanel
                   trackName={saved.musicTrack?.name ?? null}
                   playing={musicPlaying}
+                  soundsPlaying={soundsPlaying}
                   volume={saved.musicVolume}
                   dip={saved.musicDip}
                   onFile={async (file) => {
@@ -2010,9 +2320,11 @@ export default function AgentStudioPage() {
                   onTryDip={() => {
                     if (tryingDipRef.current) clearTimeout(tryingDipRef.current);
                     musicRef.current?.duck(true);
+                    duckSounds(true);
                     tryingDipRef.current = setTimeout(() => {
                       tryingDipRef.current = null;
                       musicRef.current?.duck(speakingRef.current);
+                      duckSounds(speakingRef.current);
                     }, 3000);
                   }}
                   onVolumeChange={(musicVolume) => setSaved({ ...saved, musicVolume })}
@@ -2029,6 +2341,8 @@ export default function AgentStudioPage() {
                   onSpokenRepliesChange={setVoiceOn}
                   pauseSeconds={saved.pauseSeconds}
                   onPauseSecondsChange={(pauseSeconds) => setSaved({ ...saved, pauseSeconds })}
+                  interruptByVoice={saved.interruptByVoice}
+                  onInterruptByVoiceChange={(interruptByVoice) => setSaved({ ...saved, interruptByVoice })}
                   onVoicesChange={(voices, activeVoice) => {
                     // Switching to a voice with saved settings moves the sliders (and
                     // regular/expressive) to them.
@@ -2177,7 +2491,9 @@ export default function AgentStudioPage() {
               {session.ended
                 ? 'Call ended — press Restart and the open mic carries on'
                 : speaking
-                  ? 'Agent is speaking — mic paused so it can’t hear itself'
+                  ? saved.interruptByVoice
+                    ? 'Agent is speaking — talk to interrupt it'
+                    : 'Agent is speaking — mic paused so it can’t hear itself'
                   : busy
                     ? 'Agent is thinking…'
                     : openMicStatus === 'hearing'
@@ -2185,6 +2501,23 @@ export default function AgentStudioPage() {
                       : openMicStatus === 'listening'
                         ? 'Listening — just talk'
                         : 'Starting the mic…'}
+              {/* Talk to interrupt, on or off (also in the Voice panel). */}
+              <button
+                onClick={() => setSaved({ ...saved, interruptByVoice: !saved.interruptByVoice })}
+                aria-pressed={saved.interruptByVoice}
+                title={
+                  saved.interruptByVoice
+                    ? 'On: talking while the agent speaks interrupts it (the mic listens through its voice). Click to turn off — the mic then rests while the agent speaks.'
+                    : 'Off: the mic rests while the agent speaks. Click to turn on — then talking over the agent interrupts it.'
+                }
+                className={`ml-auto shrink-0 border px-2 py-0.5 font-label text-[10px] uppercase tracking-widest transition-colors ${
+                  saved.interruptByVoice
+                    ? 'border-[#18a0fb] bg-[#18a0fb] text-white hover:bg-[#18a0fb]/80'
+                    : 'border-ink/40 bg-paper text-muted-ink hover:border-ink hover:text-ink'
+                }`}
+              >
+                ✋ Talk to interrupt: {saved.interruptByVoice ? 'On' : 'Off'}
+              </button>
             </div>
           )}
           <div className={`flex items-center gap-2 p-3 ${openMicOn ? '' : 'border-t-2 border-ink'}`}>
@@ -2198,7 +2531,11 @@ export default function AgentStudioPage() {
             </button>
             <OpenMic
               on={openMicOn}
-              paused={busy || speaking || session.ended}
+              // Speak to interrupt: the mic listens through the agent's voice for the caller talking over it.
+              paused={(busy && !speaking) || session.ended || (speaking && !saved.interruptByVoice)}
+              agentSpeaking={speaking && saved.interruptByVoice}
+              agentText={messages.at(-1)?.role === 'assistant' ? messages.at(-1)!.text : ''}
+              onBargeIn={() => void interrupt()}
               pauseSeconds={saved.pauseSeconds}
               onToggle={(on) => {
                 if (on) recognitionRef.current?.stop();
@@ -2222,9 +2559,20 @@ export default function AgentStudioPage() {
               placeholder={listening || openMicOn ? 'Listening…' : 'Type as the caller…'}
               className={`flex-1 disabled:bg-muted ${fieldInput}`}
             />
-            <button onClick={submit} disabled={busy || session.ended || !input.trim()} className={buttonPrimary}>
-              Send
-            </button>
+            {speaking ? (
+              <button
+                onClick={() => void interrupt()}
+                // As tall as the message box beside it.
+                className={`inline-flex items-center self-stretch whitespace-nowrap ${buttonPrimary.replace('px-4 py-2', 'px-3 py-0')}`}
+                title={`Stop the agent mid-reply${saved.interruptByVoice && openMicOn ? ' — or just start talking' : ''} (Esc)`}
+              >
+                ✋ Interrupt
+              </button>
+            ) : (
+              <button onClick={submit} disabled={busy || session.ended || !input.trim()} className={buttonPrimary}>
+                Send
+              </button>
+            )}
           </div>
         </section>
 

@@ -23,6 +23,13 @@ export const buttonOutline =
   'hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:border-hair disabled:text-muted-ink disabled:hover:bg-paper disabled:hover:text-muted-ink ' +
   'focus-visible:outline focus-visible:outline-[3px] focus-visible:outline-ink focus-visible:outline-offset-[3px]';
 
+/** A tighter fit (less padding and letter spacing), for a row of buttons that must stay on one line — the chat's toolbar. */
+const tighter = (cls: string) => cls.replace('px-4', 'px-2.5').replace('tracking-widest', 'tracking-wider');
+export const buttonOutlineCompact = tighter(buttonOutline);
+export const buttonBusyCompact = tighter(buttonBusy);
+/** The chat toolbar's four buttons are all this wide, so when the row wraps they line up in columns. */
+export const toolbarButtonWidth = 'w-[164px] justify-center';
+
 // The save-status buttons: solid red "Not Saved" while there are unsaved
 // changes, solid green "Saved" once everything is — a deliberate break from
 // monochrome so the state is obvious at a glance.

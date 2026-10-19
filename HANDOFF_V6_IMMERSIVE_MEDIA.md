@@ -1,6 +1,6 @@
 # v6 handoff — Chatbot Designer: Adding Immersive Media
 
-Written 2026-10-17 to continue in a new conversation. Read this first, then
+Written 2026-10-17, updated 2026-10-18, to continue in a new conversation. Read this first, then
 `HANDOFF_V5_CHATBOT_DESIGNER.md` for everything older (sheet rows 1–7,
 patients & memory, row-7 saving, FigJam, onboarding tour, hosting).
 
@@ -10,16 +10,22 @@ patients & memory, row-7 saving, FigJam, onboarding tour, hosting).
   push to v5** (`v5-hosted` stays at `1f0a8a9`; tag `v5-final` is older).
 - **Live site** https://gallery-guide-studio.vercel.app/agent — Vercel
   production tracks `v6`, so **every push to v6 deploys**.
-- Last pushed commit: `6b2bad0` (Run npm install button, matching step
-  buttons, larger bar text). Before it: `dff752e` (the big immersive-media
-  commit).
-- **Uncommitted right now** (two small UI changes, tested, ready to commit):
-  - `MediaTimeline.tsx` — timeline header: scene title on top with ◀ ▶
-    together on the right; "Stage 2A · Check in" on the line under the title.
-  - `MediaWorkspace.tsx` — removed the 2px frame (and its inner padding)
-    around the timeline so it's larger.
+- **Everything below is committed and pushed** (2026-10-18 session: room
+  previews + triggers (§7–7b), chatbot knows the room's media (§7d, 7h),
+  interrupting (§7e, 7k), Music / Sounds (§7c), bars: delete / duplicate /
+  undo / empty-space placement / follow "When it plays" (§7f, 7i, 7m, 7o and
+  the notes after them), sound and area sub-tracks, looping, rewording,
+  toolbar and library layout). See `git log` for the commit. Earlier commits:
+  `4a29b99` (timeline header), `6b2bad0` (npm install button), `dff752e` (the
+  big immersive-media commit).
+- **Not yet tested with real keys** (the user tests in their Chrome): Claude's
+  real readings and moment judgements, the agent going along with the room,
+  talk-to-interrupt with a real mic and ElevenLabs voice, Music / Sounds levels
+  on real sounds. Also: the user hasn't yet re-deployed the Apps Script (§4).
 - Run locally: `npm install` then `npm run dev` → http://localhost:3000/agent
-  (`.claude/launch.json` has the `gallery-guide-studio` preview config).
+  (`.claude/launch.json` has the `gallery-guide-studio` preview config; the
+  desktop app stops the server after a while — just start it again. Note `/`
+  locally is the older playbook studio; always open `/agent`).
 
 ### Working conventions (from the user)
 - Commit / push **only when asked**; push to **v6 only**.
@@ -132,18 +138,33 @@ The app reports "needs updating" if it's old. Script still writes row 7
 
 ## 5. Action timing and playback
 
-- Kinds: `once` (moment), `every` (repeating event), `throughout`
-  (`lib/agent/media.ts`, `readActionTiming` — **a regex phrase list**).
-  `every` has `when`: before-reply / reply-start / after-reply /
-  caller-speaks, and `voice`: wait / over / delay n s.
-- **Only `every` sounds play** today (`lib/agent/mediaPlayback.ts`
-  `soundsFor`/`playEvent`/`playSound`; registry for stop; 15s max wait for the
-  voice, sound plays on). Wired in `page.tsx` `sendTurn`: before-reply via
-  the speech queue's new `beforeFirst` hook (voice waits), reply-start on
-  first `onPlay`, after-reply on quiet, caller-speaks when the caller sends.
-  Blue ♪ markers in the conversation (`MediaMarker.tsx`).
-- Stereo through the computer for now; four-speaker spatialisation is a
-  future idea (would be a "Speakers" setting on the connection).
+- **Kinds** (`lib/agent/media.ts` `ActionKind`): `once` (a moment), `every`
+  (repeating event), `throughout` (whole scene), `start` (once when the call
+  begins), `end` (once when it ends). `every` also has `when`: before-reply /
+  reply-start / after-reply / caller-speaks, and `voice`: wait / over /
+  delay n s. Labels: `KIND_BADGE`, `KIND_HELP`, `WHEN_LABEL`, `VOICE_LABEL`.
+- **How a connection's timing is decided** (`timingOf` in `mediaFolder.ts`):
+  the words (`readActionTiming`, an English phrase list — the offline
+  fallback, now wide: during / for the whole… / loop / background / at the
+  start / when the call begins / at the end…) → overridden by **Claude's
+  reading** of the line (§7) → overridden by the **student's own choices**
+  (`link.timing.kind / when / voice / delay`).
+- **Playback** (`lib/agent/mediaPlayback.ts`), sounds only, stereo through
+  the computer:
+  - every: `soundsFor` / `playEvent` in `page.tsx` `sendTurn` — before-reply via
+    the speech queue's `beforeFirst` hook (voice waits), reply-start on first
+    `onPlay`, after-reply on quiet, caller-speaks when the caller sends.
+  - throughout: `startLoop` when the call begins (first turn: Agent speaks
+    first / first message), loops at 0.8 volume, `dipLoops(speaking)` → 0.3
+    while the chatbot speaks (alongside the music duck), `stopLoops()` after the
+    final goodbye, on Refresh this scene / Complete restart / new flow, and on
+    scene change (effect on `saved.projectId`).
+  - start: `sceneSounds(scene,'start')` once at call start; end: once after the
+    goodbye of the reply that ends the call (`endsCall` in `sendTurn`).
+  - Every played sound gets a ♪ marker (`MediaMarker.tsx`, shows kind or
+    event). Any playing sound can be stopped (thumbnail ■, Try it ■ Stop,
+    `stopSounds`). The voice waits at most 15s for a sound.
+- Four-speaker spatialisation is a future idea ("Speakers" setting).
 
 ## 6. Middle panel: room + timeline
 
@@ -165,44 +186,290 @@ The app reports "needs updating" if it's old. Script still writes row 7
   bars live on one layer so a dragged bar keeps its pointer capture. Rows
   have ~5px gaps.
 
-## 7. NEXT TASK (agreed with the user, not started)
+## 7. Reading the student's intent — BUILT, needs a real-key test
 
-The user's requirement: **"the app needs to read the user's intent, and if
-it's not clear, give the user options to pick."** Students will write
-actions in any wording and **other languages**. Tested: the regex misreads
-"during the scene", "for the whole conversation", "Loop the corridor
-ambience", "Play background music", "at the start…", "when the call
-begins", "at the end" (all came out "once").
+The user's requirement: "the app needs to read the user's intent, and if it's
+not clear, give the user options to pick" — students write actions in any
+wording and **other languages**.
 
-Plan:
-1. **AI reading of each row-8 line** — new route (e.g. `/api/media/intent`)
-   using the quick model (claude-haiku-4-5, as the app's analysis calls do;
-   see `src/lib/agent/runtime.ts` / `/api/agent/memory-filter` for the key
-   pattern — student key from the app, server key only when local). Output
-   per line (zod): kind (`once` | `every` | `throughout` | **`start`** |
-   **`end`**), for every: when + voice, `clear: boolean`, and `options` (the
-   likely kinds) when unclear. Cache by exact text (IndexedDB), re-read only
-   when the wording changes. Regex stays as the offline fallback (widen it:
-   during, for the whole…, loop, background, at the start/beginning, when the
-   call begins/starts, at the end).
-2. **Unclear → options**: the connection box shows "Not sure when this should
-   play — pick one:" with the suggested choices as buttons; a **kind**
-   dropdown always lets students correct it (stored in `link.timing.kind`,
-   which `timingOf` should then honour along with the AI reading).
-3. **Playback for the new kinds** (the user asked why the hospital-corridor
-   soundscape "throughout scene" didn't play — it isn't implemented yet):
-   - throughout: start with the call (Agent speaks first / first message),
-     **loop**, **dip under the voice** like the scene music, stop on call end,
-     Refresh this scene / Complete restart, or scene switch; ♪ marker; ■ stops.
-   - start: play once when the call begins; end: once when it ends
-     (`session.ended`).
-   - once (moments) and images/video to TouchDesigner are still to come
-     (TouchDesigner message format is sketched in `media.ts` `MediaMessage`).
+- `POST /api/media/intent` {actions, anthropicApiKey} → Claude
+  `claude-haiku-4-5-20251001` (thinking off, temperature 0, zod
+  `Output.object`) returns per line: kind, (when, voice for every), `clear`,
+  and `options` when unclear. Student key from the app; server key only when
+  local (`anthropicModel`); no key → 500 "Add your Anthropic API key…" and the
+  app silently keeps the phrase-list reading.
+- Client store in `mediaFolder.ts`: `readActions(lines, key)` (reads only
+  unread wordings, de-duplicated), `readingNow(text)`, `useActionReadings()`,
+  `readingsReady()`; cached in IndexedDB `media` → `readings` (by exact,
+  trimmed wording). Called whenever row 8 is read in `ImmersiveMedia.tsx`
+  (the key comes from DesignPanel's `anthropicApiKey`).
+- UI: the action list shows Claude's kind (or "? Not sure"). The connection box
+  has a **"When it plays"** dropdown (all 5 kinds) and, when Claude wasn't sure
+  and the student hasn't chosen, **"Not sure when this should play — pick
+  one:"** with Claude's options as buttons. Every-time keeps its event / voice
+  / delay controls. ▶ Try it now works for sounds of any kind.
+- Timeline: new bars — every/throughout span the scene, once/start the first
+  stage, end the last stage.
+- Tested in the browser with a placeholder key and a stubbed turn API:
+  soundscape looped from call start, chime "At the start" played once, ♪
+  markers shown, Refresh this scene stopped the loop; unclear reading showed
+  the pick-one buttons and picking replaced them. **Not tested:** Claude's real
+  reading (needs the user's key — it's in their Chrome; never type it) and the
+  dip under a real ElevenLabs voice.
+
+### Next steps
+1. User tests in their Chrome (Scene 4 has the actions); then commit + push v6.
+2. "Once, when…" moments (e.g. show Maya's picture when the nurse asks) —
+   likely use the agent's moment detection (`/api/agent/moments`) or stage
+   entry from the bar's placement.
+3. Images / video → TouchDesigner per projection area (`MediaMessage` sketch in
+   `media.ts`), and showing them in the room diagram.
+4. Media inspector in place of the TouchDesigner window; onboarding tour for
+   the immersive-media process; row 9 / per-project storage of connections.
+
+## 7b. Media in the room diagram + "once, when…" triggers — BUILT (2026-10-18)
+
+- **Rule (the user's):** media only plays/shows when the conversation triggers its
+  action. Images/video preview in the room drawing, in the area = the bar's
+  **track** on the timeline (`areaOf`, area 1 until it has a bar).
+- **Fit:** media fills the rectangle around the outline (cropped, never
+  stretched — `preserveAspectRatio slice` / `object-fit: cover`), then is cut to
+  the outline by a clipPath. Areas 2, 5, 8 have **holes** for 3, 6, 9
+  (`holes` in `projectionLayout.ts`, evenodd) so those stay white or show their
+  own media; 5 and 10 already exclude the corners where 4 and 11 sit. Video plays
+  muted (loops only for "throughout"); undecodable video falls back to the
+  ffmpeg still. Area numbers get a white outline over media.
+- **Store:** `lib/agent/mediaShow.ts` — `sceneMedia`, `showVisual`, `hideVisual`,
+  `clearVisuals`, `useShowing`, `isShowing`.
+- **Triggers:** `POST /api/media/moments` (Haiku, any language) gets the scene's
+  "once" actions with SHOWING / NOT SHOWING and the exchange; returns show/remove
+  per action. `page.tsx` `checkMediaMoments` runs it twice per turn: on the
+  caller's line alone (so the picture appears as the reply begins) and after the
+  reply (caller marked ALREADY CHECKED). "Once" sounds play / stop the same way.
+  "Throughout" and "at the start" visuals show at call start; at the call's end
+  "throughout" ones come down and "at the end" ones go up. Restart / new flow /
+  scene change empty the room. ▣ markers in the chat ("shown in area 1",
+  "removed from area 1").
+- **Try it** for images/video in the connection box: "▶ Try it in area N" /
+  "■ Remove".
+- Tested in the pane with OPFS test files and stubbed turn + moments APIs:
+  clipping of all holes/notches, show on "can I see her picture?", remove on
+  "put it away", throughout video at start and removed at goodbye. **Not
+  tested:** Claude's real judgment of the moments (needs the user's key).
+
+## 7c. Music / Sounds button (2026-10-18)
+
+The chat toolbar's **♫ Music** button is now **♫ Music / Sounds**. Its Volume
+and Dip sliders set the scene's MP3 music (as before) **and every timeline
+sound** (every-time, once, start/end, throughout loops): `setSoundLevels` /
+`duckSounds` in `mediaPlayback.ts` ease each playing `<audio>` (0.4s down,
+1.2s up, as the music does; volume = `levelToGain`, dip = `dipToShare`). The
+old fixed loop levels (0.8 / 0.3, `dipLoops`) are gone. Try the dip works when
+music or any sound is playing. Not heard in a real conversation yet.
+
+## 7d. The chatbot knows the room's media (2026-10-18)
+
+Problem: the agent refused ("I can't show pictures") unless row 3 mentioned the
+media, conflicting with the media triggers. Now every turn sends `media`
+(`RoomMedia[]` in `types.ts`: action, kind, showing) — the scene's row-8
+actions **with a file connected** — built in `page.tsx` `startTurnStream`.
+`runtime.ts` `responderSystem` adds an **IN THE ROOM** section (go along with
+it naturally as it appears, never say it can't, never offer anything not
+listed) and `analyse` lists it and never counts asking for it as OFF TOPIC.
+Checked in the pane that the list and its showing flag reach the turn; **not
+tested** with the real model.
+
+## 7e. Interrupting the agent (2026-10-18)
+
+Four ways: **✋ Interrupt** (replaces Send while the agent speaks), **Esc**,
+**sending** a message while it speaks, and **talking over it** with the open
+mic ("Talk to interrupt" in the Voice panel, `interruptByVoice`, default on).
+`page.tsx` `interrupt()` stops the voice, frees the conversation, and cuts the
+reply back to the sentences that had started playing (`SpeechQueue.heard`) +
+" —", so the next turn's history shows where it was cut off. Turns are numbered
+(`turnIdRef`); an interrupted or superseded turn never overwrites the chat or
+`busy`. `OpenMic` listens through the agent's voice (`agentSpeaking`) and
+interrupts on a phrase with ≥2 words not in the agent's text, or a stop word
+(wait, sorry, stop…); the agent's echo through the speakers is ignored.
+Tested in the pane with a stubbed tone voice (Esc and send-while-speaking cut
+correctly; history right). **Not tested:** real talking over it (needs a mic +
+ElevenLabs) — echo through room speakers may still mis-trigger; headphones
+are surest.
+
+## 7f. Deleting and duplicating timeline bars (2026-10-18)
+
+- Each bar has a **×** at its right (before the stretch handle) to delete it.
+  A connection's **last** bar deletes the connection (file disconnected from the
+  action — otherwise auto-placement would just add a new bar).
+- **Option (Alt)-drag** a bar's middle to **duplicate** it: the bar stays, a
+  dashed "+" copy follows the pointer, and is added where it's let go (cursor
+  shows copy while Option is held). Dropping where it started adds nothing.
+- Data: `MediaLink.copies?: TimelineBar[]` beside `bar`; `barsOf(link)` gives
+  all. `mediaShow.ts` `areasOf(link)` → every projection track of its bars, so
+  a triggered picture/video shows on **all** those screens at once
+  (`PlannedMedia.areas`, one object URL per area). Markers and Try it say
+  "areas 1, 5 and 8".
+- Tested in the pane: duplicate to 5 then 8, plain move still moves, Try it
+  showed Maya in 1, 5, 8, × removed copy / original / last (disconnected).
+
+## 7g. Refresh this scene = Update This Scene (2026-10-18)
+
+The chat toolbar's **Refresh this scene** now runs Design Process section 3's
+**Update This Scene**: re-reads the scene's column and the "All scenes" column
+from the sheet (`refreshSceneFromSheet`), revises the conversation design with
+anything new, and restarts the conversation. It still also clears what the
+scene saved for the selected patient (memory + row 7). A scene with no sheet
+and no description just restarts. Wiring: page's `updateRequest` counter →
+`DesignPanel` runs `updateScene`; `DesignPanel.onUpdateProgress` → the button
+shows "Updating…", a spinner and the same `ProgressLine`. Tested in the pane
+with a stubbed generate (no sheet).
+
+## 7h. Room and chatbot agree (2026-10-18)
+
+Problem seen by the user: "play the scenery" put the video up (room's check
+said show) but the chatbot refused — it judged the action's "when…" itself,
+and row 3 didn't mention scenery. Now the caller's words are judged **once**
+(`judgeCaller` in `page.tsx`, cached by history length + text, started with
+the early turn at phrase-final) and **before the reply is written**:
+`startTurnStream` waits for it (max 3s) and marks those media
+`change: 'appearing' | 'removing'` in `RoomMedia`; sendTurn applies the same
+judgement (`applyMedia`). The prompt says the room decides, never contradict
+it, acknowledge APPEARING NOW / COMING DOWN NOW, and that row-8 media belong to
+the scene even if the description, rules or goal don't mention them. Tested
+with stubs (turn got `change: 'appearing'`; one judgement per caller line).
+
+## 7i. Undo / redo for media work (2026-10-18)
+
+⌘Z undoes, **⌘⇧Z or ⌘X** redoes (Ctrl on Windows) — ⌘X because the user asked
+for it; it's left as cut inside text boxes or when text is selected. Covers
+the media connections store only: move / stretch / duplicate / delete bar,
+connect / disconnect a file, change when it plays. `updateMediaLinks(update,
+label)` — a `label` makes it an undo step; label-less updates (auto-placing a
+new bar, following a reworded action) fold into the last step. Stacks in
+`mediaFolder.ts` (`undoMediaLinks`, `redoMediaLinks`, max 100, browser session
+only). Notice "UNDO · MOVE BAR" in the timeline header for 2.5s
+(`useHistoryNote`). Keys in `page.tsx`; skipped in input/textarea/select/
+contenteditable. Tested in the pane. Not covered: design text, flow cards,
+settings (text boxes keep the browser's own undo).
+
+## 7j. Looping video, every-time visuals, rewording (2026-10-18)
+
+- **Video loops** while on screen by default; a **Loop** checkbox per video
+  connection (`MediaLink.loop`, false = play once and hold the last frame).
+- **"Every time" pictures/video** now replay (from the start) at each of their
+  events — before each reply, as it starts, after it, when the caller speaks
+  (`everyVisuals` in `mediaShow.ts`, `showEvery` in `sendTurn`), and come down
+  at the end of the call. Note "before each reply" also fires before the
+  agent's opening line.
+- **Reworded actions** (e.g. a spelling fix in row 8): row 8 is now also re-read
+  when the app window regains focus (coming back from the sheet) and in
+  `refreshSceneFromSheet` (Refresh / Update this scene, every scene of the
+  sheet). `followRewording` keeps bars and settings but **drops the student's
+  `timing.kind`**, so the new wording decides when it plays.
+- Tested in the pane (stubbed sheet + intent): loop, restart per reply, rename
+  on focus with bar kept on its track.
+
+## 7k. Mic pickup + talk-to-interrupt switch (2026-10-18)
+
+The user found the mic worse at picking them up since talk-to-interrupt.
+Likely cause: after the agent finished, `OpenMic` skipped results up to the
+current count — and a caller speaking straight away often had their first words
+merged by Chrome into the in-progress phrase that began with the agent's voice,
+so they were dropped. Now when the agent finishes (not interrupted) the
+recognition session is stopped and restarts fresh, as before the feature.
+Also a **"✋ Talk to interrupt: On/Off"** button on the open-mic status line
+(right side, shown while the open mic is on) toggles `interruptByVoice` (same
+setting as the Voice panel checkbox). Not tested with a real mic.
+
+## 7l. Timeline header + chat toolbar layout (2026-10-18)
+
+- Timeline header is one line: "Timeline · scene" left; "Stage 2 · name" then
+  ◀ ▶ (now `h-4`, half height) right; less padding above/below (`mb-1`,
+  workspace `pt-2 pb-2`).
+- Chat toolbar: `buttonOutlineCompact` / `buttonBusyCompact` in `styles.ts`
+  (px-2.5, tracking-wider) for Complete restart, Refresh, Music / Sounds,
+  Voice. A container query (`@container`, `@[660px]:`) keeps Restart/Refresh
+  left and sound right when it fits on one line; narrower, it wraps and every
+  button aligns right. Checked at both widths in the pane.
+
+## 7m. New bars go into empty space (2026-10-18)
+
+`findSpace` in `MediaTimeline.tsx`: a new connection's bar tries its own stages
+on each track (top first), then the same length at the nearest other stages,
+then (pictures/video only) shorter down to one stage; only a full timeline
+overlaps. Sounds keep their length on the sound track. Before, with no free
+track at its stages it fell back to track 1 on top of another bar. Tested in
+the pane (11 full tracks over stages 1–2B → once at 3A track 1, throughout
+3A–3C track 2).
+
+## 7n. "Once / Loop, when user instructs" + equal toolbar buttons (2026-10-18)
+
+- "When it plays" dropdown: **Once, when user instructs** (`KIND_BADGE.once`)
+  and **Loop, when user instructs** (`LOOP_WHEN_BADGE`; kind `once` +
+  `MediaLink.loop = true`; not offered for images), then Every time /
+  Throughout / At the start / At the end. The separate Loop checkbox is gone.
+  `loopOf(link)` (mediaFolder): student's choice → for once, Claude's reading
+  (`ActionReading.loop`, new in `/api/media/intent`) → the words
+  (`wordsSayLoop`: loop, repeat, keep playing…) → otherwise once; other kinds
+  loop while on. A "loop when" sound uses `startLoop` until removed. Rewording
+  clears `loop` too. One undo step per change (`setPlays`).
+- Chat toolbar: all four buttons `toolbarButtonWidth` (164px, centred), so
+  wrapped they form two aligned columns; long voice names truncate. Panel
+  wrappers are `relative flex` (the Music button sat 2px low). One-row
+  breakpoint now `@[700px]`. Checked in the pane. The Music/Voice pair also wraps
+  (`flex-wrap justify-end`), so a very narrow chat (300px) gets one right-aligned
+  column of four instead of the pair sticking out past the left edge.
+
+Refresh this scene also turns the open mic (and the click-to-talk mic) off.
+
+Media Library: **Connect with Action** uses the studio's `DropdownArrow` (larger
+▼), `px-3`, label wraps to at most two lines. Arrange row is now Listed · Most
+recent · **With actions** (files connected to an action in the open scene first)
+· Name · Video · Sound · Image, with the search box on its own line below.
+
+## 7o. Several sound tracks (2026-10-18)
+
+The ♪ row header has an arrow (▶/▼) that opens up to **5 sound tracks**
+(`MAX_SOUND_TRACKS`; user's limit) — opening always shows all five; sound rows
+are tinted light blue (and their ♪ labels blue) to mark audio; remembered in
+localStorage `timeline-sounds-open`. Closed, every sound
+shows on the one ♪ row. Track ids: `'sound'`, `'sound-2'`…`'sound-5'`
+(`TimelineBar.track`). New sounds go to the first free sound track
+(`findSpace` over `SOUND_TRACKS`); dragging moves sounds among the open sound
+tracks. The tracks are layout only: when a sound plays still comes from its
+action's timing. Playback isn't capped (Chrome allows ~75 media players a page).
+Tested in the pane. "Remove" on the Try it button is now "Hide", same width.
+
+Media Library connection boxes fold: each connection is one line by default
+(▶ · the action · when it plays, e.g. "LOOP, WHEN USER INSTRUCTS"; red "? Pick
+when" / "Not in sheet" when it needs attention; small ×). Click to open the full
+controls (▼ Scene · … header folds it again). Which are open is remembered in
+localStorage `media-open-connections`. Deleting a duplicated bar removes just that
+copy (user's choice); the last bar disconnects.
+
+Deleting a bar also takes its media out of the room drawing: from that bar's
+screen (a copy), or everywhere (the last bar), keeping any screen the same file
+still has a bar on for another action (`hideVisualExcept` in mediaShow); the
+last bar of a sound also stops it. Tested in the pane.
+
+Projection areas 1–11 each have an arrow (▶/▼) that opens five tracks for that
+screen (5, 5.2–5.5; ids `'5-2'`… in `TimelineBar.track`, `areaOfTrack` maps them
+to the area; `MAX_AREA_TRACKS`). Remembered in localStorage `timeline-areas-open`.
+Closed, extra-track bars show on the area's row. A screen still shows one
+picture/video at a time (the latest replaces it). New visuals fill the 11 main
+tracks first, then extra ones. Tested in the pane. (Committed.)
+
+Bars follow "When it plays": `MediaLink.barsKind` records the kind the bars were
+laid out for; when `timingOf(link).kind` differs (dropdown, pick-one, Claude's
+reading arriving, rewording) the timeline effect re-spans every bar of it on the
+same tracks — every/throughout across the scene, end the last stage, once/start
+the one stage it starts at. Links from before `barsKind` just adopt their current
+kind (no move). Bars show ↻ (every time) or ∞ (loop, when user instructs).
+Tested in the pane incl. undo.
 
 ## 8. Other open items
 
 - The user hasn't yet re-deployed the Apps Script (§4).
-- Media inspector replacing the TouchDesigner window (discussed, not built).
 - Onboarding tour for the immersive-media process (button placeholder only).
 - Connections/library live in the browser only (not in the sheet / not
   per project); row 9 could hold them later.
@@ -219,7 +486,8 @@ Plan:
 | `src/components/agent/MediaMarker.tsx` | ♪ markers in the conversation |
 | `src/lib/agent/media.ts` | Kinds, IDs, merge, sheet rows, timing parse (regex) |
 | `src/lib/agent/mediaFolder.ts` | Folder access, IndexedDB library/links/thumbnails, shared links store, followRewording |
-| `src/lib/agent/mediaPlayback.ts` | Playing/stopping sounds, event sounds |
+| `src/lib/agent/mediaPlayback.ts` | Playing/stopping sounds, event sounds, loops (throughout), dipping |
+| `src/app/api/media/intent/route.ts` | Claude reads each action's intent (any language) |
 | `src/lib/agent/projectionLayout.ts` | The 11 projection outlines |
 | `src/lib/ffmpeg.ts` | Finding/running ffmpeg |
 | `src/app/api/sheets/media/route.ts` | Read/write the Media tab via Apps Script |
@@ -228,6 +496,6 @@ Plan:
 | `src/app/agent/page.tsx` | Media panel wiring, chat folding, sound events in `sendTurn`, `sayAndWait` |
 
 Storage: IndexedDB `goal-agent-studio` v4 store `media` (keys `folder`,
-`library`, `links`, `thumb:<id>`); localStorage `process-open:<title>`,
+`library`, `links`, `readings`, `thumb:<id>`); localStorage `process-open:<title>`,
 `media-workspace-split`, `media-chat-width`, `media-chat-hidden`,
 `media-library-height`.

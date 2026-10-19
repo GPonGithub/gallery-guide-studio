@@ -1,11 +1,13 @@
 'use client';
 
-import type { EveryWhen, MediaAsset, ActionTiming } from './media';
+import { dipToShare, levelToGain } from '@/components/agent/backgroundMusic';
+import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
 import {
   allowed,
   loadLibrary,
   loadMediaLinks,
   openMediaFile,
+  readingsReady,
   savedMediaFolder,
   timingOf,
   type MediaLink,
@@ -25,17 +27,126 @@ export type PlannedSound = { link: MediaLink; asset: MediaAsset; timing: ActionT
 
 /** The sounds connected to this scene's "every time" actions for one event. */
 export async function soundsFor(scene: SceneRef | null, when: EveryWhen): Promise<PlannedSound[]> {
+  return (await sceneSounds(scene, 'every')).filter((s) => s.timing.when === when);
+}
+
+/** The sounds connected to this scene's actions of one kind (as Claude read them, or as the student set). */
+export async function sceneSounds(scene: SceneRef | null, kind: ActionKind): Promise<PlannedSound[]> {
   if (!scene) return [];
-  const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary()]);
+  const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary(), readingsReady()]);
   const assets = new Map((library?.assets ?? []).map((a) => [a.id, a]));
   return links.flatMap((link) => {
     if (link.sheetId !== scene.sheetId || link.sceneNumber !== scene.number) return [];
     const timing = timingOf(link);
     const asset = assets.get(link.assetId);
-    if (timing.kind !== 'every' || timing.when !== when) return [];
+    if (timing.kind !== kind) return [];
     if (!asset || asset.kind !== 'sound' || asset.status !== 'present') return [];
     return [{ link, asset, timing }];
   });
+}
+
+// Every sound the timeline plays follows the Music / Sounds panel, like the scene's music: its
+// Volume, and its Dip while the agent talks (easing down quickly, back up gently).
+const DUCK_DOWN_MS = 400;
+const DUCK_UP_MS = 1200;
+const LEVEL_CHANGE_MS = 150;
+const levels = { volume: 5, dip: 5 };
+let ducked = false;
+const sounding = new Map<HTMLAudioElement, ReturnType<typeof setInterval> | null>();
+
+/** How loud a timeline sound plays now (0–1). */
+const soundVolume = () => levelToGain(levels.volume) * (ducked ? dipToShare(levels.dip) : 1);
+
+/** Eases every playing sound to where it should be now (half a cosine, as the music does). */
+function rampAll(ms: number) {
+  const to = soundVolume();
+  for (const [audio, running] of sounding) {
+    if (running) clearInterval(running);
+    const from = audio.volume;
+    const start = performance.now();
+    const timer = setInterval(() => {
+      const t = Math.min(1, (performance.now() - start) / ms);
+      audio.volume = Math.max(0, Math.min(1, from + (to - from) * ((1 - Math.cos(Math.PI * t)) / 2)));
+      if (t >= 1) {
+        clearInterval(timer);
+        if (sounding.has(audio)) sounding.set(audio, null);
+      }
+    }, 30);
+    sounding.set(audio, timer);
+  }
+}
+
+/** A sound starting: at the level it should be now, and following every change from here on. */
+function follow(audio: HTMLAudioElement) {
+  audio.volume = soundVolume();
+  sounding.set(audio, null);
+}
+
+/** A sound finished or stopped: it no longer follows the levels. */
+function unfollow(audio: HTMLAudioElement) {
+  const running = sounding.get(audio);
+  if (running) clearInterval(running);
+  sounding.delete(audio);
+}
+
+/** The Music / Sounds panel's Volume and Dip (each 0–10), for the timeline's sounds too. */
+export function setSoundLevels(volume: number, dip: number) {
+  if (volume === levels.volume && dip === levels.dip) return;
+  levels.volume = volume;
+  levels.dip = dip;
+  rampAll(LEVEL_CHANGE_MS);
+}
+
+/** Dips every timeline sound while the agent talks (true), and brings them back up after (false). */
+export function duckSounds(talking: boolean) {
+  if (talking === ducked) return;
+  ducked = talking;
+  rampAll(talking ? DUCK_DOWN_MS : DUCK_UP_MS);
+}
+
+// "Throughout the scene" sounds: loop for the whole call.
+const loops = new Set<{ audio: HTMLAudioElement; stop: () => void }>();
+
+/**
+ * Starts a sound looping until stopSounds/stopLoops — for "throughout the
+ * scene" actions. Rejects if it can't be played.
+ */
+export async function startLoop(asset: MediaAsset): Promise<void> {
+  const folder = await savedMediaFolder();
+  if (!folder) throw new Error('No media folder has been chosen.');
+  if (!(await allowed(folder, false))) {
+    throw new Error('The browser needs permission to read the media folder — open the Media Library and click Allow.');
+  }
+  const url = URL.createObjectURL(await openMediaFile(folder, asset.path));
+  const audio = new Audio(url);
+  audio.loop = true;
+  follow(audio);
+  const loop = {
+    audio,
+    stop: () => {
+      audio.pause();
+      unfollow(audio);
+      URL.revokeObjectURL(url);
+      loops.delete(loop);
+      playing.delete(entry);
+      changed();
+    },
+  };
+  const entry: Playing = { assetId: asset.id, stop: loop.stop };
+  loops.add(loop);
+  playing.add(entry);
+  changed();
+  try {
+    await audio.play();
+  } catch (err) {
+    loop.stop();
+    throw err instanceof Error ? err : new Error(`“${asset.name}” couldn’t be played.`);
+  }
+}
+
+/** Stops every "throughout the scene" sound (the call ended, restarted, or the scene changed). */
+export function stopLoops() {
+  for (const loop of [...loops]) loop.stop();
 }
 
 /** Longest the voice ever waits for a sound (a long file must never stall the conversation). */
@@ -47,6 +158,9 @@ type Playing = { assetId: string; stop: () => void };
 const playing = new Set<Playing>();
 const listeners = new Set<() => void>();
 const changed = () => listeners.forEach((listener) => listener());
+
+/** Whether any timeline sound is playing now. */
+export const anySoundPlaying = () => playing.size > 0;
 
 /** Whether a media file's sound is playing now. */
 export const isSoundPlaying = (assetId: string) => [...playing].some((p) => p.assetId === assetId);
@@ -78,6 +192,7 @@ export async function playSound(asset: MediaAsset, ask = false): Promise<'ended'
   }
   const url = URL.createObjectURL(await openMediaFile(folder, asset.path));
   const audio = new Audio(url);
+  follow(audio);
   return new Promise((resolve, reject) => {
     let over = false;
     const timer = setTimeout(() => resolve('waited'), LONGEST_WAIT);
@@ -85,6 +200,7 @@ export async function playSound(asset: MediaAsset, ask = false): Promise<'ended'
       if (over) return;
       over = true;
       clearTimeout(timer);
+      unfollow(audio);
       playing.delete(entry);
       URL.revokeObjectURL(url);
       changed();

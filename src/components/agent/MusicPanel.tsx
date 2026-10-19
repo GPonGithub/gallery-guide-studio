@@ -1,14 +1,16 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { buttonOutline, fieldLabel } from '@/lib/styles';
+import { buttonOutlineCompact, fieldLabel, toolbarButtonWidth } from '@/lib/styles';
 import { dipToShare } from './backgroundMusic';
 import { DropdownArrow } from './DropdownArrow';
 
-// The background music controls, in a panel that pops open from the chat
-// toolbar like the Voice panel: drop in an MP3, set its volume, and set how
-// far it dips while the agent is talking. The music starts when the agent is
-// asked to open the call ("Agent speaks first" or the expressive version).
+// The music and sound controls, in a panel that pops open from the chat
+// toolbar like the Voice panel: drop in an MP3 for the scene's background
+// music, and set the volume and how far it dips while the agent is talking —
+// for that music and for every sound the timeline plays (media actions). The
+// music starts when the agent is asked to open the call ("Agent speaks first"
+// or the expressive version).
 
 export const MAX_MUSIC_MB = 50;
 
@@ -19,6 +21,7 @@ const smallButton =
 export function MusicPanel({
   trackName,
   playing,
+  soundsPlaying = false,
   volume,
   dip,
   onFile,
@@ -31,6 +34,8 @@ export function MusicPanel({
   /** The music file's name, or null if there isn't one. */
   trackName: string | null;
   playing: boolean;
+  /** A timeline sound is playing (so the dip can be tried on it). */
+  soundsPlaying?: boolean;
   /** 0–10. */
   volume: number;
   /** 0–10: how far the music dips while the agent talks (10 = silent). */
@@ -77,15 +82,15 @@ export function MusicPanel({
   };
 
   return (
-    <div ref={wrapperRef} className="relative">
+    <div ref={wrapperRef} className="relative flex">
       <button
         onClick={() => setOpen((o) => !o)}
-        className={`inline-flex h-10 items-center gap-2 ${buttonOutline}`}
+        className={`inline-flex h-10 items-center gap-1.5 ${toolbarButtonWidth} ${buttonOutlineCompact}`}
         aria-expanded={open}
         data-tour="music-button"
-        title="Background music"
+        title="Background music, and the volume of every sound the scene plays"
       >
-        ♫ Music{playing ? ' ▶' : ''}
+        ♫ Music / Sounds{playing || soundsPlaying ? ' ▶' : ''}
         <DropdownArrow open={open} />
       </button>
       {open && (
@@ -149,6 +154,9 @@ export function MusicPanel({
           </section>
 
           <section className="flex flex-col gap-3 border-t-2 border-ink pt-3">
+            <p className="font-body text-[11px] leading-snug text-muted-ink">
+              These set the music above and every sound the timeline plays (the scene’s media actions).
+            </p>
             <Slider
               label="Volume"
               value={volume}
@@ -159,15 +167,19 @@ export function MusicPanel({
             <Slider
               label="Dip while the agent talks"
               value={dip}
-              readout={`${dip.toFixed(1)} · music at ${Math.round(dipToShare(dip) * 100)}%`}
+              readout={`${dip.toFixed(1)} · at ${Math.round(dipToShare(dip) * 100)}%`}
               onChange={onDipChange}
-              hint="How far the music drops under the agent’s voice. 0 = no dip, 5 = half volume, 10 = silent. It eases down as the agent starts and back up after. Around 3–5 keeps it audible under the voice."
+              hint="How far the music and sounds drop under the agent’s voice. 0 = no dip, 5 = half volume, 10 = silent. It eases down as the agent starts and back up after. Around 3–5 keeps it audible under the voice."
             />
             <button
               onClick={onTryDip}
-              disabled={!playing}
+              disabled={!playing && !soundsPlaying}
               className={`self-start ${smallButton}`}
-              title={playing ? 'Dips the music for 3 seconds, as if the agent were talking' : 'Play the music first'}
+              title={
+                playing || soundsPlaying
+                  ? 'Dips the music and sounds for 3 seconds, as if the agent were talking'
+                  : 'Play the music (or a sound) first'
+              }
             >
               Try the dip
             </button>
