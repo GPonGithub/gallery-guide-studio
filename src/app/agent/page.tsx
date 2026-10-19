@@ -1,5 +1,7 @@
 'use client';
 
+// First: splits this browser's storage by student team before anything reads it (see lib/team.ts).
+import '@/lib/team';
 import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { DesignPanel, type SheetImportOutcome, type SheetSync } from '@/components/agent/DesignPanel';
 import { MasterEditor, StageEditor } from '@/components/agent/FlowEditor';
@@ -9,6 +11,7 @@ import { startStreamedClip, type StreamedClip } from '@/components/agent/streame
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
 import { OnboardingTour } from '@/components/agent/OnboardingTour';
+import { TeamToggle } from '@/components/agent/TeamToggle';
 import { useHosting } from '@/lib/agent/hosting';
 import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
@@ -2074,7 +2077,7 @@ export default function AgentStudioPage() {
 
   return (
     <main className="flex min-h-screen flex-col bg-paper lg:h-screen">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-ink px-5 py-3">
+      <header className="relative flex flex-wrap items-center justify-between gap-3 border-b-2 border-ink px-5 py-3">
         <div className="flex min-w-0 items-center gap-3">
           {/* The guided tour of the chatbot generation process (see onboardingSteps.tsx) — started
               by Onboard Me beside that section's heading in Design Process. */}
@@ -2099,6 +2102,10 @@ export default function AgentStudioPage() {
               )}
             </p>
           </div>
+        </div>
+        {/* The team switch, centred on the screen (see TeamToggle). */}
+        <div className="lg:absolute lg:left-1/2 lg:-translate-x-1/2">
+          <TeamToggle />
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setKeysOpen((o) => !o)} aria-expanded={keysOpen} data-tour="keys-button" className={buttonOutline}>

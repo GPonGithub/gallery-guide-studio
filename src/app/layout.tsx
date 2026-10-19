@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Montserrat } from "next/font/google";
 import "./globals.css";
+import { TEAM_STORAGE_SCRIPT } from "@/lib/team";
 
 // The studio's one typeface. Fetched from Google Fonts when the app is built
 // and served with it, so every computer shows it — nothing to install.
@@ -19,7 +20,11 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${montserrat.variable} h-full antialiased`}>
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        {/* First, before any of the app's code: keeps each student team's storage apart (see lib/team.ts). */}
+        <script dangerouslySetInnerHTML={{ __html: TEAM_STORAGE_SCRIPT }} />
+        {children}
+      </body>
     </html>
   );
 }

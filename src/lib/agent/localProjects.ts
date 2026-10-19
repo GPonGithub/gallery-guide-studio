@@ -1,6 +1,7 @@
 'use client';
 
 import { run } from '@/lib/browserDb';
+import { currentTeam } from '@/lib/team';
 import { blankStage, emptyFlow } from './flow';
 import type { AgentProject } from './projectStore';
 import { compareSceneNumbers, type SheetScene } from './sheetScenes';
@@ -230,6 +231,8 @@ let migration: Promise<void> | null = null;
  */
 export function moveServerProjectsHere(): Promise<void> {
   migration ??= (async () => {
+    // The old server-side projects belong to team ED (team AE starts empty — see team.ts).
+    if (currentTeam() !== 'ED') return;
     try {
       if (window.localStorage.getItem(MIGRATED_FLAG)) return;
     } catch {

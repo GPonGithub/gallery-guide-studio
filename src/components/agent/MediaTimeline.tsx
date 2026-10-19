@@ -471,7 +471,7 @@ export function MediaTimeline({
           become the timeline&rsquo;s columns.
         </p>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-[28px_minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] overflow-y-auto overflow-x-hidden">
+        <div className="grid min-h-0 flex-1 grid-cols-[34px_minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] overflow-y-auto overflow-x-hidden">
           <div aria-hidden="true" />
 
           {/* The ruler: each stage's code, with alternative branches bracketed, and the playhead's handle. */}
@@ -563,9 +563,9 @@ export function MediaTimeline({
                   title={
                     soundsOpen ? 'Close the sound tracks into one' : 'Open more sound tracks, for sounds that overlap'
                   }
-                  className="flex items-center gap-0.5 font-body text-[11px] text-[#3c5eac] hover:text-ink"
+                  className="flex items-center justify-between font-body text-[11px] text-[#3c5eac] hover:text-ink"
                 >
-                  ♪<span className="text-[8px] leading-none">{soundsOpen ? '▼' : '▶'}</span>
+                  ♪<OpenArrow open={soundsOpen} />
                 </button>
               ) : typeof t === 'number' ? (
                 // A projection area: its number, and an arrow that opens it into MAX_AREA_TRACKS tracks.
@@ -578,10 +578,10 @@ export function MediaTimeline({
                       ? `Close projection area ${t}'s tracks into one`
                       : `Projection area ${t} — open ${MAX_AREA_TRACKS} tracks for it`
                   }
-                  className="flex items-center gap-0.5 font-body text-[11px] text-ink hover:text-[#3c5eac]"
+                  className="flex items-center justify-between font-body text-[11px] text-ink hover:text-[#3c5eac]"
                 >
                   {t}
-                  <span className="text-[7px] leading-none">{areasOpen.includes(t) ? '▼' : '▶'}</span>
+                  <OpenArrow open={areasOpen.includes(t)} />
                 </button>
               ) : (
                 <span
@@ -726,5 +726,19 @@ export function MediaTimeline({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * A track header's open/close arrow: ▶ closed, ▼ open. Every arrow sits at the
+ * right of the 34px number column, and both shapes put their tip at x = 8 of
+ * the same 18px box, so the tips of the whole column line up on one pixel line
+ * with 10px of white space after them.
+ */
+function OpenArrow({ open }: { open: boolean }) {
+  return (
+    <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden className="shrink-0 fill-current">
+      <polygon points={open ? '4,2 12,2 8,9' : '1,0 8,5 1,10'} />
+    </svg>
   );
 }

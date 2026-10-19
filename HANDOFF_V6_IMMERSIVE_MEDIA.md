@@ -467,6 +467,26 @@ the one stage it starts at. Links from before `barsKind` just adopt their curren
 kind (no move). Bars show ↻ (every time) or ∞ (loop, when user instructs).
 Tested in the pane incl. undo.
 
+## 7p. Team ED / Team AE (2026-10-18, not committed yet)
+
+A **Team ED | Team AE** toggle (`TeamToggle.tsx`) sits left of Keys in the header;
+the open team is filled black. Each team has its own copy of the whole app in
+the browser — keys, scenes, conversations, patients, media folder and
+connections, layout. `lib/team.ts` `TEAM_STORAGE_SCRIPT` (inline `<script>` in
+`app/layout.tsx` `<head>`, runs before the app) patches `Storage.prototype` for
+localStorage only: team AE's keys get a `team-AE:` prefix, team ED keeps the
+original keys (so earlier work stays with ED); `studio-team` is the one shared
+key. IndexedDB: AE uses `goal-agent-studio-AE` (`browserDb.ts`). Switching
+saves the team and reloads. The old server-projects migration runs for ED only.
+Still shared: the FigJam boards list (`src/data/figjamBoards.json`), the phone
+test hand-off (`.data/phone-flow.json`) and, locally only, server keys from
+`.env` as a fallback (the hosted site has none). The script is also run when
+`lib/team.ts` first loads (imported first in `page.tsx`, and by `browserDb.ts`),
+as a backup if the layout's copy didn't run — a long-running dev server didn't
+pick up the layout change. Toggle centred in the header; both buttons white,
+black on hover, the open team with Complete restart's 4px border. Switching
+both ways tested in the pane (AE empty, ED's scene intact).
+
 ## 8. Other open items
 
 - The user hasn't yet re-deployed the Apps Script (§4).

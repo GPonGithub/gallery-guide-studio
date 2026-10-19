@@ -1,5 +1,7 @@
 'use client';
 
+import { currentTeam } from './team';
+
 /**
  * This browser's own storage for the studio (IndexedDB — big enough for
  * music files, unlike localStorage). Nothing here leaves the computer.
@@ -11,14 +13,15 @@
  *   media         the media folder (its handle, not its files) and its media list (see mediaFolder.ts)
  */
 
-const DB_NAME = 'goal-agent-studio';
+// Each student team has its own database (see team.ts); team ED keeps the original one.
+const dbName = () => (currentTeam() === 'AE' ? 'goal-agent-studio-AE' : 'goal-agent-studio');
 const VERSION = 4;
 export const STORES = ['music', 'projects', 'projectMusic', 'patients', 'media'] as const;
 export type StoreName = (typeof STORES)[number];
 
 export function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, VERSION);
+    const request = indexedDB.open(dbName(), VERSION);
     request.onupgradeneeded = () => {
       for (const name of STORES) if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name);
     };
