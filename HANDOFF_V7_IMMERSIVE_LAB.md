@@ -8,7 +8,10 @@ feature, read `HANDOFF_V6_IMMERSIVE_MEDIA.md` (§7a–7t — the v7 work is writ
 
 ## 0. Where things stand
 
-- **Branch `v7`** is the working branch (pushed to GitHub, `GPonGithub/gallery-guide-studio`).
+- **Branch `v8`** (made 2026-10-20 from v7 `3e7e028`) is now the working branch — everything below, plus
+  the timeline bar thumbnails, stacked labels and overlap stripes. Its Vercel preview:
+  https://gallery-guide-studio-git-v8-gpongithubs-projects.vercel.app/agent (sign in to Vercel to open).
+- **Branch `v7`** was the working branch (pushed to GitHub, `GPonGithub/gallery-guide-studio`).
   Latest commit **`c3a5bfa`**. v7 was made from v6 `baa00af`.
 - **Branch `v6`** is still what the **live site** deploys: https://gallery-guide-studio.vercel.app/agent.
   Pushing v7 only makes a Vercel *preview*. To go live: merge v7 into v6 (or point Vercel's production
