@@ -13,6 +13,7 @@ import { MusicPanel } from '@/components/agent/MusicPanel';
 import { OnboardingTour } from '@/components/agent/OnboardingTour';
 import { SceneButtons } from '@/components/agent/SceneButtons';
 import { TeamToggle } from '@/components/agent/TeamToggle';
+import { ProjectFileButtons } from '@/components/agent/ProjectFileButtons';
 import { useHosting } from '@/lib/agent/hosting';
 import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
@@ -2109,6 +2110,8 @@ export default function AgentStudioPage() {
             startRef={startMediaTour}
             progressKey="immersive-media-onboarding"
           />
+          {/* The team switch, left of the title (see TeamToggle). */}
+          <TeamToggle />
           <div className="min-w-0">
             <h1 className="font-display text-2xl leading-none tracking-tight text-ink">Chatbot Designer</h1>
             <p className="mt-1 truncate font-label text-[10px] uppercase tracking-widest text-muted-ink">
@@ -2124,10 +2127,6 @@ export default function AgentStudioPage() {
               )}
             </p>
           </div>
-        </div>
-        {/* The team switch, centred on the screen (see TeamToggle). */}
-        <div className="lg:absolute lg:left-1/2 lg:-translate-x-1/2">
-          <TeamToggle />
         </div>
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setKeysOpen((o) => !o)} aria-expanded={keysOpen} data-tour="keys-button" className={buttonOutline}>
@@ -2145,6 +2144,7 @@ export default function AgentStudioPage() {
           >
             {dirty ? 'Not Saved' : 'Saved'}
           </button>
+          <ProjectFileButtons />
         </div>
       </header>
 
@@ -2309,7 +2309,7 @@ export default function AgentStudioPage() {
           <div className="@container flex flex-col gap-2 border-b-2 border-ink bg-hair px-3 py-2.5">
             {/* Switch scene from here too (as above the room drawing, and in Design Process steps 3–6). */}
             {sheetSceneList.length > 0 && (
-              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5" data-tour="chat-scenes">
+              <div className="flex min-w-0 flex-wrap items-center justify-center gap-x-3 gap-y-1.5" data-tour="chat-scenes">
                 <span className={fieldLabel}>Scene</span>
                 <SceneButtons
                   scenes={sheetSceneList}

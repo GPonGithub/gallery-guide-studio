@@ -612,6 +612,13 @@ every-time event / voice / delay; marker → Loop) — same data as the library,
 **Done:** Apps Script **Run + Allow** step in SheetSaving's setup list, the chatbot tour and the student PDF
 (`student-guide/`, not in git), plus a team-sharing note (one member deploys; others use the same URL).
 
+**Done:** **Export Project / Import Project** buttons after Saved (`ProjectFileButtons.tsx`,
+`lib/projectBackup.ts`). One JSON file (format `chatbot-designer-project` v1) with this team's localStorage
+(team-scoped, see team.ts) and every IndexedDB store (Blobs/Files as base64). Left out: API keys (fields
+ending `ApiKey` blanked; on import this browser's keys are put back into the same entries), the media
+folder handle, `thumb:*`, `demo-backup`. Import clears the team's storage and DB stores, writes the
+project, reloads. Round trip tested in the pane (settings, library, music File, key kept).
+
 **Next:** scrub preview → TouchDesigner reads show.json. (Dragging onto the room drawing itself: not yet.)
 
 ## 8. Other open items
