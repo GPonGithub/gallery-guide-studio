@@ -9,9 +9,10 @@ export function DropdownArrow({ open = false, className = '' }: { open?: boolean
       width="10"
       height="6"
       aria-hidden="true"
-      className={`inline-block shrink-0 fill-current transition-transform duration-150 ${open ? 'rotate-180' : ''} ${className}`}
+      className={`inline-block shrink-0 fill-current ${className}`}
     >
-      <path d="M0 0h10L5 6z" />
+      {/* Drawn pointing up, rather than turned: a turned triangle lands between pixels and looks smaller. */}
+      <path d={open ? 'M0 6h10L5 0z' : 'M0 0h10L5 6z'} />
     </svg>
   );
 }

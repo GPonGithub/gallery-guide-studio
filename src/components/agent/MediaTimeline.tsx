@@ -15,14 +15,20 @@ import {
   WHEN_LABEL,
   type ActionKind,
   type EveryWhen,
+  type MediaAsset,
   type VoiceWait,
 } from '@/lib/agent/media';
+import { useMediaFolderRevision } from '@/lib/agent/mediaDemo';
 import { stopSounds } from '@/lib/agent/mediaPlayback';
 import { hideVisualExcept } from '@/lib/agent/mediaShow';
 import {
   areaOfTrack,
   barsOf,
+  loadLibrary,
+  loadThumbnail,
   loopOf,
+  openMediaFile,
+  savedMediaFolder,
   timingOf,
   useActionReadings,
   updateMediaLinks,
@@ -36,6 +42,7 @@ import {
   DRAG_SOUND,
   DRAG_VISUAL,
   type DraggedAsset,
+  type MediaFolder,
   type MediaLink,
   type TimelineBar,
 } from '@/lib/agent/mediaFolder';
@@ -217,6 +224,21 @@ export function MediaTimeline({
   // This scene's connections — its bars.
   const allLinks = useMediaLinks();
   const mine = scene ? allLinks.filter((l) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number) : [];
+
+  // The library's items and the media folder, for each bar's thumbnail — read again when the bars'
+  // items change, or the tour swaps the folder (see mediaDemo.ts).
+  const folderRevision = useMediaFolderRevision();
+  const barItems = mine.map((l) => l.assetId).join('|');
+  const [folder, setFolder] = useState<MediaFolder | null>(null);
+  const [assets, setAssets] = useState<Map<string, MediaAsset>>(() => new Map());
+  useEffect(() => {
+    let gone = false;
+    void savedMediaFolder().then((f) => !gone && setFolder(f));
+    void loadLibrary().then((lib) => !gone && setAssets(new Map((lib?.assets ?? []).map((a) => [a.id, a]))));
+    return () => {
+      gone = true;
+    };
+  }, [folderRevision, barItems]);
 
   // The sound tracks: one ♪ row, which its arrow opens into all MAX_SOUND_TRACKS (remembered). Closed,
   // every sound shows on the one row. They're tinted light blue, for audio.
@@ -812,6 +834,14 @@ export function MediaTimeline({
             {/* The bars, on one layer over the tracks — so a bar dragged to another track stays the same element. */}
             {mine.flatMap((l) =>
               barsOf(l).map((bar, i) => {
+                // Where another bar shares this one's row (a closed area's five tracks, or the closed ♪ row),
+                // the shared stages are striped — so the bars underneath aren't missed.
+                const mineSpan = span(bar);
+                const shared = mine
+                  .flatMap((o) => barsOf(o).map((b, j) => ({ key: barKey(o, j), row: rowOf(b.track), ...span(b) })))
+                  .filter((o) => o.key !== barKey(l, i) && o.row === rowOf(bar.track))
+                  .map((o) => ({ from: Math.max(o.from, mineSpan.from), to: Math.min(o.to, mineSpan.to) }))
+                  .filter((o) => o.from <= o.to);
                 const key = barKey(l, i);
                 const dragging = drag?.key === key ? drag : null;
                 const here = { track: bar.track, ...span(bar) };
@@ -831,22 +861,26 @@ export function MediaTimeline({
                   top: `calc(${(rowOf(p.track) / trackRows.length) * 100}% + 2.5px)`,
                   height: `calc(${100 / trackRows.length}% - 5px)`,
                 });
+                const asset = assets.get(l.assetId);
+                // What it is, under when it plays: a colour by its code, anything else by its name.
+                const what = asset?.kind === 'color' && asset.value ? asset.value : (l.assetName ?? l.assetId);
                 const label = (
-                  <span className="min-w-0 flex-1 truncate px-1 font-body text-[15px] leading-none">
-                    {isMarker(l) ? (
-                      <>
-                        {/* Plays whenever the marker is on this bar's stages. */}▶ {MARKER_LABEL}
-                        {l.assetName ? ` · ${l.assetName}` : ''}
-                      </>
-                    ) : isConnected(l) ? (
-                      <>
-                        {every ? '↻ ' : loops ? '∞ ' : ''}
-                        {l.action}
-                      </>
-                    ) : (
-                      // Dropped from the Media Library, no action yet: it doesn't play until its ▼ picks one.
-                      <span className="italic">{l.assetName ?? l.assetId} · pick an action ▼</span>
-                    )}
+                  <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-1">
+                    <span className="truncate font-body text-[13px] leading-none">
+                      {isMarker(l) ? (
+                        // Plays whenever the marker is on this bar's stages.
+                        <>{MARKER_LABEL}</>
+                      ) : isConnected(l) ? (
+                        <>
+                          {every ? '↻ ' : loops ? '∞ ' : ''}
+                          {l.action}
+                        </>
+                      ) : (
+                        // Dropped from the Media Library, no action yet: it doesn't play until its ▼ picks one.
+                        <span className="italic">Pick an action ▼</span>
+                      )}
+                    </span>
+                    <span className="truncate font-body text-[11px] leading-none opacity-80">{what}</span>
                   </span>
                 );
                 const handle = (end: 'from' | 'to') => (
@@ -883,7 +917,20 @@ export function MediaTimeline({
                     } ${dragging && !dragging.copy ? 'opacity-80 ring-2 ring-ink' : ''}`}
                     style={box(place)}
                   >
+                    {shared.map((o, n) => (
+                      <span
+                        key={n}
+                        className="pointer-events-none absolute inset-y-0 -z-10"
+                        style={{
+                          left: `${((o.from - mineSpan.from) / (mineSpan.to - mineSpan.from + 1)) * 100}%`,
+                          width: `${((o.to - o.from + 1) / (mineSpan.to - mineSpan.from + 1)) * 100}%`,
+                          background: 'repeating-linear-gradient(135deg, #5d7cc4 0 10px, transparent 10px 20px)',
+                        }}
+                        aria-hidden="true"
+                      />
+                    ))}
                     {handle('from')}
+                    <BarThumb link={l} asset={asset} folder={folder} />
                     {label}
                     <button
                       // Not a drag: pressing it mustn't pick the bar up.
@@ -914,7 +961,7 @@ export function MediaTimeline({
                           ? 'Delete this bar'
                           : 'Delete this bar — its file is disconnected from the action (connect it again in the Media Library)'
                       }
-                      className="flex h-full w-6 shrink-0 cursor-pointer items-center justify-center font-body text-base leading-none text-paper/80 hover:bg-ink/30 hover:text-paper"
+                      className="mr-[5px] flex h-full w-6 shrink-0 cursor-pointer items-center justify-center font-body text-xl leading-none text-paper/80 hover:bg-ink/30 hover:text-paper"
                     >
                       ×
                     </button>
@@ -1115,5 +1162,88 @@ function BarPlays({ link }: { link: MediaLink }) {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * A bar's thumbnail, at its left: the picture, the video's first frame, the colour, or the words —
+ * and for a sound, ♪ Sound. A small square of its kind's badge if the file can't be opened.
+ */
+function BarThumb({ link, asset, folder }: { link: MediaLink; asset?: MediaAsset; folder: MediaFolder | null }) {
+  const kind = asset?.kind ?? link.assetKind ?? kindOf(link.assetName ?? '');
+  const path = asset?.status === 'missing' ? undefined : asset?.path;
+  const [url, setUrl] = useState<string | null>(null);
+  const [still, setStill] = useState<string | null>(null);
+  useEffect(() => {
+    if (!folder || !path || (kind !== 'image' && kind !== 'video')) return;
+    let gone = false;
+    const made: string[] = [];
+    const keep = (blob: Blob, set: (u: string) => void) => {
+      if (gone) return;
+      const u = URL.createObjectURL(blob);
+      made.push(u);
+      set(u);
+    };
+    openMediaFile(folder, path)
+      .then(async (file) => {
+        // A video's stored thumbnail if it has one (made for files the browser can't play), else the file.
+        const thumb = kind === 'video' ? await loadThumbnail(link.assetId, file, path).catch(() => null) : null;
+        if (thumb) keep(thumb, setStill);
+        else keep(file, setUrl);
+      })
+      .catch(() => undefined);
+    return () => {
+      gone = true;
+      made.forEach((u) => URL.revokeObjectURL(u));
+      setUrl(null);
+      setStill(null);
+    };
+  }, [folder, path, kind, link.assetId]);
+
+  const frame = 'pointer-events-none h-full shrink-0 overflow-hidden border-r border-paper/50';
+  if (kind === 'sound') {
+    return (
+      <span className={`${frame} flex items-center whitespace-nowrap bg-paper px-1.5 font-label text-[10px] uppercase tracking-wide text-ink`}>
+        ♪ Sound
+      </span>
+    );
+  }
+  if (kind === 'color') {
+    return <span className={`${frame} aspect-video`} style={{ background: asset?.value || '#000' }} aria-hidden="true" />;
+  }
+  if (kind === 'text') {
+    return (
+      <span
+        className={`${frame} flex aspect-video items-center justify-center bg-ink px-0.5 text-center font-body text-[7px] leading-tight text-paper`}
+        aria-hidden="true"
+      >
+        <span className="line-clamp-2">{asset?.value || 'Aa'}</span>
+      </span>
+    );
+  }
+  return (
+    <span className={`${frame} relative aspect-video bg-ink`} aria-hidden="true">
+      {/* Local files (object URLs), so next/image's optimising doesn't apply. */}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      {(still || (kind === 'image' && url)) && <img src={(still ?? url)!} alt="" draggable={false} className="h-full w-full object-cover" />}
+      {kind === 'video' && url && !still && (
+        <video
+          src={url}
+          muted
+          preload="metadata"
+          playsInline
+          // Show the first frame (some browsers stay blank until asked for a moment of it).
+          onLoadedMetadata={(e) => {
+            if (e.currentTarget.currentTime === 0) e.currentTarget.currentTime = 0.001;
+          }}
+          className="h-full w-full object-cover"
+        />
+      )}
+      {!url && !still && (
+        <span className="absolute inset-0 flex items-center justify-center font-label text-[8px] uppercase text-paper/80">
+          {kind}
+        </span>
+      )}
+    </span>
   );
 }
