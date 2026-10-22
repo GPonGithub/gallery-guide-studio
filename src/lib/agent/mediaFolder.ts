@@ -246,6 +246,29 @@ export const useMediaLinks = () =>
     () => NO_LINKS,
   );
 
+/** Whether the connections have been read from this browser yet (until then there are none to show). */
+export const mediaLinksLoaded = () => shared !== null;
+
+/** The connections as they are now (none until they've been read). */
+export const currentMediaLinks = () => shared ?? NO_LINKS;
+
+/**
+ * A scene's timeline: its connections, bars and all, in order. A scene not
+ * from a sheet has none (media connects to a sheet scene's actions).
+ */
+export const timelineOf = (links: MediaLink[], scene: { sheetId: string; number: string } | null): MediaLink[] =>
+  scene ? links.filter((l) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number) : NO_LINKS;
+
+/** Puts a scene's timeline back as it was saved (leaving every other scene's alone). */
+export function restoreTimeline(scene: { sheetId: string; number: string }, timeline: MediaLink[]) {
+  if (!mediaLinksLoaded()) return;
+  updateMediaLinks((links) =>
+    JSON.stringify(timelineOf(links, scene)) === JSON.stringify(timeline)
+      ? links
+      : [...links.filter((l) => !(l.sheetId === scene.sheetId && l.sceneNumber === scene.number)), ...timeline],
+  );
+}
+
 /**
  * Changes the connections — saved, and shown everywhere at once. With a
  * `label` it's something the student did ("Move bar"), and can be undone;

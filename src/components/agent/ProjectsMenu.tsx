@@ -14,6 +14,7 @@ import {
 } from '@/lib/agent/localProjects';
 import type { AgentProject, ProjectMusic, ProjectVoice } from '@/lib/agent/projectStore';
 import type { AgentFlow } from '@/lib/agent/types';
+import type { MediaLink } from '@/lib/agent/mediaFolder';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { buttonOutline, buttonPrimary, buttonSaved, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
 
@@ -45,6 +46,8 @@ export type CurrentProject = {
   boardUrl: string;
   voice: ProjectVoice;
   music: ProjectMusic | null;
+  /** The scene's media timeline. */
+  timeline: MediaLink[];
   /** The music file itself, if this browser has it. */
   musicBlob: () => Promise<Blob | null>;
   /** Fingerprint of the flow as last written to FigJam (null = not written). */
@@ -62,6 +65,7 @@ export function saveProjectRequest(current: CurrentProject, name: string, asNew:
     boardUrl: current.boardUrl,
     voice: current.voice,
     music: current.music,
+    timeline: current.timeline,
     musicBlob: current.musicBlob,
     copyMusicFrom: asNew ? current.id : null,
   });
