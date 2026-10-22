@@ -16,10 +16,7 @@ feature, read `HANDOFF_V6_IMMERSIVE_MEDIA.md` (§7a–7t — the v7 work is writ
 - **Branch `v6`** is still what the **live site** deploys: https://gallery-guide-studio.vercel.app/agent.
   Pushing v7 only makes a Vercel *preview*. To go live: merge v7 into v6 (or point Vercel's production
   branch at v7) — only when the user asks.
-- **Not committed yet** (in the working tree on v7):
-  - **Export Project / Import Project** buttons — `src/components/agent/ProjectFileButtons.tsx`,
-    `src/lib/projectBackup.ts`, a small change in `src/app/agent/page.tsx` (header), and the handoff note.
-    Round trip tested in the browser pane. Ask the user before committing.
+- **Export Project / Import Project** buttons — committed in `df0ce7c` (on v7 and v8).
 - **Never commit**: the two personal PNGs in the repo root (`APPOINTMENT FLOW CHART_05.png`,
   `Screenshot 2026-08-12 at 5.36.21 PM 2.png`) and the `student-guide/` folder (its screenshots show the
   example sheet's patient details; the PDF is handed to students directly).
@@ -101,6 +98,21 @@ must click Deploy themselves (publishing was blocked for the assistant).
   `student-guide/guide.html` + `img/`; re-export with headless Chrome:
   `"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --no-pdf-header-footer --virtual-time-budget=8000 --print-to-pdf="Chatbot Designer - Student Guide.pdf" "file://$PWD/guide.html"`).
   Open questions for the user: the example sheet link; real steps for getting an Anthropic key.
+
+### 5a. Studio Mac (user `ixdstudio`) — set up 2026-10-22
+
+- Repo cloned to `~/Documents/2026 Grahams Work/Fall 2026 Grahams Work/Claude/gallery-guide-studio` (v8).
+  Node installed with Homebrew (`/opt/homebrew/bin`).
+- **TouchDesigner file**: `…/Claude/TouchDesigner/11 Video Channels_01.toe` — Immersive Lab built and
+  **saved** in it (the copy brought over had never been saved with it). The build script copy beside it has
+  `MEDIA_FOLDER` set to this Mac's `…/Fall 2026 Grahams Work/1. Conversation App Media Folder`; the repo copy
+  still names the other Mac's `/Users/grahamplumb/…` path, so run the local copy (or fix Media Folder on
+  `immersive_lab`).
+- Tested: the **v8 Vercel preview in Chrome** connects to `ws://localhost:9980` and shows media in the areas
+  (browser → TouchDesigner directly; Vercel isn't involved). TouchDesigner found 21 of 26 library items — the
+  5 missing ones not yet checked.
+- Textport tip: after typing or pasting a line, Return sometimes needs pressing a second time. To read what
+  arrived: `print(op('/project1/immersive_lab/message_log').text)` in the Textport.
 
 ## 6. Next steps
 
