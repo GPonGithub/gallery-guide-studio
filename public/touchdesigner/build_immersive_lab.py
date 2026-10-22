@@ -20,6 +20,10 @@
 #   media_list         the app's media list (sent on connecting): ID, file, path, and
 #                      whether TouchDesigner can find it.
 #
+# The receiver also drives /project1/projector_out, the projector windows that projector_output.py
+# makes, if there is one: the app's "Set up the projectors" step shows each projector's number and
+# swaps which part of the picture each projector gets.
+#
 # The component's Media Folder parameter is where the files are; a message's path (the
 # Media tab's column C) is found inside it.
 
@@ -275,6 +279,74 @@ def hello(msg):
     return 'app', 'connected'
 
 
+# --- the projectors (projector_output.py's windows) --------------------------
+
+def projector_out():
+    return lab.parent().op('projector_out')
+
+
+def projector_windows(po):
+    return sorted(po.findChildren(type=windowCOMP, depth=1), key=lambda w: w.digits or 0)
+
+
+def projector_state():
+    """What the app's projector step shows: how many projectors, and whether their numbers are up."""
+    po = projector_out()
+    if po is None:
+        return None
+    wins = projector_windows(po)
+    return {'count': len(wins),
+            'identify': bool(po.par.Identify.eval()) if hasattr(po.par, 'Identify') else False,
+            'open': sum(1 for w in wins if getattr(w, 'isOpen', False))}
+
+
+NO_PROJECTORS = 'no projector windows - run projector_output.py in TouchDesigner'
+
+
+def projectors(msg):
+    """projectors status / identify / open / close / assign."""
+    action = msg.get('action', '')
+    po = projector_out()
+    if po is None:
+        return 'projectors', NO_PROJECTORS, {'ok': False, 'projectors': None}
+    wins = projector_windows(po)
+    if action == 'identify':
+        po.par.Identify = bool(msg.get('on'))
+        result = 'numbers shown' if msg.get('on') else 'numbers hidden'
+    elif action == 'open':
+        for w in wins:
+            w.par.winopen.pulse()
+        result = '%d windows opened' % len(wins)
+    elif action == 'close':
+        for w in wins:
+            w.par.winclose.pulse()
+        result = 'windows closed'
+    elif action == 'assign':
+        # shows[r-1] = the number projector r (as labelled in the room) shows now. Projector r
+        # gets the screen that number was going to, so each shows its own number afterwards.
+        try:
+            shows = [int(n) for n in msg.get('shows', [])]
+        except (TypeError, ValueError):
+            shows = []
+        if sorted(shows) != list(range(1, len(wins) + 1)):
+            return 'projectors', 'each number 1-%d once, please' % len(wins), {
+                'ok': False, 'projectors': projector_state()}
+        before = [w.par.display.eval() for w in wins]
+        for r, w in enumerate(wins):
+            w.par.display = before[shows[r] - 1]
+        reopen = [w for w in wins if getattr(w, 'isOpen', False)]
+        for w in reopen:
+            w.par.winclose.pulse()
+        if reopen:
+            run('for p in args[0]: op(p).par.winopen.pulse()', [w.path for w in reopen], delayFrames=5)
+        # The reopened windows count as open (they reopen a few frames from now).
+        return 'projectors', 'projectors reassigned', {
+            'projectors': dict(projector_state(), open=len(reopen))}
+    else:
+        result = '%d projectors' % len(wins)
+    return 'projectors', result, {'projectors': projector_state()}
+
+
 HANDLERS = {
     ('media', 'show'): show,
     ('media', 'play'): show,
@@ -285,6 +357,11 @@ HANDLERS = {
     ('clear', ''): clear,
     ('medialist', ''): media_list,
     ('hello', ''): hello,
+    ('projectors', 'status'): projectors,
+    ('projectors', 'identify'): projectors,
+    ('projectors', 'open'): projectors,
+    ('projectors', 'close'): projectors,
+    ('projectors', 'assign'): projectors,
 }
 
 
@@ -303,13 +380,17 @@ def handle(text):
     if handler is None:
         log(msg, '', 'unknown message')
         return {'type': 'result', 'ok': False, 'result': 'unknown message', 'ref': msg.get('ref')}
+    extra = {}
     try:
-        where, result = handler(msg)
+        # A handler returns (where, result), or (where, result, more for the reply).
+        where, result, *more = handler(msg)
+        extra = more[0] if more else {}
     except Exception as e:
         where, result = '', 'error: %s' % e
     log(msg, where, result)
     reply = {'type': 'result', 'ok': result not in ('file missing', 'no such area') and not result.startswith('error'),
              'result': result, 'where': where, 'id': msg.get('id'), 'ref': msg.get('ref')}
+    reply.update(extra)
     if msg.get('type') == 'hello':
         root = media_root()
         reply.update({'type': 'ready', 'areas': AREAS, 'soundSlots': SLOTS, 'mediaFolder': root,
@@ -387,6 +468,13 @@ GUIDE = [
     ['medialist', 'The app\'s media list (the sheet\'s Media tab) - fills media_list and checks each file is there',
      '{"type":"medialist","items":[{"id":"M-001","name":"Maya.jpg","path":"Maya.jpg","kind":"image","status":"present"}]}'],
     ['hello', 'The app checking in; TouchDesigner replies "ready" with its folder', '{"type":"hello"}'],
+    ['projectors status', 'How many projector windows projector_output.py made, and whether their numbers show',
+     '{"type":"projectors","action":"status"}'],
+    ['projectors identify', 'Shows (on true) or hides "PROJECTOR N" on each projector',
+     '{"type":"projectors","action":"identify","on":true}'],
+    ['projectors open / close', 'Opens or closes the projector windows', '{"type":"projectors","action":"open"}'],
+    ['projectors assign', 'shows: the number each projector (1, 2, ... as labelled in the room) shows now; '
+     'swaps their screens so each shows its own', '{"type":"projectors","action":"assign","shows":[2,3,1,4]}'],
     ['(cue)', 'A stage cue from the app\'s server (the flow\'s TouchDesigner address) - logged only',
      '{"cue":"...","trigger":"...","stage":"2","sessionId":"...","slots":{}}'],
 ]

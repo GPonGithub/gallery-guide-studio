@@ -17,6 +17,8 @@ import type { Shown } from './mediaShow';
  *   clear                      everything off (sent on connecting)
  *   medialist                  the media list, so TouchDesigner can check its files
  *   hello                      answered with "ready" and its media folder
+ *   projectors …               the projector windows (Set up the projectors): their
+ *                              numbers on or off, and which projector shows which part
  *
  * The room diagram is mirrored: whatever mediaShow shows in an area is sent
  * there (syncVisuals). Sounds go too when "Sounds play on" says TouchDesigner.
@@ -25,11 +27,15 @@ import type { Shown } from './mediaShow';
 
 export type SoundsOn = 'computer' | 'touchdesigner' | 'both';
 export type TDSettings = { on: boolean; address: string; sounds: SoundsOn };
+/** TouchDesigner's projector windows (made by projector_output.py): how many, open, and their numbers showing. */
+export type TDProjectors = { count: number; open: number; identify: boolean };
 export type TDStatus = {
   state: 'off' | 'connecting' | 'connected' | 'closed';
   /** From TouchDesigner's "ready": its media folder, and whether it exists there. */
   mediaFolder?: string;
   folderFound?: boolean;
+  /** Its projector windows; null when it has none, undefined until it says. */
+  projectors?: TDProjectors | null;
   /** TouchDesigner's latest answer, e.g. "area 3: shown" or "M-007: file missing". */
   last?: { ok: boolean; text: string };
 };
@@ -134,6 +140,7 @@ function connect() {
       id?: string;
       mediaFolder?: string;
       folderFound?: boolean;
+      projectors?: TDProjectors | null;
     };
     try {
       reply = JSON.parse(String(e.data));
@@ -144,7 +151,10 @@ function connect() {
       setStatus({ state: 'connected', mediaFolder: reply.mediaFolder, folderFound: reply.folderFound });
     } else if (reply.type === 'result' && reply.result) {
       const who = [reply.where, reply.id].filter(Boolean).join(' · ');
-      setStatus({ last: { ok: reply.ok !== false, text: who ? `${who}: ${reply.result}` : reply.result } });
+      setStatus({
+        last: { ok: reply.ok !== false, text: who ? `${who}: ${reply.result}` : reply.result },
+        ...('projectors' in reply ? { projectors: reply.projectors } : {}),
+      });
     }
   };
   s.onclose = () => {
@@ -155,9 +165,10 @@ function connect() {
   };
 }
 
-/** On connecting: hello, the media list, a clean room, then what's on now (pictures, video, levels). */
+/** On connecting: hello, the projectors, the media list, a clean room, then what's on now (pictures, video, levels). */
 async function greet() {
   send({ type: 'hello' });
+  send({ type: 'projectors', action: 'status' });
   const library = await loadLibrary();
   send({
     type: 'medialist',
