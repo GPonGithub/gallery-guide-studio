@@ -857,17 +857,34 @@ export default function AgentStudioPage() {
     }
   };
 
-  // "Complete restart": every scene's conversations are cleared, and this one
-  // starts afresh — and everything the selected patient's scenes saved goes,
-  // here and in row 7 of every scene column in the sheet.
-  const completeRestart = () => {
+  // "Complete restart": back to a blank Design Process. Every scene goes (archived ones stay in
+  // Scenes), with its stages and conversations; steps 1 and 2 keep their links (the Google Sheet,
+  // Apps Script and FigJam board), ready to generate the scenes again; and everything the selected patient's scenes saved goes, here and in row 7 of every scene column
+  // in the sheet. Keys, voices, patients and the media folder, library and connections stay.
+  const completeRestart = async () => {
     conversations.current = { threads: {}, lastStart: {} };
     storeConversations(conversations.current);
-    setStartAt('');
-    restart('');
     if (activePatient) void clearMemory(activePatient.id).then(() => setMemoryVersion((v) => v + 1));
     const sheet = saved.sceneSheet ?? sheetScenes[0]?.sheet ?? null;
     if (sheet) void clearSheetRow(sheet, '*', saved.projectId ?? 'unsaved');
+    for (const p of await listProjects()) if (!p.archived) await deleteProject(p.id);
+    loadFlow({ ...emptyFlow, stages: [blankStage('1')] }, 'design');
+    setSaved((s) =>
+      s
+        ? {
+            ...s,
+            brief: '',
+            generatedBrief: null,
+            sceneSheet: null,
+            figjamFlow: null,
+            projectId: null,
+            projectName: 'Untitled scene',
+            savedSnapshot: '',
+            musicTrack: null,
+          }
+        : s,
+    );
+    refreshSheetScenes();
   };
 
   // "Refresh this scene": the same as Update This Scene (Design Process, section 3) — it reads the
@@ -2328,7 +2345,7 @@ export default function AgentStudioPage() {
                 onClick={() => setConfirmCompleteRestart(true)}
                 disabled={busy}
                 className={`h-10 ${toolbarButtonWidth} ${restartButton}`}
-                title="Clear the conversations in every scene and start this one afresh"
+                title="Start from nothing: delete every scene and its stages (archived scenes stay in Scenes), and empty the Design Process (steps 1 and 2 keep their links)"
               >
                 Complete restart
               </button>
@@ -2690,13 +2707,13 @@ export default function AgentStudioPage() {
       {confirmCompleteRestart && (
         <ConfirmDialog
           title="Complete restart?"
-          message={`The conversations in every scene will be cleared, and this scene will start afresh. ${
+          message={`Every scene will be deleted with its stages and conversations (archived scenes stay in Scenes), and the Design Process emptied (steps 1 and 2 keep their Google Sheet, Apps Script and FigJam links). ${
             activePatient ? `Everything ${activePatient.name}'s scenes have saved will be deleted too` : 'Saved information will be deleted too'
           }${saved.sheetScriptUrl.trim() ? ', and row 7 of the sheet emptied in every scene column' : ''}. This action cannot be undone.`}
           confirmLabel="Complete restart"
           onConfirm={() => {
             setConfirmCompleteRestart(false);
-            completeRestart();
+            void completeRestart();
           }}
           onCancel={() => setConfirmCompleteRestart(false)}
         />
