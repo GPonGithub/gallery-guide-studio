@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { SavedVoice } from '@/components/agent/VoicePanel';
 import type { VoiceSettings } from '@/lib/types';
 import type { AgentFlow } from './types';
+import type { MediaLink } from './mediaFolder';
 
 /**
  * Saved Chatbot Designer projects — a flow plus the brief it came from, the
@@ -57,6 +58,8 @@ export type AgentProject = {
   voice?: ProjectVoice;
   /** null/missing = no background music. */
   music?: ProjectMusic | null;
+  /** The scene's media timeline as last saved (missing on scenes saved before the timeline was). */
+  timeline?: MediaLink[];
   /** Position in the Scenes list (0 = first), set by dragging; missing = not placed yet. */
   order?: number;
   /** Set for scenes imported from a Google Sheet. */

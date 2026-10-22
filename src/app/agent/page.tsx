@@ -41,7 +41,19 @@ import {
   type PlannedSound,
 } from '@/lib/agent/mediaPlayback';
 import { clearVisuals, everyVisuals, hideVisual, isShowing, sceneMedia, showVisual, type PlannedMedia } from '@/lib/agent/mediaShow';
-import { followRewording, loopOf, redoMediaLinks, undoMediaLinks, updateMediaLinks } from '@/lib/agent/mediaFolder';
+import {
+  currentMediaLinks,
+  followRewording,
+  loopOf,
+  mediaLinksLoaded,
+  redoMediaLinks,
+  restoreTimeline,
+  timelineOf,
+  undoMediaLinks,
+  updateMediaLinks,
+  useMediaLinks,
+  type MediaLink,
+} from '@/lib/agent/mediaFolder';
 
 /** A "once" media action an exchange triggered: show (or play) it, or remove (or stop) it. */
 type JudgedMedia = { media: PlannedMedia; do: 'show' | 'remove' };
@@ -151,6 +163,8 @@ type Saved = {
   projectName: string;
   /** flow + brief + board as last saved/opened — anything different is unsaved. */
   savedSnapshot: string;
+  /** The scene's media timeline as last saved/opened (null/missing = not known yet). */
+  savedTimeline?: string | null;
   /** Open mic: seconds of quiet before what was said is sent. */
   pauseSeconds: number;
   /** Open mic: the caller can talk over the agent to interrupt it (the mic keeps listening while it speaks). */
@@ -242,12 +256,12 @@ const musicOf = (s: Saved): ProjectMusic | null =>
 const contentOf = (s: Saved): ProjectContent => ({ flow: s.flow, brief: s.brief, boardUrl: s.boardUrl, voice: voiceOf(s), music: musicOf(s) });
 
 // Keys sorted, so the same settings compare equal whatever order they were written in.
-const snapshotOf = (content: ProjectContent) =>
-  JSON.stringify(content, (_key, value: unknown) =>
-    value && typeof value === 'object' && !Array.isArray(value)
-      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
-      : value,
-  );
+const sortedKeys = (_key: string, value: unknown) =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+    : value;
+const snapshotOf = (content: ProjectContent) => JSON.stringify(content, sortedKeys);
+const timelineSnapshotOf = (timeline: MediaLink[]) => JSON.stringify(timeline, sortedKeys);
 
 type SpeechRecognitionLike = {
   interimResults: boolean;
@@ -321,11 +335,14 @@ function loadSaved(): Saved {
 
 export default function AgentStudioPage() {
   const [saved, setSaved] = useState<Saved | null>(null);
+  // Every scene's media connections — the open scene's are its timeline, which is saved with it.
+  const mediaLinks = useMediaLinks();
   const [selected, setSelected] = useState<string>('master');
   const [keysOpen, setKeysOpen] = useState(false);
   // The inspector starts tucked away; its edge tab slides it out and back.
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [projectsOpen, setProjectsOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const [startAt, setStartAt] = useState('');
   const [session, setSession] = useState<SessionState | null>(null);
@@ -736,6 +753,14 @@ export default function AgentStudioPage() {
     storeConversations(conversations.current);
   }, [session, messages, log, cueLog, startAt]); // eslint-disable-line react-hooks/exhaustive-deps -- saved under the scene and starting point they belong to at the time
 
+  // A scene opened before the timeline was saved with scenes: take its timeline as it is now as saved.
+  const timelineUnknown = Boolean(saved?.projectId) && saved?.savedTimeline == null;
+  useEffect(() => {
+    if (!timelineUnknown || !mediaLinksLoaded()) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- the connections are read from IndexedDB after the first render
+    setSaved((s) => (s ? { ...s, savedTimeline: timelineSnapshotOf(timelineOf(mediaLinks, s.sceneSheet)) } : s));
+  }, [timelineUnknown, mediaLinks]);
+
   if (!saved || !session) return null;
   const flow = saved.flow;
 
@@ -829,6 +854,7 @@ export default function AgentStudioPage() {
             projectId: null,
             projectName: 'Untitled scene',
             savedSnapshot: '',
+            savedTimeline: null,
             musicTrack: null,
             sceneSheet: null,
             figjamFlow: null,
@@ -983,7 +1009,13 @@ export default function AgentStudioPage() {
     setError(null);
   };
 
-  const dirty = saved.projectId ? snapshotOf(contentOf(saved)) !== saved.savedSnapshot : flow.stages.length > 0;
+  // The open scene's timeline, and whether it's changed since the scene was saved (once the connections are in).
+  const timeline = timelineOf(mediaLinks, saved.sceneSheet);
+  const timelineDirty =
+    mediaLinksLoaded() && saved.savedTimeline != null && timelineSnapshotOf(timeline) !== saved.savedTimeline;
+  const dirty = saved.projectId
+    ? snapshotOf(contentOf(saved)) !== saved.savedSnapshot || timelineDirty
+    : flow.stages.length > 0;
   const current: CurrentProject = {
     id: saved.projectId,
     name: saved.projectName,
@@ -995,12 +1027,25 @@ export default function AgentStudioPage() {
     boardUrl: saved.boardUrl,
     voice: voiceOf(saved),
     music: musicOf(saved),
+    timeline,
     musicBlob: async () => {
       const key = saved.musicTrack?.key;
       if (musicFileRef.current && musicFileRef.current.key === key) return musicFileRef.current.blob;
       const stored = await loadTrack();
       return stored && stored.key === key ? stored.blob : null;
     },
+  };
+  // The Save button: saves the open scene as it is, timeline and all.
+  const saveNow = async () => {
+    if (!saved.projectId || saving) return;
+    setSaving(true);
+    try {
+      markSaved(await saveProjectRequest(current, saved.projectName, false));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Couldn’t save this scene.');
+    } finally {
+      setSaving(false);
+    }
   };
   const okToLeave = () =>
     !dirty || window.confirm(`"${saved.projectName}" has unsaved changes. Continue without saving them?`);
@@ -1023,6 +1068,12 @@ export default function AgentStudioPage() {
               voice: project.sheet ? voiceOf(s) : (project.voice ?? voiceOf(s)),
               music: project.music ?? null,
             }),
+            // Scenes saved before the timeline was: their timeline as it is here now.
+            savedTimeline: project.timeline
+              ? timelineSnapshotOf(project.timeline)
+              : mediaLinksLoaded()
+                ? timelineSnapshotOf(timelineOf(currentMediaLinks(), project.sheet ?? null))
+                : null,
           }
         : s,
     );
@@ -1059,6 +1110,8 @@ export default function AgentStudioPage() {
           }
         : s,
     );
+    // Its timeline as it was saved (dropping changes left unsaved when it was put aside).
+    if (project.sheet && project.timeline) restoreTimeline(project.sheet, project.timeline);
     markSaved(project);
   };
 
@@ -1249,6 +1302,7 @@ export default function AgentStudioPage() {
             projectId: null,
             projectName: 'Untitled scene',
             savedSnapshot: '',
+            savedTimeline: null,
             musicTrack: null,
             sceneSheet: null,
             figjamFlow: null,
@@ -2152,10 +2206,11 @@ export default function AgentStudioPage() {
           <button onClick={() => setProjectsOpen(true)} className={buttonOutline} data-tour="scenes-button">
             Scenes
           </button>
-          {/* Opens Scenes to save. Red "Not Saved" while anything (flow, brief,
-              knowledge base, voices, music) has changed since the last save; green "Saved" otherwise. */}
+          {/* Saves the open scene (a new one opens Scenes, to name it). Red "Not Saved" while anything
+              (flow, brief, knowledge base, voices, music, timeline) has changed since the last save; green "Saved" otherwise. */}
           <button
-            onClick={() => setProjectsOpen(true)}
+            onClick={() => (saved.projectId ? void saveNow() : setProjectsOpen(true))}
+            disabled={saving}
             className={`min-w-[8.5rem] ${dirty ? buttonUnsaved : buttonSaved}`}
             title={dirty ? 'There are unsaved changes — click to save the scene' : 'Everything is saved'}
           >
