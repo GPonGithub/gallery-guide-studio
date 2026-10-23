@@ -4,7 +4,7 @@
 #     exec(open('/full/path/to/projector_output.py').read())
 # (Re)creates /project1/projector_out: the blend output (7680x1080) cut into 4 sections, section N
 # shown full-screen on projector N, with "PROJECTOR N" over it while the component's
-# "Identify" toggle is on. The Chatbot Designer's "Set up the projectors" step (Immersive Media, 5)
+# "Identify" toggle is on, or a solid test colour per projector while "Testcolours" is on. The Chatbot Designer's "Set up the projectors" step (Immersive Media, 5)
 # shows those numbers and swaps which projector gets which section; running this script again keeps
 # what it set. To close the windows:
 #     [w.par.winclose.pulse() for w in op('/project1/projector_out').findChildren(type=windowCOMP)]
@@ -17,6 +17,10 @@ PROJECTORS = 4
 # macOS's PJ (1), PJ (4), PJ (3), PJ (2), but those names don't match the numbered projectors in the room;
 # this mapping was checked against the room with the PROJECTOR N labels.
 # If the projectors are rearranged, re-plugged or reconnected, fix this and run the script again.
+# Test Colours: each projector a solid colour and its number, without the blend, so the light
+# mixes where neighbours overlap on the wall (red + green = yellow, green + blue = cyan, ...).
+TEST_COLOURS = {1: (1, 0, 0), 2: (0, 1, 0), 3: (0, 0, 1), 4: (1, 1, 1)}
+
 SCREEN_OF_PROJECTOR = {1: 3, 2: 1, 3: 4, 4: 2}
 
 problems = []
@@ -53,6 +57,7 @@ out = op('/project1').create(baseCOMP, 'projector_out')
 out.nodeX, out.nodeY = 0, -400
 page = out.appendCustomPage('Output')
 page.appendToggle('Identify', label='Show Projector Numbers')
+page.appendToggle('Testcolours', label='Test Colours')
 out.par.Identify = True
 src = out.create(selectTOP, 'blend')
 src.par.top = SOURCE
@@ -78,10 +83,37 @@ for n in range(1, PROJECTORS + 1):
     over.inputConnectors[0].connect(tag)
     over.inputConnectors[1].connect(crop)
     over.nodeX, over.nodeY = -200, y
+    solid = out.create(constantTOP, 'colour%d' % n)
+    solid.nodeX, solid.nodeY = -400, y - 120
+    setp(solid, 'outputresolution', 'custom')
+    setp(solid, 'resolutionw', 1920)
+    setp(solid, 'resolutionh', 1080)
+    r, g, b = TEST_COLOURS.get(n, (1, 1, 1))
+    setp(solid, 'colorr', r)
+    setp(solid, 'colorg', g)
+    setp(solid, 'colorb', b)
+    num = out.create(textTOP, 'testnumber%d' % n)
+    num.nodeX, num.nodeY = -200, y - 120
+    setp(num, 'text', str(n))
+    setp(num, 'outputresolution', 'custom')
+    setp(num, 'resolutionw', 1920)
+    setp(num, 'resolutionh', 1080)
+    setp(num, 'fontsizex', 500)
+    setp(num, 'alignx', 'center')
+    setp(num, 'aligny', 'center')
+    setp(num, 'fontcolorr', 0)
+    setp(num, 'fontcolorg', 0)
+    setp(num, 'fontcolorb', 0)
+    setp(num, 'bgalpha', 0)
+    test = out.create(overTOP, 'test%d' % n)
+    test.inputConnectors[0].connect(num)
+    test.inputConnectors[1].connect(solid)
+    test.nodeX, test.nodeY = -100, y - 60
     sw = out.create(switchTOP, 'projector%d' % n)
     sw.inputConnectors[0].connect(crop)
     sw.inputConnectors[1].connect(over)
-    sw.par.index.expr = '1 if parent().par.Identify else 0'
+    sw.inputConnectors[2].connect(test)
+    sw.par.index.expr = '2 if parent().par.Testcolours else (1 if parent().par.Identify else 0)'
     sw.nodeX, sw.nodeY = 0, y
     win = out.create(windowCOMP, 'window%d' % n)
     win.nodeX, win.nodeY = 200, y
