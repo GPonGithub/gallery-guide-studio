@@ -316,6 +316,8 @@ def projectors(msg):
     elif action == 'open':
         for w in wins:
             w.par.winopen.pulse()
+        # A paused timeline freezes per-frame work such as Kantan's corner dragging.
+        op('/').time.play = True
         result = '%d windows opened' % len(wins)
     elif action == 'close':
         for w in wins:
@@ -472,7 +474,8 @@ GUIDE = [
      '{"type":"projectors","action":"status"}'],
     ['projectors identify', 'Shows (on true) or hides "PROJECTOR N" on each projector',
      '{"type":"projectors","action":"identify","on":true}'],
-    ['projectors open / close', 'Opens or closes the projector windows', '{"type":"projectors","action":"open"}'],
+    ['projectors open / close', 'Opens (and plays the timeline) or closes the projector windows',
+     '{"type":"projectors","action":"open"}'],
     ['projectors assign', 'shows: the number each projector (1, 2, ... as labelled in the room) shows now; '
      'swaps their screens so each shows its own', '{"type":"projectors","action":"assign","shows":[2,3,1,4]}'],
     ['(cue)', 'A stage cue from the app\'s server (the flow\'s TouchDesigner address) - logged only',

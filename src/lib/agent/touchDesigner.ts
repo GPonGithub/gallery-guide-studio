@@ -169,6 +169,10 @@ function connect() {
 async function greet() {
   send({ type: 'hello' });
   send({ type: 'projectors', action: 'status' });
+  if (projectionsWanted) {
+    projectionsWanted = false;
+    openProjections();
+  }
   const library = await loadLibrary();
   send({
     type: 'medialist',
@@ -184,6 +188,24 @@ async function greet() {
   sent.clear();
   syncVisuals(current);
   if (lastLevels) send({ type: 'levels', ...lastLevels, ms: 0 });
+}
+
+// --- the projectors --------------------------------------------------------
+
+let projectionsWanted = false;
+const openProjections = () => {
+  send({ type: 'projectors', action: 'identify', on: false });
+  send({ type: 'projectors', action: 'open' });
+};
+
+/** Connects (if need be) and opens TouchDesigner's projector windows, without their numbers. */
+export function showProjections(address?: string) {
+  if (isOpen() && (!address || address === tdSettings().address)) {
+    openProjections();
+    return;
+  }
+  projectionsWanted = true;
+  setTDSettings({ on: true, ...(address ? { address } : {}) });
 }
 
 /** Sends one message, if connected; returns whether it went. */
