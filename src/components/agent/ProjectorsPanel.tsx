@@ -146,6 +146,28 @@ export function ProjectorsPanel() {
         </>
       )}
 
+      {connected && (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              onClick={() => send({ type: 'kantan', action: 'open' })}
+              className={small}
+              title="Opens Kantan Mapper's editor in TouchDesigner, ready to drag shapes and corners"
+            >
+              Open Kantan Mapper
+            </button>
+            <button onClick={() => send({ type: 'kantan', action: 'close' })} className={small}>
+              Close
+            </button>
+          </div>
+          <p className="font-body text-xs italic text-muted-ink">
+            To fit a shape to the wall, open Kantan Mapper (it opens on TouchDesigner&rsquo;s computer) and drag the
+            shape or its corners — the projectors follow as you drag. Save the TouchDesigner project when you&rsquo;re
+            done.
+          </p>
+        </div>
+      )}
+
       {connected && status.last && (
         <p
           className={`font-body text-xs ${status.last.ok ? 'text-muted-ink' : 'border-l-4 border-[#b91c1c] pl-2 text-ink'}`}

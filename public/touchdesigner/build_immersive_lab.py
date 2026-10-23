@@ -22,7 +22,7 @@
 #
 # The receiver also drives /project1/projector_out, the projector windows that projector_output.py
 # makes, if there is one: the app's "Set up the projectors" step shows each projector's number and
-# swaps which part of the picture each projector gets.
+# swaps which part of the picture each projector gets. It can also open Kantan Mapper's editor.
 #
 # The component's Media Folder parameter is where the files are; a message's path (the
 # Media tab's column C) is found inside it.
@@ -349,6 +349,30 @@ def projectors(msg):
     return 'projectors', result, {'projectors': projector_state()}
 
 
+# --- Kantan Mapper (the projection mapping editor) -----------------------------
+
+def kantan_mapper():
+    m = op('/project1/MAPPER/kantanMapper1')
+    if m is None:
+        found = [c for c in op('/').findChildren(type=COMP, name='kantanMapper*') if hasattr(c.par, 'Open')]
+        m = found[0] if found else None
+    return m
+
+
+def kantan(msg):
+    """kantan open / close: Kantan Mapper's editor window, on this computer's screen."""
+    m = kantan_mapper()
+    if m is None:
+        return 'kantan', 'no Kantan Mapper in this project', {'ok': False}
+    if msg.get('action') == 'close':
+        m.par.Close.pulse()
+        return 'kantan', 'editor closed'
+    # Kantan drags corners frame by frame, so the timeline must play.
+    op('/').time.play = True
+    m.par.Open.pulse()
+    return 'kantan', 'editor open'
+
+
 HANDLERS = {
     ('media', 'show'): show,
     ('media', 'play'): show,
@@ -364,6 +388,8 @@ HANDLERS = {
     ('projectors', 'open'): projectors,
     ('projectors', 'close'): projectors,
     ('projectors', 'assign'): projectors,
+    ('kantan', 'open'): kantan,
+    ('kantan', 'close'): kantan,
 }
 
 
@@ -476,6 +502,8 @@ GUIDE = [
      '{"type":"projectors","action":"identify","on":true}'],
     ['projectors open / close', 'Opens (and plays the timeline) or closes the projector windows',
      '{"type":"projectors","action":"open"}'],
+    ['kantan open / close', 'Opens (and plays the timeline) or closes Kantan Mapper\'s editor window',
+     '{"type":"kantan","action":"open"}'],
     ['projectors assign', 'shows: the number each projector (1, 2, ... as labelled in the room) shows now; '
      'swaps their screens so each shows its own', '{"type":"projectors","action":"assign","shows":[2,3,1,4]}'],
     ['(cue)', 'A stage cue from the app\'s server (the flow\'s TouchDesigner address) - logged only',
