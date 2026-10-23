@@ -3,13 +3,15 @@
 import { areaOfTrack, barsOf, isMarker, loadLibrary, loadMediaLinks, loopOf, timingOf } from './mediaFolder';
 import { isSoundPlaying, playSound, startLoop, stopSounds, type SceneRef } from './mediaPlayback';
 import { areasShowing, hideVisual, showVisual } from './mediaShow';
+import { onTDConnected } from './touchDesigner';
 
 /**
  * "Play on marker arrival" (see MARKER_ACTION): each time the timeline's marker lands on a stage,
  * every marker connection in the scene is put right for it — shown in the areas whose bars cover that
  * stage (or taken down if none do); a sound started if one of its bars covers it (once, or looping
  * if set to), or stopped if none does. Called when a call starts (stage 1), when the conversation
- * moves to another stage, and when the marker is moved by hand on the timeline.
+ * moves to another stage, when the marker is moved by hand on the timeline, and (pictures, video and
+ * colours only) each time TouchDesigner connects.
  */
 
 let last: { scene: string; stage: string } | null = null;
@@ -19,7 +21,29 @@ export function forgetMarker() {
   last = null;
 }
 
-export async function markerArrived(scene: SceneRef | null, stages: { code: string }[], code: string | null | undefined) {
+let here: { scene: SceneRef | null; stages: { code: string }[]; code: string | null | undefined } | null = null;
+
+/** Where the timeline's marker is now (MediaTimeline keeps this up to date), for replayMarker. */
+export function markerIsAt(scene: SceneRef | null, stages: { code: string }[], code: string | null | undefined) {
+  here = { scene, stages, code };
+}
+
+/** Puts up again the pictures, video and colours with a bar on the marker's stage (no sounds). */
+export async function replayMarker() {
+  if (!here) return;
+  forgetMarker();
+  await markerArrived(here.scene, here.stages, here.code, { visualsOnly: true });
+}
+
+// Connecting to TouchDesigner clears its room: put the marker's stage back up there.
+onTDConnected(() => void replayMarker());
+
+export async function markerArrived(
+  scene: SceneRef | null,
+  stages: { code: string }[],
+  code: string | null | undefined,
+  { visualsOnly = false } = {},
+) {
   if (!scene || !code) return;
   const at = stages.findIndex((s) => s.code === code);
   if (at < 0) return;
@@ -41,6 +65,7 @@ export async function markerArrived(scene: SceneRef | null, stages: { code: stri
       return from <= at && at <= Math.max(from, index(b.to, stages.length - 1));
     });
     if (asset.kind === 'sound') {
+      if (visualsOnly) continue;
       if (covering.length > 0 && !isSoundPlaying(asset.id)) {
         void (loopOf(link) ? startLoop(asset) : playSound(asset)).catch(() => undefined);
       } else if (covering.length === 0 && isSoundPlaying(asset.id)) {

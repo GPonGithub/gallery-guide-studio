@@ -97,9 +97,9 @@ export function TouchDesignerPanel({ assets }: { assets: MediaAsset[] }) {
           {settings.on ? 'Disconnect' : 'Connect'}
         </button>
         <button
-          onClick={() => showProjections(address.trim())}
+          onClick={() => void showProjections(address.trim())}
           className={small}
-          title="Connects to TouchDesigner if needed and opens a full-screen window on each projector (numbers off)"
+          title="Connects to TouchDesigner if needed (showing the timeline marker's stage) and opens a full-screen window on each projector (numbers off)"
         >
           Show projections
         </button>

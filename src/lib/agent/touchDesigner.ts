@@ -165,14 +165,16 @@ function connect() {
   };
 }
 
+/** Called each time TouchDesigner has been greeted (and its room cleared and re-sent) — markerPlay puts the marker's stage back up. */
+const connectedListeners = new Set<() => void>();
+export function onTDConnected(listener: () => void) {
+  connectedListeners.add(listener);
+}
+
 /** On connecting: hello, the projectors, the media list, a clean room, then what's on now (pictures, video, levels). */
 async function greet() {
   send({ type: 'hello' });
   send({ type: 'projectors', action: 'status' });
-  if (projectionsWanted) {
-    projectionsWanted = false;
-    openProjections();
-  }
   const library = await loadLibrary();
   send({
     type: 'medialist',
@@ -188,24 +190,32 @@ async function greet() {
   sent.clear();
   syncVisuals(current);
   if (lastLevels) send({ type: 'levels', ...lastLevels, ms: 0 });
+  connectedListeners.forEach((listener) => listener());
+  if (projectionsWanted.length > 0) {
+    openProjections();
+    projectionsWanted.splice(0).forEach((done) => done());
+  }
 }
 
 // --- the projectors --------------------------------------------------------
 
-let projectionsWanted = false;
+/** Show projections clicks waiting for the connection (resolved once it's greeted). */
+const projectionsWanted: (() => void)[] = [];
 const openProjections = () => {
   send({ type: 'projectors', action: 'identify', on: false });
   send({ type: 'projectors', action: 'open' });
 };
 
-/** Connects (if need be) and opens TouchDesigner's projector windows, without their numbers. */
-export function showProjections(address?: string) {
+/** Connects (if need be) and opens TouchDesigner's projector windows, without their numbers; resolves once they're open. */
+export function showProjections(address?: string): Promise<void> {
   if (isOpen() && (!address || address === tdSettings().address)) {
     openProjections();
-    return;
+    return Promise.resolve();
   }
-  projectionsWanted = true;
-  setTDSettings({ on: true, ...(address ? { address } : {}) });
+  return new Promise((resolve) => {
+    projectionsWanted.push(resolve);
+    setTDSettings({ on: true, ...(address ? { address } : {}) });
+  });
 }
 
 /** Sends one message, if connected; returns whether it went. */
