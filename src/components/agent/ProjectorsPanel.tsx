@@ -45,14 +45,14 @@ export function ProjectorsPanel() {
           and run it in the Textport like the build script: it opens a full-screen window on each projector.
         </li>
         <li>
-          Click <b>Show numbers</b>. Each projector shows &ldquo;PROJECTOR&nbsp;1&rdquo;, &ldquo;PROJECTOR&nbsp;2&rdquo;…
+          Click <b>Show projector IDs</b>. Each projector shows &ldquo;PROJECTOR&nbsp;1&rdquo;, &ldquo;PROJECTOR&nbsp;2&rdquo;…
         </li>
         <li>
           For each projector in the room (by the number it&rsquo;s labelled with), choose the number it&rsquo;s showing,
           then click <b>Apply</b>. Every projector should now show its own number.
         </li>
         <li>
-          Click <b>Hide numbers</b> and save the TouchDesigner project, so it remembers.
+          Click <b>Hide projector IDs</b> and save the TouchDesigner project, so it remembers.
         </li>
       </ol>
 
@@ -84,9 +84,10 @@ export function ProjectorsPanel() {
           <div className="flex flex-wrap items-center gap-1.5">
             <button
               onClick={() => send({ type: 'projectors', action: 'identify', on: !projectors.identify })}
-              className={`${small} w-[130px]`}
+              className={`${small} w-[150px]`}
+              title="PROJECTOR 1, 2… on each projector, for matching them to the room"
             >
-              {projectors.identify ? 'Hide numbers' : 'Show numbers'}
+              {projectors.identify ? 'Hide projector IDs' : 'Show projector IDs'}
             </button>
             <button
               onClick={() => send({ type: 'projectors', action: projectors.open ? 'close' : 'open' })}
@@ -155,6 +156,18 @@ export function ProjectorsPanel() {
               title="Opens Kantan Mapper's editor in TouchDesigner, ready to drag shapes and corners"
             >
               Open Kantan Mapper
+            </button>
+            <button
+              onClick={() => send({ type: 'numbers', action: status.areaNumbers === false ? 'show' : 'hide' })}
+              disabled={status.areaNumbers === null}
+              className={`${small} w-[120px]`}
+              title={
+                status.areaNumbers === null
+                  ? 'No area numbers in TouchDesigner — run area_labels.py'
+                  : 'The area number in the corner of each coloured shape'
+              }
+            >
+              {status.areaNumbers === false ? 'Show numbers' : 'Hide numbers'}
             </button>
             <button onClick={() => send({ type: 'kantan', action: 'close' })} className={small}>
               Close

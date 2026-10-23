@@ -373,6 +373,21 @@ def kantan(msg):
     return 'kantan', 'editor open'
 
 
+# --- area numbers (area_labels.py's numbers on the shapes) --------------------
+
+def area_numbers(msg):
+    """numbers show / hide / status: area_labels' Show Numbers switch."""
+    labels = lab.parent().op('area_labels')
+    if labels is None or not hasattr(labels.par, 'Shownumbers'):
+        return 'numbers', 'no area numbers - run area_labels.py', {'ok': False, 'areaNumbers': None}
+    if msg.get('action') in ('show', 'hide'):
+        labels.par.Shownumbers = msg.get('action') == 'show'
+        # Kantan only redraws while the timeline plays.
+        op('/').time.play = True
+    on = bool(labels.par.Shownumbers.eval())
+    return 'numbers', 'numbers shown' if on else 'numbers hidden', {'areaNumbers': on}
+
+
 HANDLERS = {
     ('media', 'show'): show,
     ('media', 'play'): show,
@@ -390,6 +405,9 @@ HANDLERS = {
     ('projectors', 'assign'): projectors,
     ('kantan', 'open'): kantan,
     ('kantan', 'close'): kantan,
+    ('numbers', 'show'): area_numbers,
+    ('numbers', 'hide'): area_numbers,
+    ('numbers', 'status'): area_numbers,
 }
 
 
@@ -504,6 +522,8 @@ GUIDE = [
      '{"type":"projectors","action":"open"}'],
     ['kantan open / close', 'Opens (and plays the timeline) or closes Kantan Mapper\'s editor window',
      '{"type":"kantan","action":"open"}'],
+    ['numbers show / hide / status', 'Shows or hides the area numbers on the shapes (area_labels.py)',
+     '{"type":"numbers","action":"hide"}'],
     ['projectors assign', 'shows: the number each projector (1, 2, ... as labelled in the room) shows now; '
      'swaps their screens so each shows its own', '{"type":"projectors","action":"assign","shows":[2,3,1,4]}'],
     ['(cue)', 'A stage cue from the app\'s server (the flow\'s TouchDesigner address) - logged only',

@@ -19,6 +19,7 @@ import type { Shown } from './mediaShow';
  *   hello                      answered with "ready" and its media folder
  *   projectors …               the projector windows (Set up the projectors): their
  *                              numbers on or off, and which projector shows which part
+ *   numbers …                  the area numbers on the shapes (area_labels) on or off
  *
  * The room diagram is mirrored: whatever mediaShow shows in an area is sent
  * there (syncVisuals). Sounds go too when "Sounds play on" says TouchDesigner.
@@ -36,6 +37,8 @@ export type TDStatus = {
   folderFound?: boolean;
   /** Its projector windows; null when it has none, undefined until it says. */
   projectors?: TDProjectors | null;
+  /** Whether the area numbers show on the shapes (area_labels); null when it has none. */
+  areaNumbers?: boolean | null;
   /** TouchDesigner's latest answer, e.g. "area 3: shown" or "M-007: file missing". */
   last?: { ok: boolean; text: string };
 };
@@ -141,6 +144,7 @@ function connect() {
       mediaFolder?: string;
       folderFound?: boolean;
       projectors?: TDProjectors | null;
+      areaNumbers?: boolean | null;
     };
     try {
       reply = JSON.parse(String(e.data));
@@ -154,6 +158,7 @@ function connect() {
       setStatus({
         last: { ok: reply.ok !== false, text: who ? `${who}: ${reply.result}` : reply.result },
         ...('projectors' in reply ? { projectors: reply.projectors } : {}),
+        ...('areaNumbers' in reply ? { areaNumbers: reply.areaNumbers } : {}),
       });
     }
   };
@@ -175,6 +180,7 @@ export function onTDConnected(listener: () => void) {
 async function greet() {
   send({ type: 'hello' });
   send({ type: 'projectors', action: 'status' });
+  send({ type: 'numbers', action: 'status' });
   const library = await loadLibrary();
   send({
     type: 'medialist',
