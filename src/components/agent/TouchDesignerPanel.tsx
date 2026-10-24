@@ -6,6 +6,7 @@ import type { MediaAsset } from '@/lib/agent/media';
 import {
   send,
   setTDSettings,
+  showProjections,
   useTDSettings,
   useTDStatus,
   visualMessage,
@@ -95,7 +96,19 @@ export function TouchDesignerPanel({ assets }: { assets: MediaAsset[] }) {
         >
           {settings.on ? 'Disconnect' : 'Connect'}
         </button>
+        <button
+          onClick={() => void showProjections(address.trim())}
+          className={small}
+          title="Connects to TouchDesigner if needed (showing the timeline marker's stage) and opens a full-screen window on each projector (numbers off)"
+        >
+          Show projections
+        </button>
       </div>
+      {status.projectors === null && connected && (
+        <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">
+          TouchDesigner has no projector windows yet — run projector_output.py (5 · Set up the projectors).
+        </p>
+      )}
       <p className="flex items-start gap-2 font-body text-xs text-ink" role="status">
         <span className="mt-[3px] inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: light.color }} />
         <span>

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { buttonIcon } from '@/lib/styles';
 import { DropdownArrow } from './DropdownArrow';
-import { markerArrived } from '@/lib/agent/markerPlay';
+import { markerArrived, markerIsAt } from '@/lib/agent/markerPlay';
 import {
   ACTION_KINDS,
   isStill,
@@ -203,6 +203,7 @@ export function MediaTimeline({
   }
 
   const headCode = stages[index]?.code;
+  useEffect(() => markerIsAt(scene, stages, headCode), [scene, stages, headCode]);
   useEffect(() => {
     if (!movedByHand.current) return;
     movedByHand.current = false;

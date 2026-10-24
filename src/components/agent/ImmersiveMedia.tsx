@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CollapsiblePanel } from './CollapsiblePanel';
 import { DEMO_SCENE, DEMO_SHEET_ID, useMediaDemo, useMediaFolderRevision } from '@/lib/agent/mediaDemo';
+import { ProjectorsPanel } from './ProjectorsPanel';
 import { TouchDesignerPanel } from './TouchDesignerPanel';
 import { ShowFilePanel } from './ShowFilePanel';
 import { useShowAutosave } from '@/lib/agent/showSave';
@@ -515,6 +516,10 @@ export function ImmersiveMedia({
 
       <CollapsiblePanel title="4 · TouchDesigner" tourId="media-4">
         <TouchDesignerPanel assets={assets} />
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="5 · Set up the projectors" tourId="media-5">
+        <ProjectorsPanel />
       </CollapsiblePanel>
     </>
   );

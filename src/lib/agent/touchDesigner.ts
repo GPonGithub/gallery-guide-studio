@@ -17,6 +17,9 @@ import type { Shown } from './mediaShow';
  *   clear                      everything off (sent on connecting)
  *   medialist                  the media list, so TouchDesigner can check its files
  *   hello                      answered with "ready" and its media folder
+ *   projectors …               the projector windows (Set up the projectors): their
+ *                              numbers on or off, and which projector shows which part
+ *   numbers …                  the area numbers on the shapes (area_labels) on or off
  *
  * The room diagram is mirrored: whatever mediaShow shows in an area is sent
  * there (syncVisuals). Sounds go too when "Sounds play on" says TouchDesigner.
@@ -25,11 +28,17 @@ import type { Shown } from './mediaShow';
 
 export type SoundsOn = 'computer' | 'touchdesigner' | 'both';
 export type TDSettings = { on: boolean; address: string; sounds: SoundsOn };
+/** TouchDesigner's projector windows (made by projector_output.py): how many, open, and their numbers showing. */
+export type TDProjectors = { count: number; open: number; identify: boolean };
 export type TDStatus = {
   state: 'off' | 'connecting' | 'connected' | 'closed';
   /** From TouchDesigner's "ready": its media folder, and whether it exists there. */
   mediaFolder?: string;
   folderFound?: boolean;
+  /** Its projector windows; null when it has none, undefined until it says. */
+  projectors?: TDProjectors | null;
+  /** Whether the area numbers show on the shapes (area_labels); null when it has none. */
+  areaNumbers?: boolean | null;
   /** TouchDesigner's latest answer, e.g. "area 3: shown" or "M-007: file missing". */
   last?: { ok: boolean; text: string };
 };
@@ -134,6 +143,8 @@ function connect() {
       id?: string;
       mediaFolder?: string;
       folderFound?: boolean;
+      projectors?: TDProjectors | null;
+      areaNumbers?: boolean | null;
     };
     try {
       reply = JSON.parse(String(e.data));
@@ -144,7 +155,11 @@ function connect() {
       setStatus({ state: 'connected', mediaFolder: reply.mediaFolder, folderFound: reply.folderFound });
     } else if (reply.type === 'result' && reply.result) {
       const who = [reply.where, reply.id].filter(Boolean).join(' · ');
-      setStatus({ last: { ok: reply.ok !== false, text: who ? `${who}: ${reply.result}` : reply.result } });
+      setStatus({
+        last: { ok: reply.ok !== false, text: who ? `${who}: ${reply.result}` : reply.result },
+        ...('projectors' in reply ? { projectors: reply.projectors } : {}),
+        ...('areaNumbers' in reply ? { areaNumbers: reply.areaNumbers } : {}),
+      });
     }
   };
   s.onclose = () => {
@@ -155,9 +170,17 @@ function connect() {
   };
 }
 
-/** On connecting: hello, the media list, a clean room, then what's on now (pictures, video, levels). */
+/** Called each time TouchDesigner has been greeted (and its room cleared and re-sent) — markerPlay puts the marker's stage back up. */
+const connectedListeners = new Set<() => void>();
+export function onTDConnected(listener: () => void) {
+  connectedListeners.add(listener);
+}
+
+/** On connecting: hello, the projectors, the media list, a clean room, then what's on now (pictures, video, levels). */
 async function greet() {
   send({ type: 'hello' });
+  send({ type: 'projectors', action: 'status' });
+  send({ type: 'numbers', action: 'status' });
   const library = await loadLibrary();
   send({
     type: 'medialist',
@@ -173,6 +196,32 @@ async function greet() {
   sent.clear();
   syncVisuals(current);
   if (lastLevels) send({ type: 'levels', ...lastLevels, ms: 0 });
+  connectedListeners.forEach((listener) => listener());
+  if (projectionsWanted.length > 0) {
+    openProjections();
+    projectionsWanted.splice(0).forEach((done) => done());
+  }
+}
+
+// --- the projectors --------------------------------------------------------
+
+/** Show projections clicks waiting for the connection (resolved once it's greeted). */
+const projectionsWanted: (() => void)[] = [];
+const openProjections = () => {
+  send({ type: 'projectors', action: 'identify', on: false });
+  send({ type: 'projectors', action: 'open' });
+};
+
+/** Connects (if need be) and opens TouchDesigner's projector windows, without their numbers; resolves once they're open. */
+export function showProjections(address?: string): Promise<void> {
+  if (isOpen() && (!address || address === tdSettings().address)) {
+    openProjections();
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    projectionsWanted.push(resolve);
+    setTDSettings({ on: true, ...(address ? { address } : {}) });
+  });
 }
 
 /** Sends one message, if connected; returns whether it went. */
