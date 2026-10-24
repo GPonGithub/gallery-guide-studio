@@ -5,13 +5,13 @@ import { buttonOutline } from '@/lib/styles';
 import { currentTeam, switchTeam, TEAMS } from '@/lib/team';
 
 const noSubscribe = () => () => {};
-/** The open team's button: the outline button with Complete restart's 4px border. */
+/** The open team's button: the outline button with a thick 4px border. */
 const thick = buttonOutline.replace('border-2 ', 'border-4 ');
 
 /**
  * Team ED / Team AE: each team has its own copy of the whole app in this
  * browser (see lib/team.ts). Both are white with black text (black on hover);
- * the open team has the thick border of Complete restart. Clicking the other
+ * the open team has a thick 4px border. Clicking the other
  * reloads the page as that team.
  */
 export function TeamToggle() {

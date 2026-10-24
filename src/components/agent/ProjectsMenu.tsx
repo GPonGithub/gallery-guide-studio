@@ -76,6 +76,7 @@ export function ProjectsMenu({
   onSaved,
   onOpen,
   onNew,
+  onCompleteRestart,
   onClose,
 }: {
   current: CurrentProject;
@@ -84,6 +85,8 @@ export function ProjectsMenu({
   onOpen: (project: AgentProject) => boolean;
   /** Starts a fresh, unsaved scene; false if the user chose to keep their unsaved work instead. */
   onNew: () => boolean;
+  /** Asks to confirm, then deletes every scene (archived ones stay) and empties the Design Process. */
+  onCompleteRestart: () => void;
   onClose: () => void;
 }) {
   // The scenes in the main list (reorderable), and the archived ones below it.
@@ -107,10 +110,16 @@ export function ProjectsMenu({
 
   const importRef = useRef<HTMLInputElement | null>(null);
 
-  const refresh = async () => {
+  // `closing`: the open scene has just been archived and closed — leave it archived.
+  const refresh = async (closing = false) => {
     try {
       await moveServerProjectsHere();
-      const all = await listProjects();
+      let all = await listProjects();
+      // An archived scene is never the open one: one left open from before this rule comes back into the list.
+      if (!closing && all.some((p) => p.id === current.id && p.archived)) {
+        await setArchived(current.id!, false);
+        all = await listProjects();
+      }
       setProjects(all.filter((p) => !p.archived));
       setArchivedScenes(all.filter((p) => p.archived));
     } catch (err) {
@@ -122,6 +131,8 @@ export function ProjectsMenu({
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- loading the saved scenes when the dialog opens
     void refresh();
+    // Once, when the dialog opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const toggleExpanded = () => {
@@ -182,9 +193,17 @@ export function ProjectsMenu({
 
   // Archived scenes sit in their own section and are never changed by a sheet
   // import; unarchiving one puts it back at the bottom of the list.
+  // Archiving the open scene closes it: a new blank scene opens instead (unless the person keeps
+  // their unsaved changes).
   const archive = async (project: AgentProject, archive: boolean) => {
+    const closing = archive && project.id === current.id;
+    if (closing) {
+      if (!onNew()) return;
+      setName('');
+      setDraftIndex(0);
+    }
     await setArchived(project.id, archive);
-    await refresh();
+    await refresh(closing);
     setNotice(
       archive
         ? `Archived "${project.name}" — a Google Sheet import won't change it.`
@@ -315,7 +334,7 @@ export function ProjectsMenu({
     const rects = rows.map((_, i) => rowRefs.current[i]?.getBoundingClientRect());
     const middles = rects.map((r) => (r ? r.top - contentTop + r.height / 2 : 0));
     dragInfo.current = { from: index, to: index, startY: e.clientY, startScroll: list.scrollTop, middles, lastY: e.clientY, frame: 0 };
-    setDrag({ from: index, to: index, offset: 0, gap: rects[index]?.height ?? 0 });
+    setDrag({ from: index, to: index, offset: 0, gap: (rects[index]?.height ?? 0) + 8 });
     // Near the top or bottom of the list, keep scrolling it while held there.
     const tick = () => {
       const info = dragInfo.current;
@@ -470,7 +489,7 @@ export function ProjectsMenu({
           <div
             ref={listRef}
             // Always tall enough for a few scenes; on a very short screen the dialog itself scrolls.
-            className={`min-h-48 flex-1 overflow-y-auto overscroll-contain border-t-2 border-ink ${expanded ? '' : 'max-h-[42vh]'}`}
+            className={`min-h-48 flex-1 overflow-y-auto overscroll-contain border-t-2 border-ink pt-2 ${expanded ? '' : 'max-h-[42vh]'}`}
           >
             {rows === null && <p className="py-3 font-body text-sm italic text-muted-ink">Loading…</p>}
             {rows?.length === 0 && <p className="py-3 font-body text-sm italic text-muted-ink">No saved scenes yet.</p>}
@@ -492,8 +511,9 @@ export function ProjectsMenu({
                   ⋮⋮
                 </button>
               );
-              const rowClass = `flex flex-wrap items-center gap-3 border-b border-hair py-3 ${
-                dragging ? 'cursor-grabbing border-2 border-ink bg-paper shadow-[0_14px_32px_rgba(0,0,0,0.28)]' : ''
+              // Each scene a solid light-grey strip (its buttons stay white), 8px apart.
+              const rowClass = `mb-2 flex flex-wrap items-center gap-3 bg-[#ebebeb] px-3 py-3 ${
+                dragging ? 'cursor-grabbing border-2 border-ink shadow-[0_14px_32px_rgba(0,0,0,0.28)]' : 'border border-ink/25'
               }`;
               const setRef = (el: HTMLDivElement | null) => {
                 rowRefs.current[i] = el;
@@ -503,7 +523,7 @@ export function ProjectsMenu({
               if (row.kind === 'draft') {
                 const draftName = name.trim() || 'Untitled scene';
                 return (
-                  <div key="draft" ref={setRef} style={rowStyle(i)} className={`${rowClass} bg-[#fff6cc]`} data-scene-draft>
+                  <div key="draft" ref={setRef} style={rowStyle(i)} className={`${rowClass} border-dashed`} data-scene-draft>
                     {handle(draftName)}
                     <div className="min-w-[10rem] flex-1">
                       <p className="font-label text-[10px] uppercase tracking-widest text-muted-ink tabular-nums">
@@ -524,7 +544,7 @@ export function ProjectsMenu({
                   key={p.id}
                   ref={setRef}
                   style={rowStyle(i)}
-                  className={`${rowClass} bg-paper`}
+                  className={rowClass}
                   // Found by name in the onboarding tour's scenes demo.
                   data-scene-row={shownName}
                 >
@@ -564,7 +584,11 @@ export function ProjectsMenu({
                     onClick={() => void archive(p, true)}
                     className={buttonOutline}
                     data-scene-archive
-                    title="Move to Archived: kept, but protected from Google Sheet imports"
+                    title={
+                      p.id === current.id
+                        ? 'Move to Archived and close it (a new blank scene opens): kept, but protected from Google Sheet imports'
+                        : 'Move to Archived: kept, but protected from Google Sheet imports'
+                    }
                   >
                     Archive
                   </button>
@@ -582,9 +606,9 @@ export function ProjectsMenu({
             // Its own scrolling list, so a long one never runs over the buttons below.
             <div className="mt-2 flex min-h-0 shrink flex-col" data-tour="scenes-archived">
               <p className={fieldLabel}>Archived · protected from Google Sheet imports</p>
-              <div className="max-h-[30vh] min-h-0 overflow-y-auto overscroll-contain border-t-2 border-hair">
+              <div className="max-h-[30vh] min-h-0 overflow-y-auto overscroll-contain border-t-2 border-hair pt-2">
                 {archived.map((p) => (
-                  <div key={p.id} className="flex flex-wrap items-center gap-3 border-b border-hair py-2.5 text-muted-ink" data-scene-archived={p.name}>
+                  <div key={p.id} className="mb-2 flex flex-wrap items-center gap-3 border border-ink/15 bg-[#f1f1f1] px-3 py-2.5 text-muted-ink" data-scene-archived={p.name}>
                     <div className="min-w-[10rem] flex-1">
                       <p className="font-label text-[10px] uppercase tracking-widest tabular-nums">
                         {p.sheet ? `Scene ${p.sheet.number} · sheet column ${p.sheet.column} · ` : ''}Archived
@@ -622,6 +646,15 @@ export function ProjectsMenu({
         </section>
 
         <div className="flex shrink-0 flex-wrap gap-2 border-t-2 border-ink pt-4">
+          {/* Red: it deletes every scene (archived ones stay). It asks first. */}
+          <button
+            onClick={onCompleteRestart}
+            data-tour="complete-restart"
+            className="border-2 border-[#b91c1c] bg-paper px-4 py-2 font-label text-[11px] uppercase tracking-widest text-[#b91c1c] transition-colors duration-100 hover:bg-[#b91c1c] hover:text-paper"
+            title="Start from nothing: delete every scene and its stages (archived scenes stay), and empty the Design Process (steps 1 and 2 keep their links)"
+          >
+            Complete restart
+          </button>
           <button
             onClick={() => void exportAll()}
             disabled={exporting || !(projects?.length || archived.length)}

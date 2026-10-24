@@ -168,8 +168,9 @@ const STEPS: TourStep[] = [
     body: (
       <>
         <p>
-          Each conversation you build is a <b>Scene</b>. Watch: the Scenes window opens, the scene is named{' '}
-          <b>Test Scene Number 1</b>, and Save keeps it.
+          Each conversation you build is a <b>Scene</b>, shown as a grey strip in the Scenes window. Watch: the window
+          opens, the new scene&rsquo;s strip is named <b>Test Scene Number 1</b> right in the strip, and its{' '}
+          <b>Save</b> button keeps it. The scene that&rsquo;s open says <b>Currently open</b>.
         </p>
         <p className="text-xs text-muted-ink">
           This is only a demonstration — your own work is put aside, and the test scenes are removed when you move on.
@@ -184,7 +185,8 @@ const STEPS: TourStep[] = [
     body: (
       <>
         <p>
-          <b>New blank scene</b> starts a fresh one. Here it&rsquo;s named <b>Test Scene Number 2</b> and saved.
+          <b>New blank scene</b>, at the top of the window, starts a fresh one. Its strip appears at the top of the list,
+          ready to name — here it&rsquo;s named <b>Test Scene Number 2</b> and saved.
         </p>
         <p>
           New scenes appear at the top of the list. Watch it being dragged by its <b>⋮⋮</b> handle to below{' '}
@@ -218,10 +220,29 @@ const STEPS: TourStep[] = [
           but generating scenes from your Google Sheet will never change it.
         </p>
         <p>Use it for a scene you want to keep exactly as it is. Watch <b>Test Scene Number 1</b> being archived.</p>
+        <p>
+          Archiving the scene that&rsquo;s open closes it, and a new blank scene opens instead. Clicking <b>Open</b> on
+          an archived scene brings it back into the list.
+        </p>
         <p className="text-[#b91c1c]">
           The archive function isn&rsquo;t required when importing scenes from Google Sheets. It&rsquo;s intended for
           experimenting with scene design within the app.
         </p>
+      </>
+    ),
+  },
+  {
+    title: 'Start again from nothing',
+    group: 'scenes-demo',
+    run: 'scenes-restart',
+    body: (
+      <>
+        <p>
+          <b>Complete restart</b>, in red at the bottom of the Scenes window, deletes every scene with its stages and
+          conversations, and empties the Design Process. Archived scenes are kept, and so are the Google Sheet, Apps
+          Script and FigJam links in steps 1 and 2.
+        </p>
+        <p className="text-[#b91c1c]">It can&rsquo;t be undone — click Export all scenes first if you want a backup.</p>
         <p className="text-xs text-muted-ink">When you click Next, the test scenes are removed and your own work comes back.</p>
       </>
     ),
@@ -271,7 +292,9 @@ const STEPS: TourStep[] = [
           this once per sheet.
         </p>
         <ol>
-          <li>Follow the steps in &ldquo;Set it up&rdquo;.</li>
+          <li>
+            Follow the steps in &ldquo;Set it up&rdquo; — start with the big <b>Copy the script</b> button.
+          </li>
           <li>
             In the Apps Script window, click <b>Run</b>. When Google asks, allow <b>Apps Script</b> to connect to your
             Google account: Review permissions → your account → Advanced → Go to … (unsafe) → Allow.
@@ -298,6 +321,11 @@ const STEPS: TourStep[] = [
           <li>information it can use, should save, and must not use</li>
         </ul>
         <p>Empty columns are skipped. When it&rsquo;s done, move on to step 3.</p>
+        <p>
+          Afterwards the button says <b>Update Scenes from Google Sheet</b>, with how many scenes came from the sheet.
+          Click it after changing the sheet: scenes you haven&rsquo;t edited in the app are updated, ones you have
+          edited ask first, archived ones are never touched, and every scene keeps its stages.
+        </p>
       </>
     ),
   },

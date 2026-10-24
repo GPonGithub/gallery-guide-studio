@@ -236,7 +236,6 @@ const toRemembered = (it: MemoryItem): RememberedItem => ({
 
 // Restart is the conversation's main reset, so its outline is twice as heavy as other buttons'.
 // The chat toolbar's buttons are the compact kind, so the row stays on one line.
-const restartButton = buttonOutlineCompact.replace('border-2 ', 'border-4 ');
 
 // Performance cues ([warmly], [laughs softly]…) are for the voice, not the reader.
 const withoutCues = (text: string) => text.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
@@ -2399,14 +2398,6 @@ export default function AgentStudioPage() {
             )}
             <div className="flex flex-wrap items-center justify-end gap-2 @[700px]:justify-start">
               <button
-                onClick={() => setConfirmCompleteRestart(true)}
-                disabled={busy}
-                className={`h-10 ${toolbarButtonWidth} ${restartButton}`}
-                title="Start from nothing: delete every scene and its stages (archived scenes stay in Scenes), and empty the Design Process (steps 1 and 2 keep their links)"
-              >
-                Complete restart
-              </button>
-              <button
                 data-tour="refresh-scene"
                 onClick={refreshScene}
                 disabled={busy || updateProgress !== null}
@@ -2764,7 +2755,7 @@ export default function AgentStudioPage() {
       {confirmCompleteRestart && (
         <ConfirmDialog
           title="Complete restart?"
-          message={`Every scene will be deleted with its stages and conversations (archived scenes stay in Scenes), and the Design Process emptied (steps 1 and 2 keep their Google Sheet, Apps Script and FigJam links). ${
+          message={`Export all scenes first if you want a backup. Every scene will be deleted with its stages and conversations (archived scenes stay in Scenes), and the Design Process emptied (steps 1 and 2 keep their Google Sheet, Apps Script and FigJam links). ${
             activePatient ? `Everything ${activePatient.name}'s scenes have saved will be deleted too` : 'Saved information will be deleted too'
           }${saved.sheetScriptUrl.trim() ? ', and row 7 of the sheet emptied in every scene column' : ''}. This action cannot be undone.`}
           confirmLabel="Complete restart"
@@ -2781,6 +2772,10 @@ export default function AgentStudioPage() {
           onSaved={markSaved}
           onOpen={openProject}
           onNew={newProject}
+          onCompleteRestart={() => {
+            setProjectsOpen(false);
+            setConfirmCompleteRestart(true);
+          }}
           onClose={() => setProjectsOpen(false)}
         />
       )}

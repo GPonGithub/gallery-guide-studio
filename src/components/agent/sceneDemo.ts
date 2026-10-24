@@ -2,8 +2,8 @@ import type { TourHelpers } from './OnboardingTour';
 
 /**
  * The onboarding tour's Scenes demonstration: the pointer names and saves a
- * scene, starts another, reorders them and archives one — in the real Scenes
- * window, step by step as the student clicks Next.
+ * scene, starts another, reorders them, archives one and points out Complete
+ * restart — in the real Scenes window, step by step as the student clicks Next.
  *
  * It runs in a sandbox (see `begin` in the page): the student's open work is
  * put aside first and comes back untouched afterwards, and only the demo's own
@@ -32,13 +32,13 @@ async function openScenes(h: TourHelpers) {
   return h.find('[data-tour="scenes-dialog"]');
 }
 
-/** Types a name into the Scenes window and saves — what a student does for a new scene. */
+/** Types a name into the new scene's strip and saves — what a student does for a new scene. */
 async function nameAndSave(h: TourHelpers, name: string, beforeSave?: () => Promise<void>) {
-  const field = (await h.find('[data-tour="scene-name"]')) as HTMLInputElement;
-  h.show(field.parentElement);
+  const field = (await h.find('[data-scene-draft] [data-tour="scene-name"]')) as HTMLInputElement;
+  h.show(field.closest('[data-scene-draft]') ?? field.parentElement);
   await h.type(field, name);
   if (beforeSave) await beforeSave();
-  const save = await h.find('[data-tour="scene-save"]');
+  const save = await h.find('[data-scene-draft] [data-tour="scene-save"]');
   h.show(save);
   await h.click(save);
   const saved = await h.find(`[data-scene-row="${name}"]`);
@@ -114,6 +114,14 @@ export function sceneDemoActions(page: SceneDemoPage): Record<string, (h: TourHe
       await h.wait(600);
       h.show(archived);
       await h.wait(600);
+    },
+    // Only pointed at — never clicked.
+    'scenes-restart': async (h) => {
+      await ensureSecond(h, page);
+      const restart = await h.find('[data-tour="complete-restart"]');
+      restart.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      await h.wait(400);
+      h.show(restart);
     },
   };
 }
