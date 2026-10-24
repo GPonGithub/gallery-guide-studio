@@ -558,9 +558,10 @@ export function ProjectsMenu({
             })}
           </div>
           {archived.length > 0 && (
-            <div className="mt-2 flex flex-col" data-tour="scenes-archived">
+            // Its own scrolling list, so a long one never runs over the buttons below.
+            <div className="mt-2 flex min-h-0 shrink flex-col" data-tour="scenes-archived">
               <p className={fieldLabel}>Archived · protected from Google Sheet imports</p>
-              <div className="border-t-2 border-hair">
+              <div className="max-h-[30vh] min-h-0 overflow-y-auto overscroll-contain border-t-2 border-hair">
                 {archived.map((p) => (
                   <div key={p.id} className="flex flex-wrap items-center gap-3 border-b border-hair py-2.5 text-muted-ink" data-scene-archived={p.name}>
                     <div className="min-w-[10rem] flex-1">
@@ -593,7 +594,7 @@ export function ProjectsMenu({
           )}
         </section>
 
-        <div className="flex flex-wrap gap-2 border-t-2 border-ink pt-4">
+        <div className="flex shrink-0 flex-wrap gap-2 border-t-2 border-ink pt-4">
           <button onClick={startNew} className={buttonOutline} data-tour="scene-new">
             New blank scene
           </button>
