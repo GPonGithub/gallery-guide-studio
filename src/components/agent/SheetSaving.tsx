@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { isScriptUrl, SHEET_SCRIPT } from '@/lib/agent/sheetScript';
 import { buttonOutline, fieldInput, fieldLabel } from '@/lib/styles';
 import { DropdownArrow } from './DropdownArrow';
+import { Spinner } from './Spinner';
 
 /**
  * Connecting the Google Sheet for saving: the link of the sheet's Apps
@@ -25,6 +26,7 @@ export function SheetSaving({
   const [test, setTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copying, setCopying] = useState(false);
 
   const runTest = async () => {
     setTesting(true);
@@ -44,13 +46,19 @@ export function SheetSaving({
     }
   };
 
+  // The wheel turns for a moment at least — copying is near-instant, and students should see it happen.
   const copyScript = async () => {
+    if (copying) return;
+    setCopying(true);
+    setCopied(false);
     try {
-      await navigator.clipboard.writeText(SHEET_SCRIPT);
+      await Promise.all([navigator.clipboard.writeText(SHEET_SCRIPT), new Promise((r) => setTimeout(r, 700))]);
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     } catch {
       setTest({ ok: false, message: 'Copying was blocked by the browser.' });
+    } finally {
+      setCopying(false);
     }
   };
 
@@ -108,8 +116,13 @@ export function SheetSaving({
                 that row.
               </li>
               <li>
-                <button onClick={() => void copyScript()} className="font-label text-[10px] uppercase tracking-widest underline">
-                  {copied ? 'Copied ✓' : 'Copy the script'}
+                <button
+                  onClick={() => void copyScript()}
+                  aria-busy={copying}
+                  className="inline-flex items-center gap-2 font-label text-[20px] font-bold uppercase leading-tight tracking-widest underline"
+                >
+                  {copying && <Spinner className="h-5 w-5" />}
+                  {copying ? 'Copying…' : copied ? 'Copied ✓' : 'Copy the script'}
                 </button>
               </li>
               <li>

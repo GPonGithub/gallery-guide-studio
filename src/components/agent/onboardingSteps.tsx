@@ -291,7 +291,7 @@ const STEPS: TourStep[] = [
     open: ['design-1'],
     body: (
       <>
-        <p>Click Generate Scenes. Chatbot Designer makes a Scene for each filled-in column of the sheet, with its:</p>
+        <p>Click Generate Scenes from Google Sheet. Chatbot Designer makes a Scene for each filled-in column of the sheet, with its:</p>
         <ul>
           <li>name and number</li>
           <li>conversation description</li>
@@ -306,7 +306,7 @@ const STEPS: TourStep[] = [
     target: 'scene-buttons',
     open: ['design-2'],
     missing:
-      'No Scenes yet. Click Generate Scenes (outlined) first — the Scene buttons then appear in section 3, and this card moves to them.',
+      'No Scenes yet. Click Generate Scenes from Google Sheet (outlined) first — the Scene buttons then appear in section 3, and this card moves to them.',
     fallback: { target: 'generate-scenes', open: ['design-1'] },
     body: (
       <>

@@ -16,7 +16,7 @@ import type { AgentProject, ProjectMusic, ProjectVoice } from '@/lib/agent/proje
 import type { AgentFlow } from '@/lib/agent/types';
 import type { MediaLink } from '@/lib/agent/mediaFolder';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
-import { buttonOutline, buttonPrimary, buttonSaved, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
+import { buttonOutline, buttonPrimary, buttonSaved, buttonUnsaved, fieldLabel } from '@/lib/styles';
 
 // The Scenes dialog. A scene is what's open in the studio — flow, brief,
 // FigJam board, voices and background music — saved under a name. (In the
@@ -80,7 +80,8 @@ export function ProjectsMenu({
 }: {
   current: CurrentProject;
   onSaved: (project: AgentProject) => void;
-  onOpen: (project: AgentProject) => void;
+  /** False if it wasn't opened (the person kept the scene they're in). */
+  onOpen: (project: AgentProject) => boolean;
   /** Starts a fresh, unsaved scene; false if the user chose to keep their unsaved work instead. */
   onNew: () => boolean;
   onClose: () => void;
@@ -189,6 +190,16 @@ export function ProjectsMenu({
         ? `Archived "${project.name}" — a Google Sheet import won't change it.`
         : `Unarchived "${project.name}" — it's at the bottom of the list.`,
     );
+  };
+
+  // Opening an archived scene brings it back into the list (at the bottom) — first, so the scene
+  // buttons include it; archived again if it isn't opened after all.
+  const openArchived = async (project: AgentProject) => {
+    await setArchived(project.id, false);
+    if (!onOpen({ ...project, archived: false })) {
+      await setArchived(project.id, true);
+      await refresh();
+    }
   };
 
   // "Export all scenes": one backup file of everything (archived scenes and music included).
@@ -379,6 +390,41 @@ export function ProjectsMenu({
     return i + 1;
   };
 
+  // The open scene's strip carries its name, editable, and Save / Save as copy — one strip, not a
+  // separate form. (A new scene's strip has only these until it's saved.)
+  const nameField = (
+    <input
+      ref={nameRef}
+      value={name}
+      onChange={(e) => setName(e.target.value)}
+      onKeyDown={(e) => e.key === 'Enter' && save(false)}
+      onPointerDown={(e) => e.stopPropagation()}
+      placeholder="Name this scene"
+      aria-label="Scene name"
+      data-tour="scene-name"
+      className="w-full border border-ink/40 bg-paper px-2 py-0.5 font-display text-base text-ink outline-none focus:border-ink"
+    />
+  );
+  const saveButtons = (isNew: boolean) => (
+    <>
+      <button
+        onClick={() => save(false)}
+        disabled={saving}
+        data-tour="scene-save"
+        className={unsaved ? buttonUnsaved : buttonSaved}
+        title={unsaved ? 'Save the scene' : 'Everything is saved — click to save again'}
+      >
+        {saving ? 'Saving…' : unsaved ? 'Save' : 'Saved'}
+      </button>
+      {!isNew && (
+        <button onClick={() => save(true)} disabled={saving} className={buttonOutline} title="Keep the original and save this as a separate scene">
+          Save as copy
+        </button>
+      )}
+    </>
+  );
+  const openStatus = current.dirty || name.trim() !== current.name ? ' · currently open · unsaved changes' : ' · currently open';
+
   return (
     <div
       className={`fixed inset-0 z-50 flex justify-center bg-ink/60 p-4 ${expanded ? 'items-stretch' : 'items-start pt-[8vh]'}`}
@@ -406,44 +452,20 @@ export function ProjectsMenu({
           </div>
         </div>
 
-        <section className="flex flex-col gap-2">
-          <p className={fieldLabel}>
-            {current.id ? 'This scene' : 'New scene — name it, then Save'}
-            {current.id && (current.dirty ? ' · unsaved changes' : ' · saved')}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <input
-              ref={nameRef}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && save(false)}
-              placeholder="Scene name"
-              aria-label="Scene name"
-              data-tour="scene-name"
-              className={`min-w-[220px] flex-1 ${fieldInput}`}
-            />
-            <button
-              onClick={() => save(false)}
-              disabled={saving}
-              data-tour="scene-save"
-              className={unsaved ? buttonUnsaved : buttonSaved}
-              title={unsaved ? 'Save the scene' : 'Everything is saved — click to save again'}
-            >
-              {saving ? 'Saving…' : unsaved ? 'Save' : 'Saved'}
+        {/* A new scene starts as a strip at the top of the list, ready to be named there. */}
+        <div className="flex flex-col gap-2">
+          <div>
+            <button onClick={startNew} className={buttonOutline} data-tour="scene-new">
+              New blank scene
             </button>
-            {current.id && (
-              <button onClick={() => save(true)} disabled={saving} className={buttonOutline} title="Keep the original and save this as a separate scene">
-                Save as copy
-              </button>
-            )}
           </div>
           {error && <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-sm text-ink">{error}</p>}
           {notice && !error && <p className="border-l-4 border-[#15803d] pl-2 font-body text-sm text-ink">{notice}</p>}
-        </section>
+        </div>
 
         <section className="flex min-h-56 flex-1 flex-col gap-2">
           <p className={fieldLabel}>
-            Scenes{rows && rows.length > 1 ? ' · drag ⋮⋮ to reorder' : ''}
+            Active scenes{rows && rows.length > 1 ? ' · drag ⋮⋮ to reorder' : ''}
           </p>
           <div
             ref={listRef}
@@ -483,15 +505,13 @@ export function ProjectsMenu({
                 return (
                   <div key="draft" ref={setRef} style={rowStyle(i)} className={`${rowClass} bg-[#fff6cc]`} data-scene-draft>
                     {handle(draftName)}
-                    <div className="min-w-[10rem] flex-1 select-none">
+                    <div className="min-w-[10rem] flex-1">
                       <p className="font-label text-[10px] uppercase tracking-widest text-muted-ink tabular-nums">
-                        Scene {numberOf(i)} · open now · not saved yet
+                        Scene {numberOf(i)} · currently open · not saved yet
                       </p>
-                      <p className={`truncate font-display text-base ${name.trim() ? 'text-ink' : 'text-muted-ink'}`}>{draftName}</p>
-                      <p className="font-label text-[10px] uppercase tracking-wide text-muted-ink">
-                        Name it above and click Save — it&rsquo;s saved in this position
-                      </p>
+                      {nameField}
                     </div>
+                    {saveButtons(true)}
                   </div>
                 );
               }
@@ -513,15 +533,16 @@ export function ProjectsMenu({
                     <p className="font-label text-[10px] uppercase tracking-widest text-muted-ink tabular-nums">
                       {/* A scene from a sheet keeps the sheet's number wherever it's dragged. */}
                       {p.sheet ? `Scene ${p.sheet.number} · sheet column ${p.sheet.column}` : `Scene ${numberOf(i)}`}
-                      {p.id === current.id && ' · open now'}
+                      {p.id === current.id && openStatus}
                     </p>
-                    <p className="truncate font-display text-base text-ink">{shownName}</p>
+                    {p.id === current.id ? nameField : <p className="truncate font-display text-base text-ink">{shownName}</p>}
                     <p className="font-label text-[10px] uppercase tracking-wide text-muted-ink">
                       {p.flow.stages.length} stages
                       {p.voice && ` · voice: ${p.voice.voices[p.voice.activeVoice]?.name.trim() || `Voice ${p.voice.activeVoice + 1}`}`}
                       {p.music && ` · ♫ ${p.music.name}`} · saved {timeAgo(p.updatedAt)}
                     </p>
                   </div>
+                  {p.id === current.id && saveButtons(false)}
                   {p.boardUrl ? (
                     <a href={p.boardUrl} target="_blank" rel="noopener noreferrer" className={buttonOutline}>
                       FigJam ↗
@@ -530,7 +551,7 @@ export function ProjectsMenu({
                     <span className="font-label text-[10px] uppercase tracking-wide text-muted-ink">No board linked</span>
                   )}
                   <button onClick={() => onOpen(p)} disabled={p.id === current.id && !current.dirty} className={buttonPrimary}>
-                    Open
+                    {p.id === current.id ? 'Currently open' : 'Open'}
                   </button>
                   <button
                     onClick={() => void exportProject(p).catch(() => setError('Export failed.'))}
@@ -567,12 +588,18 @@ export function ProjectsMenu({
                     <div className="min-w-[10rem] flex-1">
                       <p className="font-label text-[10px] uppercase tracking-widest tabular-nums">
                         {p.sheet ? `Scene ${p.sheet.number} · sheet column ${p.sheet.column} · ` : ''}Archived
-                        {p.id === current.id && ' · open now'}
+                        {p.id === current.id && openStatus}
                       </p>
-                      <p className="truncate font-display text-base">{p.id === current.id ? name.trim() || p.name : p.name}</p>
+                      {p.id === current.id ? nameField : <p className="truncate font-display text-base">{p.name}</p>}
                     </div>
-                    <button onClick={() => onOpen(p)} disabled={p.id === current.id && !current.dirty} className={buttonOutline}>
-                      Open
+                    {p.id === current.id && saveButtons(false)}
+                    <button
+                      onClick={() => void openArchived(p)}
+                      disabled={p.id === current.id && !current.dirty}
+                      className={buttonOutline}
+                      title="Open this scene — it comes back into the list (unarchived)"
+                    >
+                      {p.id === current.id ? 'Currently open' : 'Open'}
                     </button>
                     <button
                       onClick={() => void archive(p, false)}
@@ -595,9 +622,6 @@ export function ProjectsMenu({
         </section>
 
         <div className="flex shrink-0 flex-wrap gap-2 border-t-2 border-ink pt-4">
-          <button onClick={startNew} className={buttonOutline} data-tour="scene-new">
-            New blank scene
-          </button>
           <button
             onClick={() => void exportAll()}
             disabled={exporting || !(projects?.length || archived.length)}

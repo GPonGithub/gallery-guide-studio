@@ -1116,9 +1116,10 @@ export default function AgentStudioPage() {
   };
 
   const openProject = (project: AgentProject) => {
-    if (!okToLeave()) return;
+    if (!okToLeave()) return false;
     openScene(project);
     setProjectsOpen(false);
+    return true;
   };
 
   const refreshSheetScenes = () => setSheetScenesVersion((v) => v + 1);
@@ -2278,6 +2279,7 @@ export default function AgentStudioPage() {
                 onImportSheet={importSheet}
                 onResolveConflict={resolveSheetConflict}
                 sheetScenes={sheetSceneList}
+                activeSheetId={saved.activeSheetId}
                 currentSceneId={saved.projectId}
                 onSwitchScene={(id) => void switchScene(id)}
                 scene={{

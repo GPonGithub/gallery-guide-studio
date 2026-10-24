@@ -236,6 +236,7 @@ export function DesignPanel({
   onImportSheet,
   onResolveConflict,
   sheetScenes,
+  activeSheetId,
   currentSceneId,
   onSwitchScene,
   scene,
@@ -283,6 +284,8 @@ export function DesignPanel({
   onResolveConflict: (conflict: SheetConflict, useSheet: boolean) => Promise<void>;
   /** The sheet's scenes, in number order — one button each. */
   sheetScenes: { id: string; number: string; name: string }[];
+  /** The sheet `sheetScenes` came from (null = none generated yet). */
+  activeSheetId: string | null;
   currentSceneId: string | null;
   onSwitchScene: (id: string) => void;
   scene: SceneInfo;
@@ -377,6 +380,8 @@ export function DesignPanel({
   const hasFlow = flow.stages.length > 0;
   // A scene fresh from a sheet has just a placeholder stage — nothing worth asking before replacing.
   const placeholderOnly = flow.stages.length === 1 && !flow.stages[0].goal.trim() && flow.stages[0].collect.length === 0;
+  // Scenes already generated from the sheet in step 1 (not archived ones): the button then updates them.
+  const generatedHere = parseSheetUrl(sheetUrl)?.sheetId === activeSheetId && activeSheetId ? sheetScenes.length : 0;
   const boardLooksValid = /figma\.com\/(board|file)\//.test(boardUrl);
 
   const replaceOk = () => !hasFlow || placeholderOnly || window.confirm('Replace the current flow in the app with this one?');
@@ -566,7 +571,7 @@ export function DesignPanel({
           );
         }
         if (fresh?.others.keptEdits) {
-          say(`${fresh.others.keptEdits} other scene${fresh.others.keptEdits === 1 ? ' was' : 's were'} edited here, so kept as ${fresh.others.keptEdits === 1 ? 'it is' : 'they are'} (Generate Scenes offers “Use the sheet”).`);
+          say(`${fresh.others.keptEdits} other scene${fresh.others.keptEdits === 1 ? ' was' : 's were'} edited here, so kept as ${fresh.others.keptEdits === 1 ? 'it is' : 'they are'} (Generate Scenes from Google Sheet offers “Use the sheet”).`);
         }
       }
       // The old conversation doesn't fit the new pattern: it goes before the new one is made.
@@ -736,8 +741,20 @@ export function DesignPanel({
             title="Create a scene for every filled-in column — or update the scenes already made from this sheet"
           >
             {busy === 'sheet' && <Spinner />}
-            {busy === 'sheet' ? 'Generating scenes…' : 'Generate Scenes'}
+            {busy === 'sheet'
+              ? generatedHere
+                ? 'Updating scenes…'
+                : 'Generating scenes…'
+              : generatedHere
+                ? 'Update Scenes from Google Sheet'
+                : 'Generate Scenes from Google Sheet'}
           </button>
+          {generatedHere > 0 && (
+            <p className="border-l-4 border-[#15803d] pl-2 font-body text-xs text-ink">
+              ✓ {generatedHere} scene{generatedHere === 1 ? '' : 's'} generated from this sheet — Update brings in
+              what&rsquo;s changed in it.
+            </p>
+          )}
           <SheetSaving
             scriptUrl={sheetScriptUrl}
             onScriptUrlChange={onSheetScriptUrlChange}
