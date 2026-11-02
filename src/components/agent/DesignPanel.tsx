@@ -245,6 +245,7 @@ export function DesignPanel({
   onSaveInfoChange,
   onMergeCanUse,
   onCannotUseChange,
+  onScenePersonaChange,
   memory,
   stages,
   boardUrl,
@@ -296,6 +297,7 @@ export function DesignPanel({
   /** Moves leftover "can use" text (from before it was part of the knowledge base) into the knowledge base. */
   onMergeCanUse: () => void;
   onCannotUseChange: (text: string) => void;
+  onScenePersonaChange: (text: string) => void;
   /** The selected patient's memory, as this scene sees it. */
   memory: MemoryView;
   /** The scene's stage buttons (and the card being edited), shown under its scene buttons. */
@@ -523,6 +525,7 @@ export function DesignPanel({
         saveInfo: flow.saveInfo,
         canUse: flow.canUse,
         cannotUse: flow.cannotUse,
+        scenePersona: flow.scenePersona,
         // What it was made from — so next time only the changes need redoing.
         designedFrom: sent,
       };
@@ -667,6 +670,7 @@ export function DesignPanel({
         saveInfo: flow.saveInfo,
         canUse: flow.canUse,
         cannotUse: flow.cannotUse,
+        scenePersona: flow.scenePersona,
         designedFrom: flow.designedFrom,
       });
       if (imported.stages.length === 0) {
@@ -886,6 +890,25 @@ export function DesignPanel({
             placeholder={BRIEF_PLACEHOLDER}
             className={`min-h-[160px] w-full resize-y leading-snug ${studentField}`}
           />
+          <div className="flex flex-col gap-2" data-tour="scene-persona">
+            <p className={fieldLabel}>Persona{scene.fromSheet ? ' · row 10 of the sheet' : ''}</p>
+            <p className="font-body text-xs italic text-muted-ink">
+              The character who speaks in this scene: who they are, their personality and mood, and how they talk. It
+              changes how the chatbot talks, not what it has to get done, and it works straight away.
+            </p>
+            <textarea
+              value={flow.scenePersona ?? ''}
+              onChange={(e) => onScenePersonaChange(e.target.value)}
+              placeholder="e.g. Maya, 68, a retired nurse. Warm but tired, with a dry sense of humor. Short, plain sentences and old-fashioned phrases."
+              className={`min-h-[90px] w-full resize-y font-body text-[13px] leading-snug ${studentField}`}
+            />
+            {scene.fromSheet && !flow.scenePersona?.trim() && (
+              <p className="border-l-4 border-[#b45309] pl-2 font-body text-xs text-ink">
+                This scene has no persona yet, so it uses one Claude wrote. Add one to row 10 of the sheet, then click
+                Refresh This Scene.
+              </p>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-2" data-tour="generate-conversation">
             {/* Red until the flow comes from the description as it reads now; green once it does. */}
             <button

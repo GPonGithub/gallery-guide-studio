@@ -87,16 +87,16 @@ const STEPS: TourStep[] = [
     title: 'Test the voice',
     target: 'voice-tests',
     open: ['voice-button', 'voice-fold'],
-    missing: 'Click the name of the voice in use to show its Test buttons.',
+    missing: 'Click the name of the voice in use to show its Normal and Expressive buttons.',
     body: (
       <>
-        <p>Click Test and Test expressive to compare the two ways the voice can speak.</p>
+        <p>Click Normal and Expressive to compare the two ways the voice can speak.</p>
         <ul>
           <li>
-            <b>Test</b> plays the basic voice. The sliders change how it sounds.
+            <b>Normal</b> plays the basic voice. The sliders change how it sounds.
           </li>
           <li>
-            <b>Test expressive</b> plays a livelier version that can laugh or whisper. The sliders don&rsquo;t affect it.
+            <b>Expressive</b> plays a livelier version that can laugh or whisper. The sliders don&rsquo;t affect it.
           </li>
         </ul>
         <p>The one you test last is the way this voice will speak.</p>
@@ -109,21 +109,21 @@ const STEPS: TourStep[] = [
     open: ['voice-button'],
     body: (
       <p>
-        These sliders shape the basic voice only. Move a slider, then click Test again to hear the difference.
+        These sliders shape the basic voice only. Move a slider, then click Normal again to hear the difference.
       </p>
     ),
   },
   {
-    title: 'Save the voice settings',
+    title: 'Voice settings save themselves',
     target: 'voice-save',
     open: ['voice-button', 'voice-fold'],
     missing: 'Click the name of the voice in use to show its Save settings button.',
     body: (
       <>
-        <p>When you&rsquo;re happy with the voice, click Save settings.</p>
+        <p>You don&rsquo;t need to click anything to keep a change to the voice in use.</p>
         <p>
-          Moving a slider doesn&rsquo;t keep it. Test, then Save settings — that&rsquo;s what keeps the slider positions
-          and the basic or expressive choice for this voice.
+          Each time you move a slider or click Normal or Expressive, it&rsquo;s saved for this voice and this button
+          flashes green and reads SAVED.
         </p>
       </>
     ),
@@ -358,6 +358,23 @@ const STEPS: TourStep[] = [
           that work from any stage.
         </p>
         <p className="text-xs text-muted-ink">You&rsquo;ll also see the conversation as a FigJam flowchart — that comes later in this tour.</p>
+      </>
+    ),
+  },
+  {
+    title: 'Give the Scene a persona',
+    target: 'scene-persona',
+    open: ['design-2'],
+    body: (
+      <>
+        <p>
+          A persona is the character who speaks in this Scene: who they are, their personality and mood, and how they talk.
+          Write it in row 10 of your sheet, then click Refresh This Scene.
+        </p>
+        <p>
+          It changes how the chatbot talks, not what it has to get done. The more specific you are, the less generic it
+          sounds: &ldquo;short sentences, dry humor&rdquo; works better than &ldquo;friendly&rdquo;.
+        </p>
       </>
     ),
   },

@@ -75,6 +75,7 @@ import {
   getProjectMusic,
   importSheetScenes,
   keepSceneEdits,
+  saveSceneVoice,
   deleteProject,
   listProjects,
   markWrittenToFigjam,
@@ -241,7 +242,8 @@ const toRemembered = (it: MemoryItem): RememberedItem => ({
 const withoutCues = (text: string) => text.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
 
 // What a project saves, as it stands now — compared with the last save to
-// tell whether anything (flow, brief, knowledge, board, voices, music) changed.
+// tell whether anything (flow, brief, knowledge, board, music) changed. The
+// voice doesn't count: it's kept with the scene as soon as it changes.
 type ProjectContent = Pick<AgentProject, 'flow' | 'brief' | 'boardUrl'> & { voice: ProjectVoice; music: ProjectMusic | null };
 
 const voiceOf = (s: Saved): ProjectVoice => ({
@@ -252,6 +254,25 @@ const voiceOf = (s: Saved): ProjectVoice => ({
 });
 const musicOf = (s: Saved): ProjectMusic | null =>
   s.musicTrack ? { ...s.musicTrack, volume: s.musicVolume, dip: s.musicDip } : null;
+// A sheet scene's own voice, picked from the shared voice list (the same voice, if it's still in the list).
+const sceneVoiceIn = (s: Saved, voice: ProjectVoice) => {
+  const chosen = voice.voices[voice.activeVoice];
+  if (!chosen) return null;
+  const named = s.voices.findIndex((v) => v.voiceId === chosen.voiceId && v.name === chosen.name);
+  const index = named >= 0 ? named : s.voices.findIndex((v) => v.voiceId === chosen.voiceId);
+  if (index < 0) return null;
+  const settings = voice.voiceSettings;
+  return {
+    // The voice's saved settings follow, so the panel doesn't call this scene's "not saved".
+    voices: settings
+      ? s.voices.map((v, i) => (i === index ? { ...v, settings: { ...settings }, expressive: Boolean(voice.expressive) } : v))
+      : s.voices,
+    activeVoice: index,
+    voiceId: s.voices[index].voiceId,
+    voiceSettings: settings,
+    voiceExpressive: voice.expressive ?? false,
+  };
+};
 const contentOf = (s: Saved): ProjectContent => ({ flow: s.flow, brief: s.brief, boardUrl: s.boardUrl, voice: voiceOf(s), music: musicOf(s) });
 
 // Keys sorted, so the same settings compare equal whatever order they were written in.
@@ -259,7 +280,7 @@ const sortedKeys = (_key: string, value: unknown) =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
     : value;
-const snapshotOf = (content: ProjectContent) => JSON.stringify(content, sortedKeys);
+const snapshotOf = (content: ProjectContent) => JSON.stringify({ ...content, voice: undefined }, sortedKeys);
 const timelineSnapshotOf = (timeline: MediaLink[]) => JSON.stringify(timeline, sortedKeys);
 
 type SpeechRecognitionLike = {
@@ -293,7 +314,7 @@ function loadSaved(): Saved {
     projectName: 'Untitled scene',
     savedSnapshot: '',
     pauseSeconds: 1.0,
-    interruptByVoice: true,
+    interruptByVoice: false,
     voices: [],
     activeVoice: 0,
     voiceExpressive: false,
@@ -305,6 +326,8 @@ function loadSaved(): Saved {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     const stored = raw ? (JSON.parse(raw) as Partial<Saved>) : null;
     const saved = stored ? { ...fallback, ...stored } : fallback;
+    // Talk to interrupt starts off every time the app starts, however it was left.
+    saved.interruptByVoice = false;
     // From before generation was tracked: assume the open flow came from the description as it stands.
     if (stored && !('generatedBrief' in stored)) saved.generatedBrief = saved.brief || null;
     // First visit: borrow the keys and voice already set up in the step-table studio.
@@ -469,6 +492,16 @@ export default function AgentStudioPage() {
   // after the message that prompted it was sent; reading these at speaking
   // time (not send time) means a slider moved while the agent was thinking
   // still applies to the very next thing it says.
+  // A change to the voice stays with the open scene straight away, with no Save to click.
+  const voiceChanged = useRef(false);
+  const sceneVoice = saved ? JSON.stringify(voiceOf(saved)) : '';
+  useEffect(() => {
+    if (!voiceChanged.current || !saved?.projectId) return;
+    voiceChanged.current = false;
+    void saveSceneVoice(saved.projectId, voiceOf(saved)).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a change to the voice should save it
+  }, [sceneVoice]);
+
   const voiceRef = useRef({ voiceId: '', apiKey: '', settings: DEFAULT_VOICE_SETTINGS });
   useEffect(() => {
     if (!saved) return;
@@ -1049,9 +1082,7 @@ export default function AgentStudioPage() {
   const okToLeave = () =>
     !dirty || window.confirm(`"${saved.projectName}" has unsaved changes. Continue without saving them?`);
 
-  // Records `project` as what's on disk. (Projects saved before voices were
-  // part of a project keep whatever voice is set up now; so do scenes from a
-  // sheet, which share one voice and one FigJam board.)
+  // Records `project` as what's on disk. (Scenes from a sheet share one FigJam board.)
   const markSaved = (project: AgentProject) =>
     setSaved((s) =>
       s
@@ -1077,9 +1108,11 @@ export default function AgentStudioPage() {
         : s,
     );
 
-  // Puts a saved scene in the studio. A scene from a sheet keeps the voice
-  // and FigJam board in use (they're shared across the sheet's scenes).
+  // Puts a saved scene in the studio, with its own voice. A scene from a sheet
+  // shares the voice list and FigJam board with the sheet's other scenes; until
+  // a voice is chosen for it, it keeps the voice in use.
   const openScene = (project: AgentProject) => {
+    voiceChanged.current = false;
     loadFlow(project.flow, 'design');
     // Pick its conversation up where it was left, at the starting point it was on.
     showConversation(project.id, project.flow, '');
@@ -1103,6 +1136,7 @@ export default function AgentStudioPage() {
               voiceExpressive: voice.expressive ?? false,
               voiceId: voice.voices[voice.activeVoice]?.voiceId ?? '',
             }),
+            ...(shared && project.voice && sceneVoiceIn(s, project.voice)),
             // Only a project that has music saved with it plays any.
             musicTrack: music && { name: music.name, key: music.key },
             ...(music && { musicVolume: music.volume, musicDip: music.dip }),
@@ -1241,9 +1275,9 @@ export default function AgentStudioPage() {
     for (const sc of data.scenes)
       updateMediaLinks((links) => followRewording(links, { sheetId: sheet.sheetId, number: sc.number }, sc.mediaActions) ?? links);
     const same = (a: string | undefined, b: string | undefined) => (a ?? '').trim() === (b ?? '').trim();
-    const now = [saved.projectName, saved.brief, flow.knowledge, flow.saveInfo, flow.cannotUse];
-    const imported = [sheet.importedName, sheet.importedBrief, sheet.importedKnowledge, sheet.importedSaveInfo, sheet.importedCannotUse];
-    const fromSheet = [scene.name, scene.description, scene.knowledge, scene.saveInfo, scene.cannotUse];
+    const now = [saved.projectName, saved.brief, flow.knowledge, flow.saveInfo, flow.cannotUse, flow.scenePersona];
+    const imported = [sheet.importedName, sheet.importedBrief, sheet.importedKnowledge, sheet.importedSaveInfo, sheet.importedCannotUse, sheet.importedPersona];
+    const fromSheet = [scene.name, scene.description, scene.knowledge, scene.saveInfo, scene.cannotUse, scene.persona];
     const editedHere = now.some((v, i) => imported[i] !== undefined && !same(v, imported[i]));
     const differs = now.some((v, i) => !same(v, fromSheet[i]));
     if (
@@ -1256,7 +1290,7 @@ export default function AgentStudioPage() {
     // The stored scene takes the sheet's version as its new baseline, so it doesn't count as edited.
     const stored = await getProject(saved.projectId);
     const updated = stored ? await applySheetScene(stored, scene) : null;
-    const nextFlow: AgentFlow = { ...flow, knowledge: scene.knowledge, saveInfo: scene.saveInfo, cannotUse: scene.cannotUse, canUse: '' };
+    const nextFlow: AgentFlow = { ...flow, knowledge: scene.knowledge, saveInfo: scene.saveInfo, cannotUse: scene.cannotUse, scenePersona: scene.persona, canUse: '' };
     setSaved((s) =>
       s
         ? {
@@ -2307,6 +2341,7 @@ export default function AgentStudioPage() {
                   })
                 }
                 onCannotUseChange={(cannotUse) => setFlow({ ...flow, cannotUse })}
+                onScenePersonaChange={(scenePersona) => setFlow({ ...flow, scenePersona })}
                 memory={{
                   patientName: activePatient?.name ?? null,
                   available: memoryCheck?.key === memoryKey ? memoryCheck.result.allowed : [],
@@ -2459,9 +2494,15 @@ export default function AgentStudioPage() {
                   settings={saved.voiceSettings ?? DEFAULT_VOICE_SETTINGS}
                   voices={saved.voices}
                   activeVoice={saved.activeVoice}
-                  onSettingsChange={(voiceSettings) => setSaved({ ...saved, voiceSettings })}
+                  onSettingsChange={(voiceSettings) => {
+                    voiceChanged.current = true;
+                    setSaved({ ...saved, voiceSettings });
+                  }}
                   expressive={saved.voiceExpressive}
-                  onExpressiveChange={(voiceExpressive) => setSaved({ ...saved, voiceExpressive })}
+                  onExpressiveChange={(voiceExpressive) => {
+                    voiceChanged.current = true;
+                    setSaved({ ...saved, voiceExpressive });
+                  }}
                   spokenReplies={voiceOn}
                   onSpokenRepliesChange={setVoiceOn}
                   pauseSeconds={saved.pauseSeconds}
@@ -2469,6 +2510,7 @@ export default function AgentStudioPage() {
                   interruptByVoice={saved.interruptByVoice}
                   onInterruptByVoiceChange={(interruptByVoice) => setSaved({ ...saved, interruptByVoice })}
                   onVoicesChange={(voices, activeVoice) => {
+                    voiceChanged.current = true;
                     // Switching to a voice with saved settings moves the sliders (and
                     // regular/expressive) to them.
                     const switchedTo = activeVoice !== saved.activeVoice ? voices[activeVoice] : undefined;

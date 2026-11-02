@@ -110,6 +110,12 @@ export type AgentFlow = {
    */
   cannotUse?: string;
   /**
+   * The persona the student wrote for this scene (row 10 of the sheet). The
+   * agent uses it word for word in place of `persona`, which Claude writes.
+   * Kept like `knowledge` when a flow is generated or imported.
+   */
+  scenePersona?: string;
+  /**
    * The exact text this design was generated from (description plus the
    * scene's information rules). With it, the next generation only revises
    * what the changes in that text call for, instead of redesigning — see

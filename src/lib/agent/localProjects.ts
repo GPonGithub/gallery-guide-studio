@@ -3,7 +3,7 @@
 import { run } from '@/lib/browserDb';
 import { currentTeam } from '@/lib/team';
 import { blankStage, emptyFlow } from './flow';
-import type { AgentProject } from './projectStore';
+import type { AgentProject, ProjectVoice } from './projectStore';
 import { compareSceneNumbers, type SheetScene } from './sheetScenes';
 
 /**
@@ -305,6 +305,7 @@ export async function importSheetScenes(sheetId: string, gid: string, scenes: Sh
           knowledge: scene.knowledge,
           saveInfo: scene.saveInfo,
           cannotUse: scene.cannotUse,
+          scenePersona: scene.persona,
         },
         brief: scene.description,
         generatedBrief: null,
@@ -335,7 +336,8 @@ export async function importSheetScenes(sheetId: string, gid: string, scenes: Sh
       (source.importedSaveInfo ?? null) !== scene.saveInfo ||
       // The sheet no longer has a "can use" row: text from an older import goes.
       Boolean(source.importedSceneUse) ||
-      (source.importedCannotUse ?? null) !== scene.cannotUse;
+      (source.importedCannotUse ?? null) !== scene.cannotUse ||
+      (source.importedPersona ?? '') !== scene.persona;
     if (placeChanged && (!sheetChanged || editedSinceImport(existing))) await putProject(placed);
     if (!sheetChanged) {
       result.unchanged.push(placed);
@@ -363,6 +365,7 @@ function baselineOf(scene: SheetScene) {
     importedSceneUse: '',
     importedCannotUse: scene.cannotUse,
     importedCanUse: undefined,
+    importedPersona: scene.persona,
   };
 }
 
@@ -376,7 +379,8 @@ function editedSinceImport(project: AgentProject): boolean {
     differs(project.flow.knowledge, s.importedKnowledge ?? s.importedCanUse) ||
     differs(project.flow.saveInfo, s.importedSaveInfo) ||
     differs(project.flow.canUse, s.importedSceneUse) ||
-    differs(project.flow.cannotUse, s.importedCannotUse)
+    differs(project.flow.cannotUse, s.importedCannotUse) ||
+    differs(project.flow.scenePersona, s.importedPersona)
   );
 }
 
@@ -393,6 +397,7 @@ export async function applySheetScene(project: AgentProject, scene: SheetScene):
       saveInfo: scene.saveInfo,
       canUse: '',
       cannotUse: scene.cannotUse,
+      scenePersona: scene.persona,
     },
     sheet: { ...source, ...baselineOf(scene) },
     updatedAt: Date.now(),
@@ -425,7 +430,8 @@ export async function refreshOtherSheetScenes(
       s.importedBrief !== scene.description ||
       (s.importedKnowledge ?? s.importedCanUse ?? '') !== scene.knowledge ||
       (s.importedSaveInfo ?? '') !== scene.saveInfo ||
-      (s.importedCannotUse ?? '') !== scene.cannotUse;
+      (s.importedCannotUse ?? '') !== scene.cannotUse ||
+      (s.importedPersona ?? '') !== scene.persona;
     if (!changed) continue;
     if (editedSinceImport(project)) {
       result.keptEdits++;
@@ -451,6 +457,12 @@ export async function setArchived(id: string, archived: boolean): Promise<void> 
   const project = await getProject(id);
   if (!project) return;
   await putProject({ ...project, archived, order: archived ? project.order : await nextOrder() });
+}
+
+/** Keeps a scene's voice as it is now (without touching anything else about it). */
+export async function saveSceneVoice(id: string, voice: ProjectVoice): Promise<void> {
+  const project = await getProject(id);
+  if (project) await putProject({ ...project, voice });
 }
 
 /** Records that a scene's current flow is on FigJam (without touching anything else about it). */

@@ -290,7 +290,14 @@ export function MasterEditor({ flow, onChange }: { flow: AgentFlow; onChange: (p
   const slotNames = [...new Set(flow.stages.flatMap((s) => s.collect.map((c) => c.name)).filter(Boolean))];
   return (
     <div className="flex flex-col gap-4">
-      <Field label="Persona" hint="Who the agent is and how it sounds — applies everywhere.">
+      <Field
+        label="Persona"
+        hint={
+          flow.scenePersona?.trim()
+            ? 'Not in use: this scene has its own persona (section 3), which comes first.'
+            : 'Who the agent is and how it sounds — applies everywhere.'
+        }
+      >
         <textarea value={flow.persona} onChange={(e) => onChange({ persona: e.target.value })} className={textarea} />
       </Field>
       <Field label="Rules" hint="Apply in every stage. One per line works well.">

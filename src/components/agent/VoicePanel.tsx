@@ -9,11 +9,16 @@ import { DropdownArrow } from './DropdownArrow';
 // The ElevenLabs voice controls, in a panel that pops open from the chat
 // toolbar: up to ten saved voices (each testable with the normal and the
 // expressive model), which one the agent uses, and the settings sliders.
-// Each voice can keep its own settings ("Save settings"); choosing a voice
-// moves the sliders to what was saved for it. Changes apply to the very
-// next thing the agent says.
+// Each voice keeps its own settings: changes to the voice in use, and testing
+// any voice, save by themselves, and its Save settings button flashes green to
+// say so. Choosing a voice moves the sliders to what was saved for it. Changes
+// apply to the very next thing the agent says.
 
 export const MAX_VOICES = 10;
+/** How long the settings must sit still before they're saved, so one slider drag saves (and flashes) once. */
+const AUTOSAVE_DELAY_MS = 400;
+/** How long the Save settings button stays green after a save. */
+const SAVED_FLASH_MS = 1200;
 /** ElevenLabs' public "Rachel" voice — what an empty voice ID falls back to. */
 const DEFAULT_VOICE_NAME = 'Rachel (ElevenLabs default)';
 
@@ -49,7 +54,9 @@ export type VoiceCheck =
 const smallButton =
   'border-2 border-ink bg-paper px-2 py-1 font-label text-[10px] uppercase tracking-wide text-ink transition-colors duration-100 ' +
   'hover:bg-ink hover:text-paper disabled:cursor-not-allowed disabled:border-hair disabled:text-muted-ink disabled:hover:bg-paper';
-// The Test button for the way a voice is set to speak (regular or expressive).
+// Save settings, for a moment after a save.
+const savedFlash = '!border-[#15803d] !bg-[#15803d] !text-white';
+// The Normal or Expressive button for the way a voice is set to speak (regular or expressive).
 const smallButtonChosen =
   'border-2 border-ink bg-ink px-2 py-1 font-label text-[10px] uppercase tracking-wide text-paper transition-colors duration-100 ' +
   'hover:bg-paper hover:text-ink disabled:cursor-not-allowed disabled:opacity-60';
@@ -108,8 +115,11 @@ export function VoicePanel({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [account, setAccount] = useState<AccountVoices | null>(null);
   const [loadingAccount, setLoadingAccount] = useState(false);
-  // Index of the voice whose settings were just saved (for a moment's "Saved ✓").
+  // Index of the voice whose settings were just saved (its button shows a moment's green "SAVED").
   const [justSaved, setJustSaved] = useState<number | null>(null);
+  const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The voice in use has changes waiting for the autosave below.
+  const [autosavePending, setAutosavePending] = useState(false);
   // Which voices are unfolded to show their details (all folded by default).
   const [unfolded, setUnfolded] = useState<Set<number>>(new Set());
   const toggleFold = (index: number) =>
@@ -159,6 +169,7 @@ export function VoicePanel({
     );
 
   const removeVoice = (index: number) => {
+    setAutosavePending(false);
     const next = voices.filter((_, i) => i !== index);
     // Keep the same voice selected if it survives; otherwise fall back to the first.
     const nextActive = index === activeVoice ? 0 : index < activeVoice ? activeVoice - 1 : activeVoice;
@@ -170,19 +181,63 @@ export function VoicePanel({
 
   // Regular or expressive, as last tested, for voices other than the one in
   // use (the one in use changes straight away, through onExpressiveChange).
+  // Testing a voice also saves it. A voice not in use keeps its own settings;
+  // one without any takes the sliders, since that's what the test played.
   const [modeChoice, setModeChoice] = useState<Record<number, boolean>>({});
   const modeFor = (index: number) =>
     index === activeVoice ? expressive : (modeChoice[index] ?? Boolean(voices[index]?.expressive));
   const chooseMode = (index: number, mode: boolean) => {
-    if (index === activeVoice) onExpressiveChange(mode);
-    else setModeChoice((current) => ({ ...current, [index]: mode }));
+    if (index === activeVoice) {
+      onExpressiveChange(mode);
+      setAutosavePending(true);
+    } else {
+      setModeChoice((current) => ({ ...current, [index]: mode }));
+      updateVoice(index, { settings: voices[index]?.settings ?? { ...settings }, expressive: mode });
+      flashSaved(index);
+    }
+  };
+
+  const flashSaved = (index: number) => {
+    setJustSaved(index);
+    if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current);
+    savedFlashTimer.current = setTimeout(() => setJustSaved(null), SAVED_FLASH_MS);
   };
 
   // Keeps the sliders, and regular/expressive, as they are now for this voice.
   const saveSettings = (index: number) => {
     updateVoice(index, { settings: { ...settings }, expressive: modeFor(index) });
-    setJustSaved(index);
-    setTimeout(() => setJustSaved((current) => (current === index ? null : current)), 1500);
+    flashSaved(index);
+  };
+
+  const changeSettings = (next: VoiceSettings) => {
+    onSettingsChange(next);
+    setAutosavePending(true);
+  };
+
+  // The newest save, for the timer below: the parent's callbacks close over its
+  // latest state, so an older one would undo anything else changed meanwhile.
+  const autosave = useRef(() => {});
+  useEffect(() => {
+    autosave.current = () => {
+      setAutosavePending(false);
+      saveSettings(activeVoice);
+    };
+  });
+  useEffect(() => {
+    if (!autosavePending) return;
+    const timer = setTimeout(() => autosave.current(), AUTOSAVE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [autosavePending, settings, expressive]);
+
+  // Switching voices moves the sliders, so a waiting autosave goes in first.
+  const switchVoice = (index: number) => {
+    setAutosavePending(false);
+    onVoicesChange(
+      autosavePending
+        ? voices.map((v, i) => (i === activeVoice ? { ...v, settings: { ...settings }, expressive } : v))
+        : voices,
+      index,
+    );
   };
 
   // A voice is tested with the sliders if it's the one in use (so you can
@@ -267,12 +322,13 @@ export function VoicePanel({
 
           <section className="flex flex-col gap-2" data-tour="voice-list">
             <p className={fieldLabel}>
-              Voices ({voices.length} of {MAX_VOICES}) · the agent uses the selected one
+              Voices ({voices.length} of {MAX_VOICES}) · this scene uses the selected one
             </p>
             {voices.map((voice, i) => {
               const selected = i === activeVoice;
               const unsaved =
                 selected &&
+                !autosavePending &&
                 voice.settings !== undefined &&
                 (!sameSettings(voice.settings, settings) || Boolean(voice.expressive) !== expressive);
               const mode = modeFor(i);
@@ -285,7 +341,7 @@ export function VoicePanel({
                       type="radio"
                       name="active-voice"
                       checked={selected}
-                      onChange={() => onVoicesChange(voices, i)}
+                      onChange={() => switchVoice(i)}
                       className="accent-ink"
                       aria-label={`Use ${label}`}
                     />
@@ -377,9 +433,9 @@ export function VoicePanel({
                           disabled={testing !== null}
                           className={mode ? smallButton : smallButtonChosen}
                           aria-pressed={!mode}
-                          title="Hear the regular voice — and set this voice to speak that way"
+                          title="Hear the regular voice — and save this voice speaking that way"
                         >
-                          {testing === `${i}-normal` ? 'Playing…' : '🔊 Test'}
+                          {testing === `${i}-normal` ? 'Playing…' : '🔊 Normal'}
                         </button>
                         <button
                           onClick={() => {
@@ -389,31 +445,31 @@ export function VoicePanel({
                           disabled={testing !== null}
                           className={mode ? smallButtonChosen : smallButton}
                           aria-pressed={mode}
-                          title="Hear the expressive voice — it performs [laughs], [whispers]… — and set this voice to speak that way"
+                          title="Hear the expressive voice — it performs [laughs], [whispers]… — and save this voice speaking that way"
                         >
-                          {testing === `${i}-expressive` ? 'Playing…' : '✦ Test expressive'}
+                          {testing === `${i}-expressive` ? 'Playing…' : '✦ Expressive'}
                         </button>
                         <button
                           onClick={() => saveSettings(i)}
-                          className={smallButton}
+                          className={`${smallButton} ${justSaved === i ? savedFlash : ''}`}
                           data-tour={selected ? 'voice-save' : undefined}
                           title={
                             selected
-                              ? 'Keep the sliders, and regular or expressive, as they are now for this voice'
+                              ? 'Changes to this voice, and testing it, save by themselves; this button flashes green when they have'
                               : 'Save the sliders as they are now (they show the voice in use), and regular or expressive, to this voice'
                           }
                         >
-                          {justSaved === i ? 'Saved ✓' : 'Save settings'}
+                          {justSaved === i ? 'SAVED' : 'Save settings'}
                         </button>
                         {!selected && (
-                          <button onClick={() => onVoicesChange(voices, i)} className={`ml-auto ${smallButton}`}>
+                          <button onClick={() => switchVoice(i)} className={`ml-auto ${smallButton}`}>
                             Use this voice
                           </button>
                         )}
                       </div>
                       <span className="font-body text-[11px] text-muted-ink">
-                        Speaks {mode ? 'expressively — performs [laughs], [whispers]…' : 'with the regular voice'}. Test either
-                        one to choose.
+                        Speaks {mode ? 'expressively — performs [laughs], [whispers]…' : 'with the regular voice'}. Click either
+                        one to hear it and choose.
                       </span>
                       <span className={`font-body text-[11px] ${unsaved ? 'text-[#b45309]' : 'text-muted-ink'}`}>
                         {voice.settings
@@ -456,7 +512,7 @@ export function VoicePanel({
             <div className="flex items-center justify-between">
               <p className={fieldLabel}>Settings · {active?.name.trim() || `Voice ${activeVoice + 1}`}</p>
               <button
-                onClick={() => onSettingsChange({ ...DEFAULT_VOICE_SETTINGS })}
+                onClick={() => changeSettings({ ...DEFAULT_VOICE_SETTINGS })}
                 className="font-label text-[10px] uppercase tracking-widest text-muted-ink hover:text-ink hover:underline"
                 title="Back to ElevenLabs' own defaults"
               >
@@ -475,7 +531,7 @@ export function VoicePanel({
                   max={max}
                   step={step}
                   value={settings[key]}
-                  onChange={(e) => onSettingsChange({ ...settings, [key]: Number(e.target.value) })}
+                  onChange={(e) => changeSettings({ ...settings, [key]: Number(e.target.value) })}
                   className="w-full cursor-pointer accent-ink"
                 />
                 <span className="font-body text-xs leading-snug text-muted-ink">{hint}</span>
@@ -485,7 +541,7 @@ export function VoicePanel({
               <input
                 type="checkbox"
                 checked={settings.useSpeakerBoost}
-                onChange={(e) => onSettingsChange({ ...settings, useSpeakerBoost: e.target.checked })}
+                onChange={(e) => changeSettings({ ...settings, useSpeakerBoost: e.target.checked })}
                 className="accent-ink"
               />
               Speaker boost

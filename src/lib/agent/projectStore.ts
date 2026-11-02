@@ -39,6 +39,8 @@ export type SheetSource = {
   importedSaveInfo?: string;
   importedSceneUse?: string;
   importedCannotUse?: string;
+  /** Row 10 as last imported (missing on scenes imported before it was read). */
+  importedPersona?: string;
   /** The knowledge base under its earlier name (scenes imported when row 4 was called "can use"). */
   importedCanUse?: string;
 };

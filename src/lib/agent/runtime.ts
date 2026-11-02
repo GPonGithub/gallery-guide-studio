@@ -115,22 +115,28 @@ export type Analysis = {
 /**
  * The analysis answers in a few short plain lines rather than JSON — e.g.
  * "SET patient_name = Graham" / "EXIT S2" / "GOAL MET" — because every word
- * it writes is time the caller spends waiting. Unknown lines are ignored.
+ * it writes is time the caller spends waiting. Unknown lines are ignored. It
+ * sometimes copies an exit from its list instead ("S1: → stage 2A"): one such
+ * line counts as that exit; several are just the list, and don't.
  */
 export function parseAnalysis(text: string): Analysis {
   const analysis: Analysis = { slots: [], saves: [], exit: null, goalMet: false, offTopic: false };
   const unquote = (v: string) => v.trim().replace(/^["']|["']$/g, '');
+  const copied = new Set<string>();
   for (const raw of text.split('\n')) {
-    const line = raw.trim().replace(/^[-*•]\s*/, '');
+    const line = raw.trim().replace(/^[-*•`\s]+/, '').replace(/[*`\s]+$/, '');
     const set = /^SET\s+([\w.-]+)\s*[=:]\s*(.+)$/i.exec(line);
     const save = /^SAVE\s+(.+?)\s*[=:]\s*(.+)$/i.exec(line);
-    const exit = /^EXIT\s+([SG]\d+)\b/i.exec(line);
+    const exit = /^EXIT\b[\s:=→-]*([SG]\d+)\b/i.exec(line);
+    const copiedExit = /^([SG]\d+)\b/i.exec(line);
     if (set) analysis.slots.push({ name: set[1], value: unquote(set[2]) });
     else if (save) analysis.saves.push({ label: unquote(save[1]).toLowerCase(), value: unquote(save[2]) });
     else if (exit) analysis.exit ??= { id: exit[1].toUpperCase() };
+    else if (copiedExit) copied.add(copiedExit[1].toUpperCase());
     else if (/^GOAL\s+MET\b/i.test(line)) analysis.goalMet = true;
     else if (/^OFF[\s-]?TOPIC\b/i.test(line)) analysis.offTopic = true;
   }
+  if (!analysis.exit && copied.size === 1) analysis.exit = { id: [...copied][0] };
   return analysis;
 }
 
@@ -178,7 +184,8 @@ async function analyse(
       'actually said or clearly confirmed, never guesses; a vague answer ("whenever", "not sure") is not a value. If ' +
       'they correct or change something already recorded ("sorry, it\'s actually…"), SET it again with the new value.\n' +
       "EXIT <id>              if their message clearly matches an exit's condition (never one marked \"once the goal " +
-      'is met" — those happen automatically).\n' +
+      'is met" — those happen automatically). Write the word EXIT and just the id, e.g. EXIT S1; never copy the line ' +
+      'from the list of exits.\n' +
       "GOAL MET               only if this stage's goal is now fully achieved (including anything the agent must " +
       'confirm).\n' +
       "OFF TOPIC              if the message has nothing to do with this stage's goal and matches no exit (asking " +
@@ -377,7 +384,8 @@ class Turn {
       this.state.completedStages.push(stage.code);
       this.events.push({ type: 'complete', stage: stage.code });
       this.fireStageCues(stage, 'complete');
-      const next = stage.exits.find((e) => e.onComplete);
+      // No automatic exit, but only one way on: finishing the goal takes it, or the conversation would stall here.
+      const next = stage.exits.find((e) => e.onComplete) ?? (stage.exits.length === 1 ? stage.exits[0] : undefined);
       if (next) this.moveTo(next, 'stage goal met');
     }
   }
@@ -412,8 +420,13 @@ function responderSystem(
   // first and is cached by Anthropic, so a long knowledge base isn't re-read
   // from scratch on every turn. (Anthropic only caches prompts above about
   // a thousand words; shorter ones are simply sent as normal.)
+  const scenePersona = flow.scenePersona?.trim();
   const fixed = [
-    flow.persona.trim() && `WHO YOU ARE:\n${flow.persona.trim()}`,
+    scenePersona
+      ? `WHO YOU ARE:\n${scenePersona}\n\nStay in this character for the whole conversation. Let it shape your word ` +
+        'choice, how you phrase things, your personality and your attitude; where the instructions mention a tone, this ' +
+        "character's way of talking comes first. It doesn't change this scene's goals, the facts you can rely on or the rules."
+      : flow.persona.trim() && `WHO YOU ARE:\n${flow.persona.trim()}`,
     flow.rules.trim() && `RULES THAT ALWAYS APPLY:\n${flow.rules.trim()}`,
     flow.knowledge?.trim() &&
       `REFERENCE INFORMATION — the facts you can rely on:\n${flow.knowledge.trim()}\n\n` +
@@ -472,6 +485,13 @@ function responderSystem(
         'reply; no other stage directions. To laugh, use a cue — [laughs], [chuckles], [giggles], or one in character ' +
         'such as [evil laugh] — never write laughter out as words ("ha ha", "mwahaha"): the voice performs a cue as a ' +
         'real laugh but reads written laughter out letter by letter.',
+    // Said again here because what's written last counts for most; at the top it loses to the stage's own wording.
+    scenePersona &&
+      `HOW YOU SOUND, IN EVERY REPLY:\n${scenePersona}\nSay every sentence the way this character really would, in their ` +
+        'words and rhythm, so anyone could tell who is talking from a single line. The goal and instructions above say ' +
+        'what to get done, not how to phrase it: put them in your own words, in character, except a line they give you ' +
+        'to say exactly. Never carry on in a different style because earlier replies had one. All of this changes only ' +
+        'how you talk: still do every step, and keep every fact and rule exactly right.',
     'EVERYTHING YOU WRITE IS SPOKEN ALOUD, exactly as written. Never write stage directions, actions or sound ' +
       'effects — nothing like *chuckles*, *rubs hands together*, *a door creaks* or (laughs) — and never use ' +
       'asterisks or emoji. Put the character into the words themselves: "Ah, Graham — a delightfully haunting name!"' +

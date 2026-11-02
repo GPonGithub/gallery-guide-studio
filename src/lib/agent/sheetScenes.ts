@@ -16,16 +16,21 @@
  *   row 8  Media actions in this scene — one per line (e.g. "Show picture of
  *          Maya when the nurse asks to see it"); media is connected to them in
  *          the Media Library
+ *   row 9  Media in this scene — for the student; the app doesn't read it
+ *   row 10 Persona — the character who speaks in this scene, in the student's
+ *          own words. Each scene has its own: the "All scenes" column's is ignored
  *
  * Whatever the "All scenes" column says in rows 3–6 and 8 is given to every scene,
- * ahead of the scene's own. A column with nothing in rows 2–6 is skipped.
+ * ahead of the scene's own. A column with nothing in rows 2–6 is skipped, and
+ * so is anything past the 20th scene column, counting the empty ones: students
+ * can keep notes there.
  * Scene numbers are kept exactly as the sheet gives them, gaps and all.
  */
 
 export const FIRST_SCENE_COLUMN = 'B';
 export const LAST_SCENE_COLUMN = 'Z';
 const MAX_SCENES = 20;
-const ROW = { number: 1, name: 2, describe: 3, knowledge: 4, save: 5, cannotUse: 6, mediaActions: 8 } as const;
+const ROW = { number: 1, name: 2, describe: 3, knowledge: 4, save: 5, cannotUse: 6, mediaActions: 8, persona: 10 } as const;
 const SHARED_COLUMN = /\ball\s*scenes\b/i;
 
 /** One scene as read from the sheet. */
@@ -45,6 +50,8 @@ export type SheetScene = {
   cannotUse: string;
   /** Media actions (row 8), one per line — the "All scenes" ones first. */
   mediaActions: string[];
+  /** Persona (row 10): this scene's own, word for word. */
+  persona: string;
 };
 
 /** A cell's lines, each one action — blank lines and leading bullets ("-", "•", "1.") dropped. */
@@ -114,18 +121,19 @@ export function mapSheetScenes(grid: string[][]): SheetScene[] {
   const shared = new Map<number, string[]>(contentRows.map((r) => [r, []]));
   const sharedActions: string[] = [];
   const sceneColumns: number[] = [];
+  let place = 0;
   for (let col = first; col <= last; col++) {
     if (SHARED_COLUMN.test(cell(ROW.number, col))) {
       for (const r of contentRows) if (cell(r, col)) shared.get(r)!.push(cell(r, col));
       sharedActions.push(...actionLines(cell(ROW.mediaActions, col)));
-    } else if ([ROW.name, ...contentRows].some((r) => cell(r, col))) {
+    } else if (++place <= MAX_SCENES && [ROW.name, ...contentRows].some((r) => cell(r, col))) {
       sceneColumns.push(col);
     }
   }
   const withShared = (row: (typeof contentRows)[number], col: number) =>
     [...shared.get(row)!, cell(row, col)].filter(Boolean).join('\n\n');
 
-  return sceneColumns.slice(0, MAX_SCENES).map((col, i) => {
+  return sceneColumns.map((col, i) => {
     // "Scene 4", "SCENE 12B", "4" → "4", "12B"; anything else → its place among the scenes.
     const number = /\d+[A-Za-z]?/.exec(cell(ROW.number, col))?.[0] ?? String(i + 1);
     return {
@@ -137,6 +145,7 @@ export function mapSheetScenes(grid: string[][]): SheetScene[] {
       saveInfo: withShared(ROW.save, col),
       cannotUse: withShared(ROW.cannotUse, col),
       mediaActions: [...sharedActions, ...actionLines(cell(ROW.mediaActions, col))],
+      persona: cell(ROW.persona, col),
     };
   });
 }
