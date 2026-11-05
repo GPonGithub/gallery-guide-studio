@@ -20,7 +20,51 @@ import {
  * remembers it; on a later visit it asks permission again before reading.
  * Nothing is uploaded: the app only lists the files, and opens one when the
  * test window shows it.
+ *
+ * Every scene has its own folder and its own library (kept under
+ * `folder:<scene>` and `library:<scene>`) — even two scenes that chose the
+ * same folder keep separate lists. A scene starts with none until one is chosen.
  */
+
+/** A scene's key for its media: its sheet and number, as in "1Lfn…#4". */
+export const mediaSceneKey = (scene: { sheetId: string; number: string }) => `${scene.sheetId}#${scene.number}`;
+
+// The scene whose media is in use: the open one — or, while the media tour runs, its demo scene.
+let openScene: string | null = null;
+let demoScene: string | null = null;
+const sceneListeners = new Set<() => void>();
+/** The media scene in use now (null: the open scene isn't from a sheet, so has no media). */
+export const currentMediaScene = () => demoScene ?? openScene;
+/** Set by the page whenever another scene is opened. */
+export function setOpenMediaScene(key: string | null) {
+  if (key === openScene) return;
+  openScene = key;
+  sceneListeners.forEach((l) => l());
+}
+/** Set by the media tour (mediaDemo.ts) while its demo scene is in use. */
+export function setDemoMediaScene(key: string | null) {
+  if (key === demoScene) return;
+  demoScene = key;
+  sceneListeners.forEach((l) => l());
+}
+/** Calls `listener` whenever the media scene in use changes (another scene opened, the tour's demo). */
+export function onMediaSceneChange(listener: () => void) {
+  sceneListeners.add(listener);
+}
+export const useMediaScene = () =>
+  useSyncExternalStore(
+    (l) => {
+      sceneListeners.add(l);
+      return () => {
+        sceneListeners.delete(l);
+      };
+    },
+    currentMediaScene,
+    () => null,
+  );
+
+const folderKey = (scene: string) => `folder:${scene}`;
+const libraryKey = (scene: string) => `library:${scene}`;
 
 // The parts of the File System Access API this uses (not all in TypeScript's own types yet).
 type Permission = 'granted' | 'denied' | 'prompt';
@@ -39,13 +83,14 @@ export type MediaFolder = DirectoryHandle;
 export const canPickFolder = () =>
   typeof window !== 'undefined' && typeof (window as PickerWindow).showDirectoryPicker === 'function';
 
-/** Asks which folder holds the media, and remembers it. Null if the person cancels. */
-export async function pickMediaFolder(): Promise<MediaFolder | null> {
+/** Asks which folder holds a scene's media, and remembers it for that scene. Null if the person cancels. */
+export async function pickMediaFolder(scene = currentMediaScene()): Promise<MediaFolder | null> {
+  if (!scene) throw new Error('Open a scene from your Google Sheet first — each scene has its own media folder.');
   const picker = (window as PickerWindow).showDirectoryPicker;
   if (!picker) throw new Error('This browser can’t open a folder — use Chrome or Edge.');
   try {
     const folder = await picker.call(window, { id: 'chatbot-designer-media', mode: 'read' });
-    await run('media', 'readwrite', (s) => s.put(folder, 'folder'));
+    await run('media', 'readwrite', (s) => s.put(folder, folderKey(scene)));
     return folder;
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') return null;
@@ -53,10 +98,11 @@ export async function pickMediaFolder(): Promise<MediaFolder | null> {
   }
 }
 
-/** The folder chosen before, if any (its permission may need asking for again — see `allowed`). */
-export async function savedMediaFolder(): Promise<MediaFolder | null> {
+/** A scene's folder, if one was chosen (its permission may need asking for again — see `allowed`). */
+export async function savedMediaFolder(scene = currentMediaScene()): Promise<MediaFolder | null> {
+  if (!scene) return null;
   try {
-    return (await run<MediaFolder | undefined>('media', 'readonly', (s) => s.get('folder'))) ?? null;
+    return (await run<MediaFolder | undefined>('media', 'readonly', (s) => s.get(folderKey(scene)))) ?? null;
   } catch {
     return null;
   }
@@ -97,7 +143,26 @@ export async function openMediaFile(folder: MediaFolder, path: string): Promise<
 /** The media list as last refreshed, kept in this browser (for when the sheet can't be reached). */
 export type StoredLibrary = { folderName: string; assets: MediaAsset[]; refreshedAt: number };
 
-export async function loadLibrary(): Promise<StoredLibrary | null> {
+/** A scene's media list. */
+export async function loadLibrary(scene = currentMediaScene()): Promise<StoredLibrary | null> {
+  if (!scene) return null;
+  try {
+    return (await run<StoredLibrary | undefined>('media', 'readonly', (s) => s.get(libraryKey(scene)))) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveLibrary(library: StoredLibrary, scene = currentMediaScene()): Promise<void> {
+  if (!scene) return;
+  await run('media', 'readwrite', (s) => s.put(library, libraryKey(scene)));
+}
+
+/**
+ * The single library from before each scene had its own (kept, never changed): a scene choosing the
+ * same folder starts from it, so the IDs — and the connections made with them — stay the same.
+ */
+export async function legacyLibrary(): Promise<StoredLibrary | null> {
   try {
     return (await run<StoredLibrary | undefined>('media', 'readonly', (s) => s.get('library'))) ?? null;
   } catch {
@@ -105,8 +170,16 @@ export async function loadLibrary(): Promise<StoredLibrary | null> {
   }
 }
 
-export async function saveLibrary(library: StoredLibrary): Promise<void> {
-  await run('media', 'readwrite', (s) => s.put(library, 'library'));
+/** Forgets a scene's folder and library (the tour's demo scene, when it ends). */
+export async function forgetSceneMedia(scene: string): Promise<void> {
+  await run('media', 'readwrite', (s) => s.delete(folderKey(scene)));
+  await run('media', 'readwrite', (s) => s.delete(libraryKey(scene)));
+}
+
+/** Puts a folder and library in place for a scene (the tour's demo scene). */
+export async function setSceneMedia(scene: string, folder: MediaFolder, library: StoredLibrary): Promise<void> {
+  await run('media', 'readwrite', (s) => s.put(folder, folderKey(scene)));
+  await saveLibrary(library, scene);
 }
 
 /**

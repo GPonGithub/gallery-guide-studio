@@ -26,6 +26,7 @@ import {
   barsOf,
   loadLibrary,
   loadThumbnail,
+  mediaSceneKey,
   loopOf,
   openMediaFile,
   savedMediaFolder,
@@ -232,14 +233,16 @@ export function MediaTimeline({
   const barItems = mine.map((l) => l.assetId).join('|');
   const [folder, setFolder] = useState<MediaFolder | null>(null);
   const [assets, setAssets] = useState<Map<string, MediaAsset>>(() => new Map());
+  // This scene's own folder and library (every scene has its own — see mediaFolder.ts).
+  const mediaKey = scene ? mediaSceneKey(scene) : null;
   useEffect(() => {
     let gone = false;
-    void savedMediaFolder().then((f) => !gone && setFolder(f));
-    void loadLibrary().then((lib) => !gone && setAssets(new Map((lib?.assets ?? []).map((a) => [a.id, a]))));
+    void savedMediaFolder(mediaKey).then((f) => !gone && setFolder(f));
+    void loadLibrary(mediaKey).then((lib) => !gone && setAssets(new Map((lib?.assets ?? []).map((a) => [a.id, a]))));
     return () => {
       gone = true;
     };
-  }, [folderRevision, barItems]);
+  }, [folderRevision, barItems, mediaKey]);
 
   // The sound tracks: one ♪ row, which its arrow opens into all MAX_SOUND_TRACKS (remembered). Closed,
   // every sound shows on the one row. They're tinted light blue, for audio.

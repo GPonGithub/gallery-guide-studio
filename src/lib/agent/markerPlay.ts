@@ -1,6 +1,6 @@
 'use client';
 
-import { areaOfTrack, barsOf, isMarker, loadLibrary, loadMediaLinks, loopOf, timingOf } from './mediaFolder';
+import { areaOfTrack, barsOf, isMarker, loadLibrary, loadMediaLinks, loopOf, timingOf, mediaSceneKey } from './mediaFolder';
 import { isSoundPlaying, playSound, startLoop, stopSounds, type SceneRef } from './mediaPlayback';
 import { areasShowing, hideVisual, showVisual } from './mediaShow';
 import { onTDConnected } from './touchDesigner';
@@ -54,7 +54,7 @@ export async function markerArrived(
     const i = stages.findIndex((s) => s.code === c);
     return i >= 0 ? i : fallback;
   };
-  const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary()]);
+  const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary(mediaSceneKey(scene))]);
   const assets = new Map((library?.assets ?? []).map((a) => [a.id, a]));
   for (const link of links) {
     if (link.sheetId !== scene.sheetId || link.sceneNumber !== scene.number || !isMarker(link)) continue;

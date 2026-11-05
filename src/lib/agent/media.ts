@@ -107,8 +107,8 @@ export function mergeMedia(
   return { assets, added, missing, returned };
 }
 
-/** A row of the sheet's Media tab, as the Apps Script reads and writes it. */
-export type MediaRow = { id: string; name: string; kind: string; path: string; status: string; added: string };
+/** A row of the sheet's Media tab, as the Apps Script reads and writes it — `scene`: the scene number it belongs to. */
+export type MediaRow = { id: string; name: string; kind: string; path: string; status: string; added: string; scene?: string };
 
 export const toRow = (a: MediaAsset): MediaRow => ({
   id: a.id,

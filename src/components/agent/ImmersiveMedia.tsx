@@ -39,7 +39,9 @@ import { areasOf, areasText, hideVisual, showVisual, useShowing } from '@/lib/ag
 import {
   allowed,
   canPickFolder,
+  legacyLibrary,
   loadLibrary,
+  mediaSceneKey,
   openMediaFile,
   pickMediaFolder,
   savedMediaFolder,
@@ -189,13 +191,24 @@ export function ImmersiveMedia({
     if (sceneKey && actionsText !== null) setSceneActions(sceneKey, actionsText ? actionsText.split('\n') : []);
   }, [sceneKey, actionsText]);
 
+  // Each scene has its own media folder and library: read again whenever another scene opens (or the
+  // tour's demo scene comes and goes). Until they arrive, nothing of the last scene's shows.
+  const mediaKey = sceneSheet ? mediaSceneKey(sceneSheet) : null;
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: the browser's folder support isn't known during SSR
     setPickable(canPickFolder());
-    void savedMediaFolder().then(setFolder);
-    void loadLibrary().then(setLibrary);
-    // Read again whenever the tour swaps them: the demo's while it runs, the student's own after.
-  }, [folderRevision]);
+    setFolder(null);
+    setLibrary(null);
+    setNote(null);
+    setReadable(null);
+    if (!mediaKey) return;
+    let gone = false;
+    void savedMediaFolder(mediaKey).then((f) => !gone && setFolder(f));
+    void loadLibrary(mediaKey).then((l) => !gone && setLibrary(l));
+    return () => {
+      gone = true;
+    };
+  }, [folderRevision, mediaKey]);
 
   // The open scene's media actions, read from row 8 of the sheet each time the Media Library
   // opens, the scene changes, or Connect with Action is clicked — students change them often, so
@@ -300,7 +313,7 @@ export function ImmersiveMedia({
       refreshedAt: library?.refreshedAt ?? Date.now(),
       assets: [...assets, item],
     };
-    await saveLibrary(next);
+    await saveLibrary(next, mediaKey);
     setLibrary(next);
   };
   /** Deletes a text or colour item, and its connections (with their bars) — the room takes it down. */
@@ -309,7 +322,7 @@ export function ImmersiveMedia({
     hideVisual(asset.id);
     updateMediaLinks((all) => all.filter((l) => l.assetId !== asset.id), `Delete ${asset.id}`);
     const next: StoredLibrary = { ...library!, assets: (library?.assets ?? []).filter((a) => a.id !== asset.id) };
-    await saveLibrary(next);
+    await saveLibrary(next, mediaKey);
     setLibrary(next);
   };
   const removeLink = (link: MediaLink) =>
@@ -329,10 +342,14 @@ export function ImmersiveMedia({
 
   const refresh = async (chooseAgain: boolean) => {
     setNote(null);
+    if (!mediaKey || !sceneSheet) {
+      setNote({ text: 'Open a scene from your Google Sheet first — each scene has its own media folder.', problem: true });
+      return;
+    }
     let f = chooseAgain ? null : folder;
     try {
       if (!f) {
-        f = await pickMediaFolder();
+        f = await pickMediaFolder(mediaKey);
         if (!f) return;
         setFolder(f);
       }
@@ -351,6 +368,12 @@ export function ImmersiveMedia({
       // Text and colour items aren't in any folder: they stay through a refresh or a new folder.
       const made = (library?.assets ?? []).filter((a) => isMade(a.kind));
       let existing = chooseAgain && library?.folderName !== f.name ? made : (library?.assets ?? []);
+      // A scene's first list, from the folder the app used before each scene had its own: its IDs carry
+      // over, so connections made with them still work.
+      if (!library?.assets.length) {
+        const old = await legacyLibrary();
+        if (old?.folderName === f.name) existing = old.assets;
+      }
       let sheetNote = '';
       if (sheetConnected) {
         const read = await mediaRequest({
@@ -358,8 +381,9 @@ export function ImmersiveMedia({
           spreadsheetId: sheet!.sheetId,
           action: 'read',
         });
-        if (read.ok && read.media && read.media.length > 0)
-          existing = [...fromRows(read.media).filter((a) => !isMade(a.kind)), ...made];
+        // The Media tab lists every scene's files; this scene's rows are the ones with its number.
+        const mine = (read.media ?? []).filter((r) => String(r.scene ?? '').trim() === sceneSheet.number);
+        if (read.ok && mine.length > 0) existing = [...fromRows(mine).filter((a) => !isMade(a.kind)), ...made];
         else if (!read.ok) sheetNote = read.error ?? 'The sheet couldn’t be read.';
       }
       const merged = mergeMedia(existing, found, new Date().toLocaleDateString('en-CA'));
@@ -368,15 +392,16 @@ export function ImmersiveMedia({
         assets: merged.assets,
         refreshedAt: Date.now(),
       };
-      await saveLibrary(next);
+      await saveLibrary(next, mediaKey);
       setLibrary(next);
       if (sheetConnected && !sheetNote) {
         const write = await mediaRequest({
           scriptUrl,
           spreadsheetId: sheet!.sheetId,
           action: 'write',
-          // The Media tab lists files only.
-          rows: merged.assets.filter((a) => !isMade(a.kind)).map(toRow),
+          // Only this scene's rows are replaced. The Media tab lists files only.
+          scene: sceneSheet.number,
+          rows: merged.assets.filter((a) => !isMade(a.kind)).map((a) => ({ ...toRow(a), scene: sceneSheet.number })),
         });
         if (!write.ok) sheetNote = write.error ?? 'The sheet couldn’t be written.';
       }
@@ -423,9 +448,9 @@ export function ImmersiveMedia({
     <>
       <CollapsiblePanel title="1 · Media folder" tourId="media-1">
         <p className="font-body text-xs italic text-muted-ink">
-          Keep every image, video and sound file in one folder on this computer (subfolders are fine). The app lists
-          them — each with an ID that stays the same — on the sheet&rsquo;s <b>Media</b> tab. The files stay in the
-          folder.
+          Each scene has its own media folder: keep the scene&rsquo;s images, videos and sounds in one folder on this
+          computer (subfolders are fine). The app lists them — each with an ID that stays the same — on the
+          sheet&rsquo;s <b>Media</b> tab, marked with the scene&rsquo;s number. The files stay in the folder.
         </p>
         {!pickable ? (
           <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">
@@ -450,9 +475,14 @@ export function ImmersiveMedia({
         )}
         {/* The app's packages on this computer (ffmpeg among them, for video thumbnails). */}
         <ThumbnailTools />
+        {!sceneSheet && (
+          <p className="font-body text-xs italic text-muted-ink">
+            Open a scene from your Google Sheet to choose its media folder.
+          </p>
+        )}
         {folder && (
           <p className="font-label text-[10px] uppercase tracking-wide text-muted-ink">
-            Media folder: {folder.name}
+            Scene {sceneSheet?.number}&rsquo;s media folder: {folder.name}
             {library?.refreshedAt ? ` · refreshed ${new Date(library.refreshedAt).toLocaleString()}` : ''}
           </p>
         )}

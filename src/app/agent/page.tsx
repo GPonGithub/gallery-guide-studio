@@ -53,6 +53,8 @@ import {
   updateMediaLinks,
   useMediaLinks,
   type MediaLink,
+  mediaSceneKey,
+  setOpenMediaScene,
 } from '@/lib/agent/mediaFolder';
 
 /** A "once" media action an exchange triggered: show (or play) it, or remove (or stop) it. */
@@ -700,6 +702,13 @@ export default function AgentStudioPage() {
   // The number buttons in "Describe the conversation in each scene": one per scene of the
   // sheet in use, in scene-number order. Re-read whenever scenes may have
   // changed (a scene opened or saved, the Scenes dialog closed, an import).
+  // Each scene has its own media folder and library (see mediaFolder.ts): the open one's are in use.
+  const mediaSheetId = saved?.sceneSheet?.sheetId ?? null;
+  const mediaNumber = saved?.sceneSheet?.number ?? null;
+  useEffect(() => {
+    setOpenMediaScene(mediaSheetId && mediaNumber ? mediaSceneKey({ sheetId: mediaSheetId, number: mediaNumber }) : null);
+  }, [mediaSheetId, mediaNumber]);
+
   const activeSheetId = saved?.activeSheetId ?? null;
   const openSceneId = saved?.projectId ?? null;
   useEffect(() => {

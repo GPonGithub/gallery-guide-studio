@@ -2,8 +2,8 @@ import type { TourHelpers, TourStep } from './OnboardingTour';
 import { DEMO_ACTIONS, DEMO_STAGES, beginMediaDemo } from '@/lib/agent/mediaDemo';
 
 // The Adding Immersive Media "Onboard Me" tour. It runs on a demo scene with three demo files
-// (see mediaDemo.ts): the student's own media folder, library and connections are put aside first
-// and come back untouched when the tour ends. Every step is in the 'media-demo' group, so leaving
+// (see mediaDemo.ts): the demo scene has its own media folder and library, so the student's are never
+// touched. Every step is in the 'media-demo' group, so leaving
 // the tour (Next at the end, Close, or reloading) tidies the demo away.
 
 const [PICTURE_ACTION, , DING_ACTION] = DEMO_ACTIONS;
@@ -172,8 +172,8 @@ export const MEDIA_TOUR_STEPS: TourStep[] = [
           then place them in the room.
         </p>
         <p>
-          The tour uses a <b>demo scene</b> and demo files. Your own media folder and connections are put aside and come
-          back exactly as they were when it ends.
+          The tour uses a <b>demo scene</b> with its own demo files. Your own scenes&rsquo; media folders and
+          connections aren&rsquo;t touched.
         </p>
       </>
     ),
@@ -189,8 +189,9 @@ export const MEDIA_TOUR_STEPS: TourStep[] = [
     body: (
       <>
         <p>
-          Keep all your project&rsquo;s images, video and sound in one folder, and choose it here. Each file gets an ID
-          that never changes.
+          Each scene has its <b>own media folder</b>: keep that scene&rsquo;s images, video and sound in one folder,
+          and choose it here while the scene is open. Each file gets an ID that never changes. Switch scenes and the
+          library, timeline and room show that scene&rsquo;s folder.
         </p>
         <p className="text-xs text-muted-ink">
           To copy a folder&rsquo;s full path on a Mac: select it in Finder and press <b>Option + Command + C</b>. If
@@ -302,7 +303,7 @@ export const MEDIA_TOUR_STEPS: TourStep[] = [
     group: GROUP,
     body: (
       <p>
-        The demo is cleared away when you finish, and your own media folder and connections come back. Open{' '}
+        The demo is cleared away when you finish, and the open scene&rsquo;s media is back in use. Open{' '}
         <b>Onboard Me</b> again any time.
       </p>
     ),

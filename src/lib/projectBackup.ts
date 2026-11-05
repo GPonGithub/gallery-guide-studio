@@ -17,9 +17,12 @@ const FORMAT = 'chatbot-designer-project';
 const VERSION = 1;
 /** Settings fields that are API keys: blanked on export, kept from this browser on import. */
 const isKeyField = (name: string) => /apikey$/i.test(name);
-/** Database entries not carried: the folder's permission, video thumbnails, a tour demo's backup. */
+/** Database entries not carried: the folders' permissions (one per scene), video thumbnails, a tour demo's backup. */
 const skipEntry = (store: string, key: IDBValidKey) =>
-  store === 'media' && (key === 'folder' || key === 'demo-backup' || (typeof key === 'string' && key.startsWith('thumb:')));
+  store === 'media' &&
+  (key === 'folder' ||
+    key === 'demo-backup' ||
+    (typeof key === 'string' && (key.startsWith('thumb:') || key.startsWith('folder:'))));
 
 type Encoded = unknown;
 type ProjectFile = {

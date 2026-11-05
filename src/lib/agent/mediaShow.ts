@@ -16,7 +16,7 @@ import {
   loopOf,
   isConnected,
   isMarker,
-  type MediaLink,
+  type MediaLink, mediaSceneKey
 } from './mediaFolder';
 import type { SceneRef } from './mediaPlayback';
 import { syncVisuals } from './touchDesigner';
@@ -71,7 +71,7 @@ export async function everyVisuals(scene: SceneRef | null, when: EveryWhen): Pro
 /** This scene's connections of the given kinds (as Claude read them, or as the student set), to files still in the folder. */
 export async function sceneMedia(scene: SceneRef | null, kinds: ActionKind[]): Promise<PlannedMedia[]> {
   if (!scene) return [];
-  const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary(), readingsReady()]);
+  const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary(mediaSceneKey(scene)), readingsReady()]);
   const assets = new Map((library?.assets ?? []).map((a) => [a.id, a]));
   return links.flatMap((link) => {
     if (link.sheetId !== scene.sheetId || link.sceneNumber !== scene.number) return [];

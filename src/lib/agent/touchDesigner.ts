@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import type { MediaAsset } from './media';
-import { loadLibrary } from './mediaFolder';
+import { loadLibrary, onMediaSceneChange } from './mediaFolder';
 import type { Shown } from './mediaShow';
 
 /**
@@ -176,11 +176,8 @@ export function onTDConnected(listener: () => void) {
   connectedListeners.add(listener);
 }
 
-/** On connecting: hello, the projectors, the media list, a clean room, then what's on now (pictures, video, levels). */
-async function greet() {
-  send({ type: 'hello' });
-  send({ type: 'projectors', action: 'status' });
-  send({ type: 'numbers', action: 'status' });
+/** The open scene's media list (each scene has its own folder): sent on connecting, and when another scene opens. */
+async function sendMediaList() {
   const library = await loadLibrary();
   send({
     type: 'medialist',
@@ -192,6 +189,15 @@ async function greet() {
       status: a.status,
     })),
   });
+}
+if (typeof window !== 'undefined') onMediaSceneChange(() => isOpen() && void sendMediaList());
+
+/** On connecting: hello, the projectors, the media list, a clean room, then what's on now (pictures, video, levels). */
+async function greet() {
+  send({ type: 'hello' });
+  send({ type: 'projectors', action: 'status' });
+  send({ type: 'numbers', action: 'status' });
+  await sendMediaList();
   send({ type: 'clear' });
   sent.clear();
   syncVisuals(current);

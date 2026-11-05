@@ -33,7 +33,9 @@ var SAVED_ROW = 7;
 var ROW_LABEL = /saved information/i;
 var MEDIA_TAB = 'Media';
 // Each column of the Media tab: its heading (for a tab that has none) and how to recognise it.
+// "Scene": the scene number a row belongs to — each scene has its own media folder.
 var MEDIA_FIELDS = [
+  { key: 'scene', title: 'Scene', match: /^\s*scene/i },
   { key: 'id', title: 'ID', match: /^\s*id\b/i },
   { key: 'name', title: 'File name', match: /file\s*name|^\s*name/i },
   { key: 'path', title: 'Path', match: /path/i },
@@ -57,7 +59,7 @@ function doPost(e) {
       return reply({ ok: false, error: 'This script belongs to a different Google Sheet than these scenes.' });
     }
     if (req.action === 'readMedia') return reply({ ok: true, media: readMedia(ss) });
-    if (req.action === 'writeMedia') return reply({ ok: true, written: writeMedia(ss, req.rows || []) });
+    if (req.action === 'writeSceneMedia') return reply({ ok: true, written: writeSceneMedia(ss, String(req.scene || ''), req.rows || []) });
     var sheet = ss.getSheets().filter(function (s) { return String(s.getSheetId()) === String(req.gid); })[0];
     if (!sheet) return reply({ ok: false, error: 'The scenes’ tab wasn’t found in this sheet.' });
     if (!ROW_LABEL.test(sheet.getRange(SAVED_ROW, 1).getDisplayValue())) {
@@ -137,11 +139,15 @@ function readMedia(ss) {
     .filter(function (row) { return row.id !== ''; });
 }
 
-// Replaces the list in the media columns only — anything in other columns stays put.
-function writeMedia(ss, rows) {
+// Replaces one scene's rows: every other scene's stay (rows with no scene, from before each scene
+// had its own media, go). The media columns are rewritten; other columns are left as they are.
+function writeSceneMedia(ss, scene, rows) {
+  if (!scene) throw new Error('No scene number for this media.');
   var tab = ss.getSheetByName(MEDIA_TAB) || ss.insertSheet(MEDIA_TAB);
   var cols = mediaColumns(tab);
-  var list = rows.slice(0, 5000);
+  var others = readMedia(ss).filter(function (r) { return r.scene !== '' && r.scene !== scene; });
+  var mine = rows.map(function (r) { r.scene = scene; return r; });
+  var list = others.concat(mine).slice(0, 5000);
   var last = Math.max(tab.getLastRow(), 2);
   MEDIA_FIELDS.forEach(function (f) {
     tab.getRange(2, cols[f.key], last - 1, 1).clearContent();

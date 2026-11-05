@@ -13,7 +13,7 @@ import {
   readingsReady,
   savedMediaFolder,
   timingOf,
-  type MediaLink,
+  type MediaLink, mediaSceneKey
 } from './mediaFolder';
 
 /**
@@ -36,7 +36,7 @@ export async function soundsFor(scene: SceneRef | null, when: EveryWhen): Promis
 /** The sounds connected to this scene's actions of one kind (as Claude read them, or as the student set). */
 export async function sceneSounds(scene: SceneRef | null, kind: ActionKind): Promise<PlannedSound[]> {
   if (!scene) return [];
-  const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary(), readingsReady()]);
+  const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary(mediaSceneKey(scene)), readingsReady()]);
   const assets = new Map((library?.assets ?? []).map((a) => [a.id, a]));
   return links.flatMap((link) => {
     if (link.sheetId !== scene.sheetId || link.sceneNumber !== scene.number) return [];
