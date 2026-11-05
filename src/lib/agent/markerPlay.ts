@@ -1,8 +1,9 @@
 'use client';
 
+import { useSyncExternalStore } from 'react';
 import { areaOfTrack, barsOf, isMarker, loadLibrary, loadMediaLinks, loopOf, timingOf, mediaSceneKey } from './mediaFolder';
 import { isSoundPlaying, playSound, startLoop, stopSounds, type SceneRef } from './mediaPlayback';
-import { areasShowing, hideVisual, showVisual } from './mediaShow';
+import { areasShowing, hideVisual, placeOf, placesShowing, showVisual } from './mediaShow';
 import { onTDConnected } from './touchDesigner';
 
 /**
@@ -23,10 +24,24 @@ export function forgetMarker() {
 
 let here: { scene: SceneRef | null; stages: { code: string }[]; code: string | null | undefined } | null = null;
 
+const hereListeners = new Set<() => void>();
 /** Where the timeline's marker is now (MediaTimeline keeps this up to date), for replayMarker. */
 export function markerIsAt(scene: SceneRef | null, stages: { code: string }[], code: string | null | undefined) {
   here = { scene, stages, code };
+  hereListeners.forEach((l) => l());
 }
+/** The stage the timeline's marker is on (a picture dropped on the room drawing is placed there). */
+export const useMarkerStage = () =>
+  useSyncExternalStore(
+    (l) => {
+      hereListeners.add(l);
+      return () => {
+        hereListeners.delete(l);
+      };
+    },
+    () => here?.code ?? null,
+    () => null,
+  );
 
 /** Puts up again the pictures, video and colours with a bar on the marker's stage (no sounds). */
 export async function replayMarker() {
@@ -76,8 +91,8 @@ export async function markerArrived(
     const areas = [...new Set(covering.flatMap((b) => areaOfTrack(b.track) ?? []))].sort((a, b) => a - b);
     if (areas.length === 0) {
       if (areasShowing(asset.id)) hideVisual(asset.id);
-    } else if (areasShowing(asset.id) !== areas.join(',')) {
-      // Already up in exactly these areas: left alone, so a video doesn't start over.
+    } else if (placesShowing(asset.id) !== JSON.stringify(areas.map((a) => [a, placeOf(link, a) ?? null]))) {
+      // Already up in exactly these areas, placed the same: left alone, so a video doesn't start over.
       void showVisual({ link, asset, timing: timingOf(link), areas }).catch(() => undefined);
     }
   }

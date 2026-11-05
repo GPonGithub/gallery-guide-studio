@@ -16,7 +16,9 @@ import {
   loopOf,
   isConnected,
   isMarker,
-  type MediaLink, mediaSceneKey
+  mediaSceneKey,
+  type MediaLink,
+  type Placement,
 } from './mediaFolder';
 import type { SceneRef } from './mediaPlayback';
 import { syncVisuals } from './touchDesigner';
@@ -46,7 +48,39 @@ export type Shown = {
   still?: string;
   loop: boolean;
   action: string;
+  /** Where it was placed over the room drawing (roomPlacement.ts) — its area shows the part inside its outline. */
+  place?: Placement;
 };
+
+/** The placement of a connection's picture on one area (its bar there), if it was placed. */
+export const placeOf = (link: MediaLink, area: number) =>
+  barsOf(link).find((b) => b.place && areaOfTrack(b.track) === area)?.place;
+
+/** Where a file is showing and how it's placed there — to tell whether a placement has changed. */
+export const placesShowing = (assetId: string) =>
+  JSON.stringify(
+    showing
+      .filter((s) => s.assetId === assetId)
+      .sort((a, b) => a.area - b.area)
+      .map((s) => [s.area, s.place ?? null]),
+  );
+
+/**
+ * After an undo or redo: takes down anything whose connection no longer puts it on that area (its bar
+ * there was undone, or the whole connection).
+ */
+export function dropUnbacked(links: MediaLink[]) {
+  const gone = showing.filter((s) => {
+    const mine = links.filter((l) => l.assetId === s.assetId);
+    if (mine.length === 0) return true;
+    const bars = mine.flatMap(barsOf);
+    return bars.length > 0 && !bars.some((b) => areaOfTrack(b.track) === s.area);
+  });
+  if (gone.length === 0) return;
+  gone.forEach(release);
+  showing = showing.filter((s) => !gone.includes(s));
+  changed();
+}
 
 /** A scene's connection to an image, video or sound file, with its timing and (for visuals) the areas it shows in. */
 export type PlannedMedia = { link: MediaLink; asset: MediaAsset; timing: ActionTiming; areas: number[] };
@@ -144,6 +178,7 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
         value: asset.value ?? '',
         loop: false,
         action: link.action,
+        place: placeOf(link, area),
       })),
     );
     return;
@@ -166,6 +201,7 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
     ...(thumb && { still: URL.createObjectURL(thumb) }),
     loop: loopOf(link),
     action: link.action,
+    place: placeOf(link, area),
   }));
   put(media, next);
 }
@@ -190,6 +226,18 @@ export function hideVisual(assetId: string) {
 /** Takes a file out of the room everywhere except `keep` (the areas it still has bars for). */
 export function hideVisualExcept(assetId: string, keep: number[]) {
   const gone = showing.filter((s) => s.assetId === assetId && !keep.includes(s.area));
+  if (gone.length === 0) return;
+  gone.forEach(release);
+  showing = showing.filter((s) => !gone.includes(s));
+  changed();
+}
+
+/**
+ * Takes down what's showing on an area, unless it's `keep` (a picture placed there on the room drawing
+ * replaces whatever was on that area — see roomPlacement.ts).
+ */
+export function hideArea(area: number, keep?: string) {
+  const gone = showing.filter((s) => s.area === area && s.assetId !== keep);
   if (gone.length === 0) return;
   gone.forEach(release);
   showing = showing.filter((s) => !gone.includes(s));

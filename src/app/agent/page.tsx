@@ -19,7 +19,7 @@ import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
 import { LAYOUT_DEMO_ACTIONS } from '@/components/agent/layoutDemo';
 import { DEMO_SCENE, DEMO_STAGES, endMediaDemo, useMediaDemo } from '@/lib/agent/mediaDemo';
-import { forgetMarker, markerArrived } from '@/lib/agent/markerPlay';
+import { forgetMarker, markerArrived, replayMarker } from '@/lib/agent/markerPlay';
 import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -40,7 +40,7 @@ import {
   setSoundLevels,
   type PlannedSound,
 } from '@/lib/agent/mediaPlayback';
-import { clearVisuals, everyVisuals, hideVisual, isShowing, sceneMedia, showVisual, type PlannedMedia } from '@/lib/agent/mediaShow';
+import { clearVisuals, dropUnbacked, everyVisuals, hideVisual, isShowing, sceneMedia, showVisual, type PlannedMedia } from '@/lib/agent/mediaShow';
 import {
   currentMediaLinks,
   followRewording,
@@ -606,6 +606,11 @@ export default function AgentStudioPage() {
       if (key === 'x' && !document.getSelection()?.isCollapsed) return;
       const done = key === 'z' && !e.shiftKey ? undoMediaLinks() : redoMediaLinks();
       if (done || key === 'z') e.preventDefault();
+      // The room follows: what's no longer on an area comes down, and the marker's stage goes back up.
+      if (done) {
+        dropUnbacked(currentMediaLinks());
+        void replayMarker();
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);

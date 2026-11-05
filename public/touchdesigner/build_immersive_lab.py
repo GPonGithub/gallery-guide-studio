@@ -10,6 +10,9 @@
 #                      same JSON work too (handy for testing with curl).
 #   area1 ... area11     the 11 projection outputs (Null TOPs, also out1 ... out11 as the
 #                      component's TOP outputs). Each shows a picture or video, or black.
+#   placed1 ... placed11 a GLSL TOP before each area: a picture placed on the app's room drawing
+#                      arrives with a "uv" matrix, and the area shows its slice of the whole
+#                      picture (raw1 ... raw11, unfitted); without one, the area is as before.
 #   preview            all 11 areas in one grid, each numbered, for checking
 #                      (open it with the component's Open Preview button).
 #   sound1 ... sound8    audio slots (Audio File In CHOPs) - sounds are separate from pictures
@@ -25,7 +28,8 @@
 # swaps which part of the picture each projector gets. It can also open Kantan Mapper's editor.
 #
 # The component's Media Folder parameter is where the files are; a message's path (the
-# Media tab's column C) is found inside it.
+# Media tab's column C) is found inside it. Each scene has its own media folder in the app: a message
+# names it ("folder"), and it's looked for inside the Media Folder (keep the scenes' folders there).
 
 import os
 
@@ -84,7 +88,8 @@ def media_root():
 
 
 def full_path(msg):
-    """The file on disk: the message's path inside the media folder (or its ID looked up in media_list)."""
+    """The file on disk: the message's path inside its scene's folder (the message's "folder", inside the
+    Media Folder - or the Media Folder itself), or its ID looked up in media_list."""
     path = msg.get('path') or ''
     if not path and msg.get('id'):
         ml = table('media_list')
@@ -92,7 +97,15 @@ def full_path(msg):
             path = ml[msg['id'], 'Path'].val
     if not path:
         return ''
-    return path if os.path.isabs(path) else os.path.join(media_root(), path)
+    if os.path.isabs(path):
+        return path
+    root = media_root()
+    folder = msg.get('folder') or ''
+    if folder:
+        inside = os.path.join(root, folder, path)
+        if os.path.isfile(inside):
+            return inside
+    return os.path.join(root, path)
 
 
 def log(msg, where, result):
@@ -139,6 +152,34 @@ def set_loop_audio(ch, loop):
 
 # --- pictures and video -------------------------------------------------------
 
+def vec_par(g, i, comp):
+    """The GLSL TOP's uniform value parameter (its name differs between TouchDesigner versions)."""
+    for name in ('vec%dvalue%s' % (i, comp), 'value%d%s' % (i, comp)):
+        p = getattr(g.par, name, None)
+        if p is not None:
+            return p
+    return None
+
+
+def route(area, index, msg):
+    """Shows switch input `index` on an area; a placed picture (msg "uv": 9 numbers, row by row) shows
+    its slice of the whole, unfitted picture instead of the fitted one."""
+    lab.op('switch%d' % area).par.index = index
+    lab.op('raw%d' % area).par.index = index
+    g = lab.op('placed%d' % area)
+    uv = msg.get('uv')
+    placed = isinstance(uv, list) and len(uv) == 9 and index > 0
+    if placed:
+        for row in range(3):
+            for k, comp in enumerate('xyz'):
+                p = vec_par(g, row, comp)
+                if p is not None:
+                    p.val = float(uv[row * 3 + k])
+    p = vec_par(g, 3, 'x')
+    if p is not None:
+        p.val = 1 if placed else 0
+
+
 def show(msg):
     area = int(msg.get('area', 0))
     if not 1 <= area <= AREAS:
@@ -155,14 +196,14 @@ def show(msg):
         col = lab.op('color%d' % area)
         col.par.colorr, col.par.colorg, col.par.colorb = r, g, b
         lab.op('movie%d' % area).par.play = 0
-        lab.op('switch%d' % area).par.index = 2
+        route(area, 2, msg)
         now(where, dict(msg, path=msg.get('value')))
         return where, 'colour shown'
     if kind == 'text':
         # Words on the area: its text layer (switch input 3).
         lab.op('words%d' % area).par.text = msg.get('value') or ''
         lab.op('movie%d' % area).par.play = 0
-        lab.op('switch%d' % area).par.index = 3
+        route(area, 3, msg)
         now(where, dict(msg, path=(msg.get('value') or '')[:60]))
         return where, 'text shown'
     path = full_path(msg)
@@ -173,13 +214,13 @@ def show(msg):
     movie.par.textendright = 'cycle' if msg.get('loop') else 'hold'
     movie.par.play = 1
     movie.par.cuepulse.pulse()
-    lab.op('switch%d' % area).par.index = 1
+    route(area, 1, msg)
     now(where, msg)
     return where, 'shown' if msg.get('kind') == 'image' else 'playing'
 
 
 def hide_area(area):
-    lab.op('switch%d' % area).par.index = 0
+    route(area, 0, {})
     lab.op('movie%d' % area).par.play = 0
     now('area %d' % area)
 
@@ -505,6 +546,11 @@ GUIDE = [
     ['media play', 'Plays a video in an area; loop true = loops, false = plays once and holds the last frame',
      '{"type":"media","action":"play","area":5,"id":"M-007","path":"monitor.mov","kind":"video","loop":true}'],
     ['media hide', 'Clears an area to black', '{"type":"media","action":"hide","area":5}'],
+    ['(uv)', 'On media show / play: placed on the app\'s room drawing - the area shows its slice of the whole '
+     'picture (output u,v -> picture u,v, a 3x3 matrix row by row; divide by the third)',
+     '{"type":"media","action":"show","area":5,"path":"forest.jpg","kind":"image","uv":[1,0,0,0,1,0,0,0,1]}'],
+    ['(folder)', 'On media and sound messages: the scene\'s media folder, looked for inside the Media Folder',
+     '{"type":"media","action":"show","area":2,"folder":"Scene 3 media","path":"forest.jpg","kind":"image"}'],
     ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped',
      '{"type":"sound","action":"play","id":"M-014","path":"ding.mp3","loop":false}'],
     ['sound stop', 'Stops that sound (no id = every sound)', '{"type":"sound","action":"stop","id":"M-014"}'],
@@ -529,6 +575,33 @@ GUIDE = [
     ['(cue)', 'A stage cue from the app\'s server (the flow\'s TouchDesigner address) - logged only',
      '{"cue":"...","trigger":"...","stage":"2","sessionId":"...","slots":{}}'],
 ]
+
+
+# Input 0: the area's fitted picture (as before). Input 1: the same, unfitted. Placed (uPlaced.x = 1),
+# each output point is taken through the uv matrix to the picture; outside it, black.
+PLACED_SHADER = '''uniform vec4 uRow0;
+uniform vec4 uRow1;
+uniform vec4 uRow2;
+uniform vec4 uPlaced;
+out vec4 fragColor;
+void main()
+{
+    vec2 uv = vUV.st;
+    if (uPlaced.x < 0.5) {
+        fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], uv));
+        return;
+    }
+    vec3 o = vec3(uv, 1.0);
+    vec3 p = vec3(dot(uRow0.xyz, o), dot(uRow1.xyz, o), dot(uRow2.xyz, o));
+    vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
+    if (p.z > 0.0) {
+        vec2 q = p.xy / p.z;
+        if (q.x >= 0.0 && q.x <= 1.0 && q.y >= 0.0 && q.y <= 1.0)
+            c = vec4(texture(sTD2DInputs[1], q).rgb, 1.0);
+    }
+    fragColor = TDOutputSwizzle(c);
+}
+'''
 
 
 def build():
@@ -598,6 +671,10 @@ def build():
         setp(black, c, 0)
     setp(black, 'alpha', 1)
 
+    # The placed-picture shader, shared by placed1 ... placed11.
+    shader = place(lab.create(textDAT, 'placed_shader'), -400, 400)
+    shader.text = PLACED_SHADER
+
     preview = place(lab.create(layoutTOP, 'preview'), 900, 600)
     for a in range(1, AREAS + 1):
         y = 600 - (a - 1) * 160
@@ -632,8 +709,29 @@ def build():
         sw.inputConnectors[2].connect(col)
         sw.inputConnectors[3].connect(words)
         setp(sw, 'index', 0)
+        # The same sources unfitted, for a picture placed on the room drawing (see route()).
+        raw = place(lab.create(switchTOP, 'raw%d' % a), 200, y - 60)
+        raw.inputConnectors[0].connect(black)
+        raw.inputConnectors[1].connect(movie)
+        raw.inputConnectors[2].connect(col)
+        raw.inputConnectors[3].connect(words)
+        setp(raw, 'index', 0)
+        g = place(lab.create(glslTOP, 'placed%d' % a), 300, y)
+        g.inputConnectors[0].connect(sw)
+        g.inputConnectors[1].connect(raw)
+        setp(g, 'pixeldat', shader.path)
+        setp(g, 'outputresolution', 'custom')
+        g.par.resolutionw.expr = 'parent().par.Width'
+        g.par.resolutionh.expr = 'parent().par.Height'
+        for i, name in enumerate(('uRow0', 'uRow1', 'uRow2', 'uPlaced')):
+            for pname in ('vec%dname' % i, 'uniname%d' % i):
+                if getattr(g.par, pname, None) is not None:
+                    setp(g, pname, name)
+                    break
+            else:
+                problems.append('%s: no uniform name parameter for %s' % (g.path, name))
         area = place(lab.create(nullTOP, 'area%d' % a), 400, y)
-        area.inputConnectors[0].connect(sw)
+        area.inputConnectors[0].connect(g)
         out = place(lab.create(outTOP, 'out%d' % a), 600, y)
         out.inputConnectors[0].connect(area)
         # The preview only: the area's number in its corner, so even black areas can be told apart.

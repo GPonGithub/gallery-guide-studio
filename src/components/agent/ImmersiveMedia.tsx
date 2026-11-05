@@ -210,6 +210,19 @@ export function ImmersiveMedia({
     };
   }, [folderRevision, mediaKey]);
 
+  // The Media Library open (or opened before this scene's folder had loaded): if the browser already lets
+  // the app read the folder, the thumbnails show — no asking (Allow asks, from a click).
+  useEffect(() => {
+    if (!libraryOpen || !folder || readable !== null) return;
+    let gone = false;
+    void allowed(folder, false)
+      .catch(() => false)
+      .then((ok) => !gone && setReadable(ok));
+    return () => {
+      gone = true;
+    };
+  }, [libraryOpen, folder, readable]);
+
   // The open scene's media actions, read from row 8 of the sheet each time the Media Library
   // opens, the scene changes, or Connect with Action is clicked — students change them often, so
   // the list is always the sheet's latest.
@@ -1463,6 +1476,28 @@ function Thumbnail({
     };
   }, [show, near, folder, asset.path]);
 
+  // A video's first frame, kept as a picture: the player itself is only made while it plays. Each live
+  // video holds one of the few video decoders Chrome has — a library full of them (and the room's) runs
+  // out, and players then show black or white.
+  const [frame, setFrame] = useState<string | null>(null);
+  const [live, setLive] = useState(false);
+  const playWhenReady = useRef(false);
+  const capture = (v: HTMLVideoElement) => {
+    if (frame || !v.videoWidth) return;
+    const k = Math.min(1, 352 / v.videoWidth);
+    const c = document.createElement('canvas');
+    c.width = Math.round(v.videoWidth * k);
+    c.height = Math.round(v.videoHeight * k);
+    c.getContext('2d')?.drawImage(v, 0, 0, c.width, c.height);
+    c.toBlob((b) => b && setFrame(URL.createObjectURL(b)), 'image/jpeg', 0.8);
+  };
+  useEffect(
+    () => () => {
+      if (frame) URL.revokeObjectURL(frame);
+    },
+    [frame],
+  );
+
   // Its sound playing elsewhere — a Try it, or the conversation: Stop here stops that too.
   const [playingElsewhere, setPlayingElsewhere] = useState(false);
   useEffect(() => onSoundsChange(() => setPlayingElsewhere(isSoundPlaying(asset.id))), [asset.id]);
@@ -1472,6 +1507,12 @@ function Thumbnail({
   const toggle = () => {
     if (playingElsewhere) {
       stopSounds(asset.id);
+      return;
+    }
+    // Only its first frame showing: make the player, and play once it's ready.
+    if (asset.kind === 'video' && frame && !live) {
+      playWhenReady.current = true;
+      setLive(true);
       return;
     }
     const el = media.current;
@@ -1503,7 +1544,12 @@ function Thumbnail({
         // eslint-disable-next-line @next/next/no-img-element
         <img src={url} alt="" className="h-full w-full object-contain" />
       )}
-      {asset.kind === 'video' && url && (
+      {asset.kind === 'video' && frame && !live && (
+        // Its first frame, as a picture (a local object URL, so next/image's optimising doesn't apply).
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={frame} alt="" className="h-full w-full object-contain" />
+      )}
+      {asset.kind === 'video' && url && (!frame || live) && (
         <video
           ref={media}
           src={url}
@@ -1512,6 +1558,14 @@ function Thumbnail({
           // Show the first frame (some browsers stay blank until asked for a moment of it).
           onLoadedMetadata={(e) => {
             if (e.currentTarget.currentTime === 0) e.currentTarget.currentTime = 0.001;
+          }}
+          // The first frame is up: keep it as a picture (the player then goes, until it's played).
+          onSeeked={(e) => !live && capture(e.currentTarget)}
+          onCanPlay={(e) => {
+            if (!playWhenReady.current) return;
+            playWhenReady.current = false;
+            onPlay(e.currentTarget);
+            void e.currentTarget.play();
           }}
           onPlay={() => setPaused(false)}
           onPause={() => setPaused(true)}

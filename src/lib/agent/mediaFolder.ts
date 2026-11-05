@@ -230,7 +230,15 @@ export type TimelineBar = {
   track: number | `${number}-${number}` | 'sound' | `sound-${number}`;
   from: string;
   to: string;
+  /**
+   * Where the picture sits over the room drawing (see roomPlacement.ts): its area shows the part of it
+   * inside the area's outline. None: it fills the area, as before.
+   */
+  place?: Placement;
 };
+
+/** A picture or video placed over the room drawing, in the drawing's units: its centre, size and turn. */
+export type Placement = { cx: number; cy: number; w: number; h: number; rot: number };
 
 /** The projection area a track shows on (5 for 5 and '5-3'), or null for a sound track. */
 export function areaOfTrack(track: TimelineBar['track']): number | null {
@@ -510,6 +518,8 @@ export async function readActions(actions: string[], anthropicApiKey: string): P
 }
 
 export async function loadMediaLinks(): Promise<MediaLink[]> {
+  // Once read, the copy in memory is the latest (saving it to the database follows a moment later).
+  if (shared) return shared;
   try {
     return (await run<MediaLink[] | undefined>('media', 'readonly', (s) => s.get('links'))) ?? [];
   } catch {

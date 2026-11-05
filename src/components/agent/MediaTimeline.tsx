@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { buttonIcon } from '@/lib/styles';
 import { DropdownArrow } from './DropdownArrow';
 import { markerArrived, markerIsAt } from '@/lib/agent/markerPlay';
+import { setPlacing, usePlacing } from '@/lib/agent/roomPlacement';
 import {
   ACTION_KINDS,
   isStill,
@@ -205,6 +206,14 @@ export function MediaTimeline({
 
   const headCode = stages[index]?.code;
   useEffect(() => markerIsAt(scene, stages, headCode), [scene, stages, headCode]);
+  // A scene opening (or its stages arriving): its pictures, video and colours on the marker's stage go up
+  // in the room straight away, not only once the marker is moved (no sounds — they wait for the call).
+  const stagesKey = stages.map((s) => s.code).join(' ');
+  useEffect(() => {
+    if (headCode) void markerArrived(scene, stages, headCode, { visualsOnly: true });
+    // Only when another scene (or a different set of stages) is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sceneKey, stagesKey]);
   useEffect(() => {
     if (!movedByHand.current) return;
     movedByHand.current = false;
@@ -532,24 +541,35 @@ export function MediaTimeline({
       document.removeEventListener('keydown', esc);
     };
   }, [picking]);
+  const placing = usePlacing();
   const connectBar = (l: MediaLink, i: number, action: string) => {
     setPicking(null);
     if (action === l.action) return;
     const bar = barsOf(l)[i];
     if (!bar) return;
+    // A picture placed on the room drawing is one picture on several areas: all its bars (those
+    // stages, placed) connect together, so it stays one picture.
+    const moving = barsOf(l).filter((b) =>
+      bar.place ? b.place && b.from === bar.from && b.to === bar.to : b === bar,
+    );
     updateMediaLinks((all) => {
       const next = all.flatMap((x) => {
         if (!sameLink(x, l)) return [x];
-        const left = withBar(x, i, null);
-        return barsOf(left).length ? [left] : [];
+        const left = barsOf(x).filter((b) => !moving.includes(b));
+        if (!left.length) return [];
+        const [first, ...copies] = left;
+        return [{ ...x, bar: first, copies }];
       });
       const target = next.find(
         (x) => x.assetId === l.assetId && x.action === action && x.sheetId === l.sheetId && x.sceneNumber === l.sceneNumber,
       );
       if (target)
-        return next.map((x) =>
-          x === target ? (x.bar ? { ...x, copies: [...(x.copies ?? []), bar] } : { ...x, bar }) : x,
-        );
+        return next.map((x) => {
+          if (x !== target) return x;
+          const [first, ...copies] = [...barsOf(x), ...moving];
+          return { ...x, bar: first, copies };
+        });
+      const [first, ...copies] = moving;
       const made: MediaLink = {
         assetId: l.assetId,
         sheetId: l.sheetId,
@@ -558,10 +578,21 @@ export function MediaTimeline({
         action,
         assetName: l.assetName,
         assetKind: l.assetKind,
-        bar,
+        bar: first,
+        ...(copies.length && { copies }),
       };
       return [...next, { ...made, barsKind: timingOf(made).kind }];
     }, 'Connect bar');
+    // Still placing that picture on the room drawing: it's the same picture, now with its action.
+    if (
+      placing &&
+      bar.place &&
+      placing.assetId === l.assetId &&
+      placing.action === l.action &&
+      placing.from === bar.from &&
+      placing.to === bar.to
+    )
+      setPlacing({ ...placing, action });
   };
 
   // Option (Alt) held: the bars show they'll be duplicated when dragged.

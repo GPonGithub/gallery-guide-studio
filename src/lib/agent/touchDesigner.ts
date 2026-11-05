@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from 'react';
 import type { MediaAsset } from './media';
 import { loadLibrary, onMediaSceneChange } from './mediaFolder';
+import { areaUvMatrix } from './roomPlacement';
 import type { Shown } from './mediaShow';
 
 /**
@@ -176,11 +177,20 @@ export function onTDConnected(listener: () => void) {
   connectedListeners.add(listener);
 }
 
+/**
+ * The open scene's media folder's name: TouchDesigner finds a file in that folder inside its own Media
+ * Folder (the browser can't tell it where the folder is on disk — keep each scene's folder in one place).
+ */
+let folderName = '';
+const withFolder = <T extends Record<string, unknown>>(message: T) => (folderName ? { ...message, folder: folderName } : message);
+
 /** The open scene's media list (each scene has its own folder): sent on connecting, and when another scene opens. */
 async function sendMediaList() {
   const library = await loadLibrary();
+  folderName = library?.folderName ?? '';
   send({
     type: 'medialist',
+    ...(folderName && { folder: folderName }),
     items: (library?.assets ?? []).map((a) => ({
       id: a.id,
       name: a.name,
@@ -190,7 +200,11 @@ async function sendMediaList() {
     })),
   });
 }
-if (typeof window !== 'undefined') onMediaSceneChange(() => isOpen() && void sendMediaList());
+if (typeof window !== 'undefined')
+  onMediaSceneChange(() => {
+    if (isOpen()) void sendMediaList();
+    else void loadLibrary().then((library) => (folderName = library?.folderName ?? ''));
+  });
 
 /** On connecting: hello, the projectors, the media list, a clean room, then what's on now (pictures, video, levels). */
 async function greet() {
@@ -265,7 +279,9 @@ export function syncVisuals(showing: Shown[]) {
   const now = new Map(showing.map((s) => [s.area, s]));
   for (const [area, s] of now) {
     if (sent.get(area) === s) continue;
-    send(visualMessage(area, { id: s.assetId, path: s.path, kind: s.kind, value: s.value }, s.loop));
+    const message = visualMessage(area, { id: s.assetId, path: s.path, kind: s.kind, value: s.value }, s.loop);
+    // Placed on the room drawing: the area shows its slice of the whole picture (see roomPlacement.ts).
+    send(withFolder(s.place ? { ...message, uv: areaUvMatrix(area, s.place) } : message));
     sent.set(area, s);
   }
   for (const area of [...sent.keys()]) {
@@ -285,7 +301,7 @@ export function tdSound(action: 'play' | 'stop', asset: MediaAsset, loop = false
   if (tdSettings().sounds === 'computer') return;
   send(
     action === 'play'
-      ? { type: 'sound', action, id: asset.id, path: asset.path, loop }
+      ? withFolder({ type: 'sound', action, id: asset.id, path: asset.path, loop })
       : { type: 'sound', action, id: asset.id },
   );
 }
