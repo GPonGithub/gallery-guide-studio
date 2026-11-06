@@ -2,7 +2,7 @@
 
 import { dipToShare, levelToGain } from '@/components/agent/backgroundMusic';
 import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
-import { soundsHere, tdLevels, tdSound, tdSoundVolume } from './touchDesigner';
+import { soundsHere, tdLevels, tdSound, tdSoundLoop, tdSoundVolume } from './touchDesigner';
 import {
   allowed,
   currentMediaLinks,
@@ -117,6 +117,17 @@ export function setSoundVolume(assetId: string, volume: number) {
   if (found) tdSoundVolume(assetId, v);
 }
 
+/** Turns a playing file's looping on or off (its bar's loop button), here and in TouchDesigner. */
+export function setSoundLoop(assetId: string, loop: boolean) {
+  let found = false;
+  for (const [audio, own] of owns) {
+    if (own.assetId !== assetId) continue;
+    found = true;
+    audio.loop = loop;
+  }
+  if (found) tdSoundLoop(assetId, loop);
+}
+
 /** Eases every playing sound to where it should be now (half a cosine, as the music does). */
 function rampAll(ms: number) {
   const to = soundVolume();
@@ -201,6 +212,8 @@ export async function startLoop(asset: MediaAsset, volume = soundVolumeOf(asset.
     },
   };
   const entry: Playing = { assetId: asset.id, stop: loop.stop };
+  // Its loop button turned off while it plays: it finishes this time through.
+  audio.onended = () => loop.stop();
   loops.add(loop);
   playing.add(entry);
   changed();

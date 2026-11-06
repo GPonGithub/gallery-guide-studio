@@ -20,7 +20,7 @@ import {
   type VoiceWait,
 } from '@/lib/agent/media';
 import { useMediaFolderRevision } from '@/lib/agent/mediaDemo';
-import { clampSoundVolume, MAX_SOUND_VOLUME, setSoundVolume, stopSounds } from '@/lib/agent/mediaPlayback';
+import { clampSoundVolume, MAX_SOUND_VOLUME, setSoundLoop, setSoundVolume, stopSounds } from '@/lib/agent/mediaPlayback';
 import { hideVisualExcept } from '@/lib/agent/mediaShow';
 import {
   areaOfTrack,
@@ -1172,7 +1172,48 @@ function BarVolume({ link }: { link: MediaLink }) {
         className="h-1 w-20 cursor-pointer accent-paper"
       />
       <span className="w-8 text-right font-body text-[11px] tabular-nums leading-none">{percent}%</span>
+      <BarLoop link={link} />
     </span>
+  );
+}
+
+/**
+ * A sound bar's loop button: on, the sound plays over and over (until its bar ends, the marker leaves,
+ * or the call ends); off, it plays once. "Every time" sounds play once at each of their events.
+ */
+function BarLoop({ link }: { link: MediaLink }) {
+  const every = timingOf(link).kind === 'every';
+  const on = !every && loopOf(link);
+  return (
+    <button
+      type="button"
+      data-bar-loop
+      onClick={(e) => {
+        e.stopPropagation();
+        if (every) return;
+        const loop = !on;
+        updateMediaLinks(
+          (all) => all.map((x) => (sameLink(x, link) ? { ...x, loop } : x)),
+          `${loop ? 'Loop' : "Don't loop"} ${link.assetId}`,
+        );
+        setSoundLoop(link.assetId, loop);
+      }}
+      disabled={every}
+      aria-pressed={on}
+      aria-label={`Loop ${link.assetName ?? link.assetId}`}
+      title={
+        every
+          ? 'Plays once each time its moment comes round (“every time”) — change “When it plays” to loop it'
+          : on
+            ? 'Looping — click to play it once'
+            : 'Plays once — click to loop it'
+      }
+      className={`ml-0.5 flex h-5 w-6 shrink-0 cursor-pointer items-center justify-center border font-body text-[13px] leading-none disabled:cursor-not-allowed disabled:opacity-40 ${
+        on ? 'border-paper bg-paper text-[#3c5eac]' : 'border-paper/60 text-paper hover:bg-ink/30'
+      }`}
+    >
+      ∞
+    </button>
   );
 }
 

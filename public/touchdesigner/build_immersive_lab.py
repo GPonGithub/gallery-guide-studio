@@ -286,6 +286,16 @@ def sound_volume(msg):
     return ', '.join('slot %d' % k for k in slots) or 'sound', 'volume %d%%' % vol if slots else 'not playing'
 
 
+def sound_loop(msg):
+    sid = msg.get('id')
+    slots = [k for k, rid, _, _ in slot_rows() if rid and rid == sid]
+    on = bool(msg.get('loop'))
+    for k in slots:
+        set_loop_audio(lab.op('sound%d' % k), on)
+        table('now_playing')['sound %d' % k, 'Loop'] = 'yes' if on else 'no'
+    return ', '.join('slot %d' % k for k in slots) or 'sound', ('looping' if on else 'not looping') if slots else 'not playing'
+
+
 def stop_sound(msg):
     sid = msg.get('id')
     stopped = [k for k, rid, _, _ in slot_rows() if rid and (not sid or rid == sid)]
@@ -452,6 +462,7 @@ HANDLERS = {
     ('sound', 'play'): play_sound,
     ('sound', 'stop'): stop_sound,
     ('sound', 'volume'): sound_volume,
+    ('sound', 'loop'): sound_loop,
     ('levels', ''): levels,
     ('clear', ''): clear,
     ('medialist', ''): media_list,
@@ -571,6 +582,7 @@ GUIDE = [
     ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped; volume 0-1.5 (its bar\'s slider)',
      '{"type":"sound","action":"play","id":"M-014","path":"ding.mp3","loop":false,"volume":1}'],
     ['sound volume', 'Sets a playing sound\'s own volume, 0 (silent) to 1.5', '{"type":"sound","action":"volume","id":"M-014","volume":0.8}'],
+    ['sound loop', 'Turns a playing sound\'s looping on or off', '{"type":"sound","action":"loop","id":"M-014","loop":true}'],
     ['sound stop', 'Stops that sound (no id = every sound)', '{"type":"sound","action":"stop","id":"M-014"}'],
     ['levels', 'Sets the sounds\' volume (0-1), easing over ms - the Music / Sounds volume and the dip under the voice',
      '{"type":"levels","gain":0.4,"ms":400}'],

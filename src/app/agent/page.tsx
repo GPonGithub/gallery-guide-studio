@@ -1933,7 +1933,11 @@ export default function AgentStudioPage() {
       void sceneSounds(mediaScene, 'throughout').then((list) =>
         list.forEach((s) => {
           noteSound(s, 0);
-          startLoop(s.asset, clampSoundVolume(s.link.volume)).catch((err: unknown) =>
+          // Its bar's loop button off: it plays once as the call begins.
+          (s.link.loop === false
+            ? playSound(s.asset, false, clampSoundVolume(s.link.volume))
+            : startLoop(s.asset, clampSoundVolume(s.link.volume))
+          ).catch((err: unknown) =>
             noteSound(s, 0, err instanceof Error ? err.message : 'It couldn’t be played.'),
           );
         }),

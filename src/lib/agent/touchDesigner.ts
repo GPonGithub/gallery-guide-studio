@@ -306,6 +306,11 @@ export function tdSound(action: 'play' | 'stop', asset: MediaAsset, loop = false
   );
 }
 
+/** A playing sound's looping (its bar's loop button) changed. */
+export function tdSoundLoop(id: string, loop: boolean) {
+  if (tdSettings().sounds !== 'computer') send({ type: 'sound', action: 'loop', id, loop });
+}
+
 /** A playing sound's own volume (0–1.5, its bar's slider) changed. */
 export function tdSoundVolume(id: string, volume: number) {
   if (tdSettings().sounds !== 'computer') send({ type: 'sound', action: 'volume', id, volume });
