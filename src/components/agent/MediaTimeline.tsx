@@ -20,7 +20,7 @@ import {
   type VoiceWait,
 } from '@/lib/agent/media';
 import { useMediaFolderRevision } from '@/lib/agent/mediaDemo';
-import { stopSounds } from '@/lib/agent/mediaPlayback';
+import { clampSoundVolume, MAX_SOUND_VOLUME, setSoundVolume, stopSounds } from '@/lib/agent/mediaPlayback';
 import { hideVisualExcept } from '@/lib/agent/mediaShow';
 import {
   areaOfTrack,
@@ -967,6 +967,7 @@ export function MediaTimeline({
                     {handle('from')}
                     <BarThumb link={l} asset={asset} folder={folder} />
                     {label}
+                    {isSound(l) && <BarVolume link={l} />}
                     <button
                       // Not a drag: pressing it mustn't pick the bar up.
                       onPointerDown={(e) => e.stopPropagation()}
@@ -1101,6 +1102,61 @@ function OpenArrow({ open }: { open: boolean }) {
  * when it fires, and for "every time" which moment and what the voice does; for "on marker arrival",
  * whether a video or sound loops. Each change is one undo step, and the bars follow it.
  */
+/**
+ * A sound bar's volume: a slider from silent to MAX_SOUND_VOLUME (×1.5). The sound follows it as it
+ * moves (here and in TouchDesigner); letting go saves it on the bar's connection, as one Undo step.
+ */
+function BarVolume({ link }: { link: MediaLink }) {
+  const saved = clampSoundVolume(link.volume);
+  const [moving, setMoving] = useState<number | null>(null);
+  const value = moving ?? saved;
+  const save = () => {
+    if (moving === null) return;
+    const v = moving;
+    setMoving(null);
+    if (v === saved) return;
+    updateMediaLinks(
+      (all) => all.map((x) => (sameLink(x, link) ? { ...x, volume: v === 1 ? undefined : v } : x)),
+      `Change the volume of ${link.assetId}`,
+    );
+  };
+  const percent = Math.round(value * 100);
+  return (
+    <span
+      // Not a drag: moving the slider mustn't pick the bar up.
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      data-bar-volume
+      className="flex h-full shrink-0 items-center gap-1 px-1"
+      title={`Volume ${percent}% — from silent to half as loud again as the file (100% is the file as it is)`}
+    >
+      <span className="font-body text-[11px] leading-none" aria-hidden="true">
+        {value === 0 ? '🔇' : '🔊'}
+      </span>
+      <input
+        type="range"
+        min={0}
+        max={MAX_SOUND_VOLUME}
+        step={0.05}
+        value={value}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          setMoving(v);
+          setSoundVolume(link.assetId, v);
+        }}
+        onPointerUp={save}
+        onKeyUp={save}
+        onBlur={save}
+        aria-label={`Volume of ${link.assetName ?? link.assetId}`}
+        aria-valuetext={`${percent}%`}
+        className="h-1 w-20 cursor-pointer accent-paper"
+      />
+      <span className="w-8 text-right font-body text-[11px] tabular-nums leading-none">{percent}%</span>
+    </span>
+  );
+}
+
 function BarPlays({ link }: { link: MediaLink }) {
   const timing = timingOf(link);
   const still = isStill(link.assetKind);

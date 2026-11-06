@@ -2,9 +2,10 @@
 
 import { dipToShare, levelToGain } from '@/components/agent/backgroundMusic';
 import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
-import { soundsHere, tdLevels, tdSound } from './touchDesigner';
+import { soundsHere, tdLevels, tdSound, tdSoundVolume } from './touchDesigner';
 import {
   allowed,
+  currentMediaLinks,
   isConnected,
   isMarker,
   loadLibrary,
@@ -62,6 +63,60 @@ const sounding = new Map<HTMLAudioElement, ReturnType<typeof setInterval> | null
 /** How loud a timeline sound plays now (0–1). */
 const soundVolume = () => levelToGain(levels.volume) * (ducked ? dipToShare(levels.dip) : 1);
 
+// Each sound's own volume, from its bar's slider on the timeline: 0 (silent) to MAX_SOUND_VOLUME
+// (half as loud again as the file). Up to full it scales the player's volume; above full the
+// player stays at the panel's level and a Web Audio gain makes up the rest.
+export const MAX_SOUND_VOLUME = 1.5;
+export const clampSoundVolume = (v: number | undefined) =>
+  Math.max(0, Math.min(MAX_SOUND_VOLUME, Number.isFinite(v) ? (v as number) : 1));
+type Own = { assetId: string; volume: number; gain?: GainNode };
+const owns = new Map<HTMLAudioElement, Own>();
+let context: AudioContext | null = null;
+
+/** A file's own volume, as its connection (its bar) in the timeline sets it. */
+export function soundVolumeOf(assetId: string): number {
+  return clampSoundVolume(currentMediaLinks().find((l) => l.assetId === assetId && l.volume !== undefined)?.volume);
+}
+
+/** What the player's own volume should be now: the panel's level, times the sound's volume up to full. */
+const playerVolume = (audio: HTMLAudioElement, level = soundVolume()) =>
+  Math.max(0, Math.min(1, level * Math.min(1, owns.get(audio)?.volume ?? 1)));
+
+/** Above full, the sound goes through a gain (made the first time it's needed; it stays). */
+function boost(audio: HTMLAudioElement) {
+  const own = owns.get(audio);
+  if (!own) return;
+  if (!own.gain && own.volume > 1) {
+    try {
+      context ??= new AudioContext();
+      const gain = context.createGain();
+      context.createMediaElementSource(audio).connect(gain).connect(context.destination);
+      own.gain = gain;
+    } catch {
+      return; // No Web Audio: it plays at full.
+    }
+  }
+  if (context?.state === 'suspended') void context.resume();
+  if (own.gain) own.gain.gain.value = Math.max(1, own.volume);
+}
+
+/**
+ * Changes a file's volume while it plays (its bar's slider moving), here and in TouchDesigner.
+ * Saving it on the bar is the timeline's job.
+ */
+export function setSoundVolume(assetId: string, volume: number) {
+  const v = clampSoundVolume(volume);
+  let found = false;
+  for (const [audio, own] of owns) {
+    if (own.assetId !== assetId) continue;
+    found = true;
+    own.volume = v;
+    boost(audio);
+    if (!sounding.get(audio)) audio.volume = playerVolume(audio);
+  }
+  if (found) tdSoundVolume(assetId, v);
+}
+
 /** Eases every playing sound to where it should be now (half a cosine, as the music does). */
 function rampAll(ms: number) {
   const to = soundVolume();
@@ -69,10 +124,11 @@ function rampAll(ms: number) {
   for (const [audio, running] of sounding) {
     if (running) clearInterval(running);
     const from = audio.volume;
+    const target = playerVolume(audio, to);
     const start = performance.now();
     const timer = setInterval(() => {
       const t = Math.min(1, (performance.now() - start) / ms);
-      audio.volume = Math.max(0, Math.min(1, from + (to - from) * ((1 - Math.cos(Math.PI * t)) / 2)));
+      audio.volume = Math.max(0, Math.min(1, from + (target - from) * ((1 - Math.cos(Math.PI * t)) / 2)));
       if (t >= 1) {
         clearInterval(timer);
         if (sounding.has(audio)) sounding.set(audio, null);
@@ -83,8 +139,10 @@ function rampAll(ms: number) {
 }
 
 /** A sound starting: at the level it should be now, and following every change from here on. */
-function follow(audio: HTMLAudioElement) {
-  audio.volume = soundVolume();
+function follow(audio: HTMLAudioElement, assetId: string, volume: number) {
+  owns.set(audio, { assetId, volume: clampSoundVolume(volume) });
+  boost(audio);
+  audio.volume = playerVolume(audio);
   // Silent here (still timing the sound) when TouchDesigner plays the sounds.
   audio.muted = !soundsHere();
   sounding.set(audio, null);
@@ -95,6 +153,7 @@ function unfollow(audio: HTMLAudioElement) {
   const running = sounding.get(audio);
   if (running) clearInterval(running);
   sounding.delete(audio);
+  owns.delete(audio);
 }
 
 /** The Music / Sounds panel's Volume and Dip (each 0–10), for the timeline's sounds too. */
@@ -119,7 +178,7 @@ const loops = new Set<{ audio: HTMLAudioElement; stop: () => void }>();
  * Starts a sound looping until stopSounds/stopLoops — for "throughout the
  * scene" actions. Rejects if it can't be played.
  */
-export async function startLoop(asset: MediaAsset): Promise<void> {
+export async function startLoop(asset: MediaAsset, volume = soundVolumeOf(asset.id)): Promise<void> {
   const folder = await savedMediaFolder();
   if (!folder) throw new Error('No media folder has been chosen.');
   if (!(await allowed(folder, false))) {
@@ -128,7 +187,7 @@ export async function startLoop(asset: MediaAsset): Promise<void> {
   const url = URL.createObjectURL(await openMediaFile(folder, asset.path));
   const audio = new Audio(url);
   audio.loop = true;
-  follow(audio);
+  follow(audio, asset.id, volume);
   const loop = {
     audio,
     stop: () => {
@@ -145,7 +204,7 @@ export async function startLoop(asset: MediaAsset): Promise<void> {
   loops.add(loop);
   playing.add(entry);
   changed();
-  tdSound('play', asset, true);
+  tdSound('play', asset, true, clampSoundVolume(volume));
   try {
     await audio.play();
   } catch (err) {
@@ -194,7 +253,11 @@ export function stopSounds(assetId?: string) {
  * it plays on); rejects if it can't be played. `ask`: may ask the browser for
  * permission to read the folder (only from a click).
  */
-export async function playSound(asset: MediaAsset, ask = false): Promise<'ended' | 'stopped' | 'waited'> {
+export async function playSound(
+  asset: MediaAsset,
+  ask = false,
+  volume = soundVolumeOf(asset.id),
+): Promise<'ended' | 'stopped' | 'waited'> {
   const folder = await savedMediaFolder();
   if (!folder) throw new Error('No media folder has been chosen.');
   if (!(await allowed(folder, ask))) {
@@ -202,7 +265,7 @@ export async function playSound(asset: MediaAsset, ask = false): Promise<'ended'
   }
   const url = URL.createObjectURL(await openMediaFile(folder, asset.path));
   const audio = new Audio(url);
-  follow(audio);
+  follow(audio, asset.id, volume);
   return new Promise((resolve, reject) => {
     let over = false;
     const timer = setTimeout(() => resolve('waited'), LONGEST_WAIT);
@@ -229,7 +292,7 @@ export async function playSound(asset: MediaAsset, ask = false): Promise<'ended'
     audio.onerror = () => finish(new Error(`“${asset.name}” couldn’t be played.`));
     playing.add(entry);
     changed();
-    tdSound('play', asset);
+    tdSound('play', asset, false, clampSoundVolume(volume));
     audio.play().catch((err: unknown) => finish(err ?? new Error('couldn’t start')));
   });
 }
@@ -247,7 +310,7 @@ export async function playEvent(
   await Promise.all(
     sounds.map((sound) => {
       onPlayed(sound);
-      const playing = playSound(sound.asset, ask).catch((err: unknown) =>
+      const playing = playSound(sound.asset, ask, clampSoundVolume(sound.link.volume)).catch((err: unknown) =>
         onPlayed(sound, err instanceof Error ? err.message : 'It couldn’t be played.'),
       );
       if (sound.timing.voice === 'wait') return playing;

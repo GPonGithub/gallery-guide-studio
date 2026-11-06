@@ -35,6 +35,7 @@ import {
   playSound,
   stopLoops,
   stopSounds,
+  clampSoundVolume,
   isSoundPlaying,
   anySoundPlaying,
   onSoundsChange,
@@ -1732,7 +1733,8 @@ export default function AgentStudioPage() {
     noteMedia(media, afterMessage, 'shown');
     if (media.asset.kind === 'sound') {
       // "Loop, when user instructs": it loops until removed (or the call ends).
-      (loopOf(media.link) ? startLoop(media.asset) : playSound(media.asset)).catch(fail);
+      const volume = clampSoundVolume(media.link.volume);
+      (loopOf(media.link) ? startLoop(media.asset, volume) : playSound(media.asset, false, volume)).catch(fail);
       return;
     }
     mediaStarting.current.add(id);
@@ -1931,7 +1933,7 @@ export default function AgentStudioPage() {
       void sceneSounds(mediaScene, 'throughout').then((list) =>
         list.forEach((s) => {
           noteSound(s, 0);
-          startLoop(s.asset).catch((err: unknown) =>
+          startLoop(s.asset, clampSoundVolume(s.link.volume)).catch((err: unknown) =>
             noteSound(s, 0, err instanceof Error ? err.message : 'It couldn’t be played.'),
           );
         }),

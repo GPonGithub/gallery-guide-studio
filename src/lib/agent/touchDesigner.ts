@@ -297,13 +297,18 @@ export function syncVisuals(showing: Shown[]) {
 export const soundsHere = () => tdSettings().sounds !== 'touchdesigner' || !isOpen();
 
 /** A sound starting or stopping — sent to TouchDesigner when it plays sounds. */
-export function tdSound(action: 'play' | 'stop', asset: MediaAsset, loop = false) {
+export function tdSound(action: 'play' | 'stop', asset: MediaAsset, loop = false, volume = 1) {
   if (tdSettings().sounds === 'computer') return;
   send(
     action === 'play'
-      ? withFolder({ type: 'sound', action, id: asset.id, path: asset.path, loop })
+      ? withFolder({ type: 'sound', action, id: asset.id, path: asset.path, loop, volume })
       : { type: 'sound', action, id: asset.id },
   );
+}
+
+/** A playing sound's own volume (0–1.5, its bar's slider) changed. */
+export function tdSoundVolume(id: string, volume: number) {
+  if (tdSettings().sounds !== 'computer') send({ type: 'sound', action: 'volume', id, volume });
 }
 
 let lastLevels: { gain: number } | null = null;

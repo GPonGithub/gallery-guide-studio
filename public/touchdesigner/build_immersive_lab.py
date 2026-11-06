@@ -264,10 +264,26 @@ def play_sound(msg):
     ch = lab.op('sound%d' % k)
     ch.par.file = path
     set_loop_audio(ch, bool(msg.get('loop')))
+    set_volume(ch, msg)
     ch.par.play = 1
     ch.par.cuepulse.pulse()
     now('sound %d' % k, msg)
     return 'slot %d' % k, 'playing'
+
+
+def set_volume(ch, msg):
+    # The sound's own volume from its bar's slider: 0 (silent) to 1.5 (half as loud again as the file).
+    if hasattr(ch.par, 'volume'):
+        ch.par.volume = max(0.0, min(1.5, float(msg.get('volume', 1))))
+
+
+def sound_volume(msg):
+    sid = msg.get('id')
+    slots = [k for k, rid, _, _ in slot_rows() if rid and rid == sid]
+    for k in slots:
+        set_volume(lab.op('sound%d' % k), msg)
+    vol = round(max(0.0, min(1.5, float(msg.get('volume', 1)))) * 100)
+    return ', '.join('slot %d' % k for k in slots) or 'sound', 'volume %d%%' % vol if slots else 'not playing'
 
 
 def stop_sound(msg):
@@ -435,6 +451,7 @@ HANDLERS = {
     ('media', 'hide'): hide,
     ('sound', 'play'): play_sound,
     ('sound', 'stop'): stop_sound,
+    ('sound', 'volume'): sound_volume,
     ('levels', ''): levels,
     ('clear', ''): clear,
     ('medialist', ''): media_list,
@@ -551,8 +568,9 @@ GUIDE = [
      '{"type":"media","action":"show","area":5,"path":"forest.jpg","kind":"image","uv":[1,0,0,0,1,0,0,0,1]}'],
     ['(folder)', 'On media and sound messages: the scene\'s media folder, looked for inside the Media Folder',
      '{"type":"media","action":"show","area":2,"folder":"Scene 3 media","path":"forest.jpg","kind":"image"}'],
-    ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped',
-     '{"type":"sound","action":"play","id":"M-014","path":"ding.mp3","loop":false}'],
+    ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped; volume 0-1.5 (its bar\'s slider)',
+     '{"type":"sound","action":"play","id":"M-014","path":"ding.mp3","loop":false,"volume":1}'],
+    ['sound volume', 'Sets a playing sound\'s own volume, 0 (silent) to 1.5', '{"type":"sound","action":"volume","id":"M-014","volume":0.8}'],
     ['sound stop', 'Stops that sound (no id = every sound)', '{"type":"sound","action":"stop","id":"M-014"}'],
     ['levels', 'Sets the sounds\' volume (0-1), easing over ms - the Music / Sounds volume and the dip under the voice',
      '{"type":"levels","gain":0.4,"ms":400}'],

@@ -199,6 +199,8 @@ export type MediaLink = {
   timing?: Partial<Pick<ActionTiming, 'kind' | 'when' | 'voice' | 'delay'>>;
   /** A video loops for as long as it's on screen (the default), or plays once and holds its last frame (false). */
   loop?: boolean;
+  /** A sound's own volume, from its bar's slider: 0 (silent) to 1.5 (half as loud again as the file). Default 1. */
+  volume?: number;
   /** The file's name and kind when it was connected (for its bar on the timeline). */
   assetName?: string;
   assetKind?: MediaKind;

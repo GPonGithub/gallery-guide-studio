@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { areaOfTrack, barsOf, isMarker, loadLibrary, loadMediaLinks, loopOf, timingOf, mediaSceneKey } from './mediaFolder';
-import { isSoundPlaying, playSound, startLoop, stopSounds, type SceneRef } from './mediaPlayback';
+import { clampSoundVolume, isSoundPlaying, playSound, startLoop, stopSounds, type SceneRef } from './mediaPlayback';
 import { areasShowing, hideVisual, placeOf, placesShowing, showVisual } from './mediaShow';
 import { onTDConnected } from './touchDesigner';
 
@@ -82,7 +82,8 @@ export async function markerArrived(
     if (asset.kind === 'sound') {
       if (visualsOnly) continue;
       if (covering.length > 0 && !isSoundPlaying(asset.id)) {
-        void (loopOf(link) ? startLoop(asset) : playSound(asset)).catch(() => undefined);
+        const volume = clampSoundVolume(link.volume);
+        void (loopOf(link) ? startLoop(asset, volume) : playSound(asset, false, volume)).catch(() => undefined);
       } else if (covering.length === 0 && isSoundPlaying(asset.id)) {
         stopSounds(asset.id);
       }
