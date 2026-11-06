@@ -428,15 +428,34 @@ export function MediaTimeline({
     if (!drag || drag.key !== barKey(l, i)) return;
     const { now, start, copy } = drag;
     setDrag(null);
-    const placed: Bar = { track: now.track, from: stages[now.from].code, to: stages[now.to].code };
+    const original = barsOf(l)[i];
+    // A bar keeps everything it carries (a picture's placement on the room drawing above all) — only
+    // its track and stages change.
+    const placed: Bar = { ...original, track: now.track, from: stages[now.from].code, to: stages[now.to].code };
     // Let go where it started: nothing changed (and a duplicate dropped there isn't one).
     const moved = now.track !== start.track || now.from !== start.from || now.to !== start.to;
     if (!moved) return;
+    // A picture placed on the room drawing is one picture on several areas: moving it to other stages
+    // (or stretching it) takes all its bars along, so it stays one picture. Moved to another track, just
+    // that bar goes (still placed: that area shows its own slice).
+    const group =
+      !copy && original?.place && now.track === start.track
+        ? barsOf(l).filter(
+            (b) => b.place && b.from === original.from && b.to === original.to && JSON.stringify(b.place) === JSON.stringify(original.place),
+          )
+        : [];
     updateMediaLinks(
       (all) =>
         all.map((x) => {
           if (!sameLink(x, l)) return x;
-          return copy ? { ...x, copies: [...(x.copies ?? []), placed] } : withBar(x, i, placed);
+          if (copy) return { ...x, copies: [...(x.copies ?? []), placed] };
+          if (group.length > 1) {
+            const [bar, ...copies] = barsOf(x).map((b) =>
+              group.includes(b) ? { ...b, from: placed.from, to: placed.to } : b,
+            );
+            return { ...x, bar, copies };
+          }
+          return withBar(x, i, placed);
         }),
       copy ? 'Duplicate bar' : drag.mode === 'move' ? 'Move bar' : 'Stretch bar',
     );
