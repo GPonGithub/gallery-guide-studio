@@ -219,6 +219,16 @@ def show(msg):
     return where, 'shown' if msg.get('kind') == 'image' else 'playing'
 
 
+def reload_file(msg):
+    # The app replaced this file (converted it to H.264): every area playing it opens it again.
+    fp = os.path.normpath(full_path(msg))
+    areas = [a for a in range(1, AREAS + 1)
+             if fp and os.path.normpath(str(lab.op('movie%d' % a).par.file.eval())) == fp]
+    for a in areas:
+        lab.op('movie%d' % a).par.reloadpulse.pulse()
+    return ', '.join('area %d' % a for a in areas) or 'media', 'reloaded' if areas else 'not showing'
+
+
 def hide_area(area):
     route(area, 0, {})
     lab.op('movie%d' % area).par.play = 0
@@ -481,6 +491,7 @@ HANDLERS = {
     ('media', 'show'): show,
     ('media', 'play'): show,
     ('media', 'hide'): hide,
+    ('media', 'reload'): reload_file,
     ('sound', 'play'): play_sound,
     ('sound', 'stop'): stop_sound,
     ('sound', 'volume'): sound_volume,
@@ -604,6 +615,8 @@ GUIDE = [
      '{"type":"media","action":"show","area":2,"folder":"Scene 3 media","path":"forest.jpg","kind":"image"}'],
     ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped; volume 0-1.5 (its bar\'s slider); pan = speakers 1-4',
      '{"type":"sound","action":"play","id":"M-014","path":"ding.mp3","loop":false,"volume":1,"pan":[0.5,0.5,0.5,0.5]}'],
+    ['media reload', 'A file the app replaced (converted to H.264): areas showing it open it again',
+     '{"type":"media","action":"reload","folder":"Scene 3 media","path":"forest.mov"}'],
     ['sound pan', 'Where a playing sound is heard: how loud speakers 1-4 play it (0-1 each; 1 front left, 2 back right, 3 back left, 4 front right)',
      '{"type":"sound","action":"pan","id":"M-014","pan":[1,0,0,0]}'],
     ['sound volume', 'Sets a playing sound\'s own volume, 0 (silent) to 1.5', '{"type":"sound","action":"volume","id":"M-014","volume":0.8}'],

@@ -313,6 +313,11 @@ export function tdSound(
   );
 }
 
+/** A video in the media folder was replaced (converted to H.264): TouchDesigner opens it again wherever it's up. */
+export function tdReloadFile(path: string) {
+  send(withFolder({ type: 'media', action: 'reload', path }));
+}
+
 /** A playing sound moved in the room (Spatialized Audio): how loud each speaker 1–4 plays it now. */
 export function tdSoundPan(id: string, pan: number[]) {
   if (tdSettings().sounds !== 'computer') send({ type: 'sound', action: 'pan', id, pan });

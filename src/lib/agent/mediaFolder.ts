@@ -114,12 +114,16 @@ export async function allowed(folder: MediaFolder, ask: boolean): Promise<boolea
   return ask && (await folder.requestPermission({ mode: 'read' })) === 'granted';
 }
 
-/** Every image, video and sound file in the folder and its subfolders (hidden files skipped). */
+/** Where a converted video's original is kept (see videoConvert.ts) — not part of the library. */
+export const ORIGINALS_FOLDER = 'Originals before H.264';
+
+/** Every image, video and sound file in the folder and its subfolders (hidden files, and the originals of converted videos, skipped). */
 export async function scanMediaFolder(folder: MediaFolder): Promise<FoundFile[]> {
   const found: FoundFile[] = [];
   const walk = async (dir: DirectoryHandle, prefix: string, depth: number) => {
     for await (const entry of dir.values()) {
       if (entry.name.startsWith('.')) continue;
+      if (entry.kind === 'directory' && depth === 0 && entry.name === ORIGINALS_FOLDER) continue;
       if (entry.kind === 'directory') {
         if (depth < 8) await walk(entry as DirectoryHandle, `${prefix}${entry.name}/`, depth + 1);
       } else {
