@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CollapsiblePanel } from './CollapsiblePanel';
+import { SpatialAudioPanel } from './SpatialAudioPanel';
+import { useSpatialPick } from '@/lib/agent/spatialAudio';
 import { DEMO_SCENE, DEMO_SHEET_ID, useMediaDemo, useMediaFolderRevision } from '@/lib/agent/mediaDemo';
 import { ProjectorsPanel } from './ProjectorsPanel';
 import { TouchDesignerPanel } from './TouchDesignerPanel';
@@ -456,6 +458,8 @@ export function ImmersiveMedia({
   };
 
   const assets = library?.assets ?? [];
+  // A sound's bar clicked on the timeline: step 6 opens on it.
+  const spatialAsked = useSpatialPick().asked;
 
   return (
     <>
@@ -563,6 +567,13 @@ export function ImmersiveMedia({
 
       <CollapsiblePanel title="5 · Set up the projectors" tourId="media-5">
         <ProjectorsPanel />
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="6 · Spatialized audio" tourId="media-6" openRequest={spatialAsked}>
+        <SpatialAudioPanel
+          scene={sceneSheet ? { sheetId: sceneSheet.sheetId, number: sceneSheet.number } : null}
+          assets={assets}
+        />
       </CollapsiblePanel>
     </>
   );

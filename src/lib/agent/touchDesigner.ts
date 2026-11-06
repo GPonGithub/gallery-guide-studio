@@ -297,13 +297,25 @@ export function syncVisuals(showing: Shown[]) {
 export const soundsHere = () => tdSettings().sounds !== 'touchdesigner' || !isOpen();
 
 /** A sound starting or stopping — sent to TouchDesigner when it plays sounds. */
-export function tdSound(action: 'play' | 'stop', asset: MediaAsset, loop = false, volume = 1) {
+export function tdSound(
+  action: 'play' | 'stop',
+  asset: MediaAsset,
+  loop = false,
+  volume = 1,
+  /** How loud each of the room's speakers 1–4 plays it (Spatialized Audio). */
+  pan: number[] = [0.5, 0.5, 0.5, 0.5],
+) {
   if (tdSettings().sounds === 'computer') return;
   send(
     action === 'play'
-      ? withFolder({ type: 'sound', action, id: asset.id, path: asset.path, loop, volume })
+      ? withFolder({ type: 'sound', action, id: asset.id, path: asset.path, loop, volume, pan })
       : { type: 'sound', action, id: asset.id },
   );
+}
+
+/** A playing sound moved in the room (Spatialized Audio): how loud each speaker 1–4 plays it now. */
+export function tdSoundPan(id: string, pan: number[]) {
+  if (tdSettings().sounds !== 'computer') send({ type: 'sound', action: 'pan', id, pan });
 }
 
 /** A playing sound's looping (its bar's loop button) changed. */

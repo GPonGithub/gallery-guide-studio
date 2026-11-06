@@ -1,6 +1,6 @@
 'use client';
 
-import { useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { fieldLabel } from '@/lib/styles';
 
 /**
@@ -14,8 +14,11 @@ export function CollapsiblePanel({
   defaultOpen = false,
   tourId,
   onOpenChange,
+  openRequest,
   children,
 }: {
+  /** Opens it (and scrolls it into view) whenever this number changes — something elsewhere asked for it. */
+  openRequest?: number;
   title: string;
   defaultOpen?: boolean;
   /** Marks it for the onboarding tour (see OnboardingTour). */
@@ -26,8 +29,20 @@ export function CollapsiblePanel({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const bodyId = useId();
+  const section = useRef<HTMLElement>(null);
+  const seen = useRef(openRequest);
+  useEffect(() => {
+    if (openRequest === seen.current) return;
+    seen.current = openRequest;
+    setOpen(true);
+    onOpenChange?.(true);
+    // After it has begun to open, so the whole of it comes into view.
+    const t = setTimeout(() => section.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 220);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openRequest]);
   return (
-    <section className="border-b border-hair" data-tour={tourId}>
+    <section ref={section} className="border-b border-hair" data-tour={tourId}>
       <button
         onClick={() => {
           setOpen(!open);

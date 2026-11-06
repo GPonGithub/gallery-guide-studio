@@ -265,6 +265,7 @@ def play_sound(msg):
     ch.par.file = path
     set_loop_audio(ch, bool(msg.get('loop')))
     set_volume(ch, msg)
+    set_pan(k, msg)
     ch.par.play = 1
     ch.par.cuepulse.pulse()
     now('sound %d' % k, msg)
@@ -284,6 +285,27 @@ def sound_volume(msg):
         set_volume(lab.op('sound%d' % k), msg)
     vol = round(max(0.0, min(1.5, float(msg.get('volume', 1)))) * 100)
     return ', '.join('slot %d' % k for k in slots) or 'sound', 'volume %d%%' % vol if slots else 'not playing'
+
+
+def set_pan(k, msg):
+    # Where the sound is heard in the room (the app's Spatialized Audio): how loud speakers 1-4 play it.
+    c = lab.op('sp_pan%d' % k)
+    if c is None:
+        return
+    gains = msg.get('pan') or [0.5, 0.5, 0.5, 0.5]
+    for n in range(4):
+        g = float(gains[n]) if n < len(gains) else 0.0
+        getattr(c.par, 'value%d' % n).val = max(0.0, min(1.0, g))
+
+
+def sound_pan(msg):
+    sid = msg.get('id')
+    slots = [k for k, rid, _, _ in slot_rows() if rid and rid == sid]
+    for k in slots:
+        set_pan(k, msg)
+    g = msg.get('pan') or []
+    text = ' '.join('%d:%d%%' % (n + 1, round(float(v) * 100)) for n, v in enumerate(g[:4]))
+    return ', '.join('slot %d' % k for k in slots) or 'sound', ('speakers ' + text) if slots else 'not playing'
 
 
 def sound_loop(msg):
@@ -463,6 +485,7 @@ HANDLERS = {
     ('sound', 'stop'): stop_sound,
     ('sound', 'volume'): sound_volume,
     ('sound', 'loop'): sound_loop,
+    ('sound', 'pan'): sound_pan,
     ('levels', ''): levels,
     ('clear', ''): clear,
     ('medialist', ''): media_list,
@@ -579,8 +602,10 @@ GUIDE = [
      '{"type":"media","action":"show","area":5,"path":"forest.jpg","kind":"image","uv":[1,0,0,0,1,0,0,0,1]}'],
     ['(folder)', 'On media and sound messages: the scene\'s media folder, looked for inside the Media Folder',
      '{"type":"media","action":"show","area":2,"folder":"Scene 3 media","path":"forest.jpg","kind":"image"}'],
-    ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped; volume 0-1.5 (its bar\'s slider)',
-     '{"type":"sound","action":"play","id":"M-014","path":"ding.mp3","loop":false,"volume":1}'],
+    ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped; volume 0-1.5 (its bar\'s slider); pan = speakers 1-4',
+     '{"type":"sound","action":"play","id":"M-014","path":"ding.mp3","loop":false,"volume":1,"pan":[0.5,0.5,0.5,0.5]}'],
+    ['sound pan', 'Where a playing sound is heard: how loud speakers 1-4 play it (0-1 each; 1 front left, 2 back right, 3 back left, 4 front right)',
+     '{"type":"sound","action":"pan","id":"M-014","pan":[1,0,0,0]}'],
     ['sound volume', 'Sets a playing sound\'s own volume, 0 (silent) to 1.5', '{"type":"sound","action":"volume","id":"M-014","volume":0.8}'],
     ['sound loop', 'Turns a playing sound\'s looping on or off', '{"type":"sound","action":"loop","id":"M-014","loop":true}'],
     ['sound stop', 'Stops that sound (no id = every sound)', '{"type":"sound","action":"stop","id":"M-014"}'],
@@ -632,6 +657,62 @@ void main()
     fragColor = TDOutputSwizzle(c);
 }
 '''
+
+
+SPEAKERS = 4
+
+
+def build_spatial(lab):
+    """Spatialized audio: each sound slot, made mono, is played by the room's four speakers (the
+    GIGAPORT eX's outputs 1-4) as loud as its sp_panN levels say - the app sets them from where the
+    sound's dot is. Safe to run again: it replaces its own nodes (named sp_...) and leaves the rest."""
+    for o in list(lab.findChildren(name='sp_*', depth=1)):
+        o.destroy()
+    buses = []
+    for n in range(1, SPEAKERS + 1):
+        bus = place(lab.create(mathCHOP, 'sp_bus%d' % n), 1000, -1100 - (n - 1) * 160)
+        setp(bus, 'chopop', 'add')
+        buses.append(bus)
+    for k in range(1, SOUND_SLOTS + 1):
+        y = -1100 - (k - 1) * 130
+        mono = place(lab.create(mathCHOP, 'sp_mono%d' % k), 0, y)
+        mono.inputConnectors[0].connect(lab.op('sound%d' % k))
+        setp(mono, 'chanop', 'avg')
+        name = place(lab.create(renameCHOP, 'sp_name%d' % k), 150, y)
+        name.inputConnectors[0].connect(mono)
+        setp(name, 'renamefrom', '*')
+        setp(name, 'renameto', 'm')
+        pan = place(lab.create(constantCHOP, 'sp_pan%d' % k), 300, y - 60)
+        for n in range(SPEAKERS):
+            setp(pan, 'name%d' % n, 's%d' % (n + 1))
+            setp(pan, 'value%d' % n, 0.5)
+        for n in range(1, SPEAKERS + 1):
+            g = place(lab.create(mathCHOP, 'sp_%d_%d' % (k, n)), 450 + (n - 1) * 120, y)
+            g.inputConnectors[0].connect(name)
+            g.par.gain.expr = "op('sp_pan%d')['s%d']" % (k, n)
+            buses[n - 1].inputConnectors[k - 1].connect(g)
+    quad = place(lab.create(mergeCHOP, 'sp_quad'), 1300, -1300)
+    for n, bus in enumerate(buses, 1):
+        out = place(lab.create(renameCHOP, 'sp_out%d' % n), 1150, -1100 - (n - 1) * 160)
+        out.inputConnectors[0].connect(bus)
+        setp(out, 'renamefrom', '*')
+        setp(out, 'renameto', 'speaker%d' % n)
+        quad.inputConnectors[n - 1].connect(out)
+    level = place(lab.create(mathCHOP, 'sp_level'), 1450, -1300)
+    level.inputConnectors[0].connect(quad)
+    level.par.gain.expr = "op('level_lag')['gain']"
+    dev = lab.op('audio_out')
+    dev.inputConnectors[0].connect(level)
+    dev.nodeX, dev.nodeY = 1600, -1300
+    # The room's speakers: the GIGAPORT eX, if this computer has it.
+    p = getattr(dev.par, 'device', None)
+    if p is not None and p.isMenu:
+        giga = [(v, l) for v, l in zip(p.menuNames, p.menuLabels) if 'gigaport' in (v + l).lower()]
+        if giga:
+            p.val = giga[0][0]
+            print('Sound goes to %s (speakers 1-4 on its outputs 1-4).' % giga[0][1])
+        else:
+            warn('No GIGAPORT found for audio_out - sound goes to %s.' % (p.menuLabels[p.menuIndex] if p.menuLabels else '?'))
 
 
 def build():
@@ -802,6 +883,7 @@ def build():
     dev.inputConnectors[0].connect(mix)
     aout = place(lab.create(outCHOP, 'out_audio'), 400, -1450)
     aout.inputConnectors[0].connect(mix)
+    build_spatial(lab)
 
     # The Open Preview button: a window with all 11 areas.
     pe = place(lab.create(parameterexecuteDAT, 'open_preview'), -600, 600)

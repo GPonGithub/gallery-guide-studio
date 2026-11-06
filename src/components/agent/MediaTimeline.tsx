@@ -22,6 +22,7 @@ import {
 import { useMediaFolderRevision } from '@/lib/agent/mediaDemo';
 import { clampSoundVolume, MAX_SOUND_VOLUME, setSoundLoop, setSoundVolume, stopSounds } from '@/lib/agent/mediaPlayback';
 import { hideVisualExcept } from '@/lib/agent/mediaShow';
+import { pickSpatialSound } from '@/lib/agent/spatialAudio';
 import {
   areaOfTrack,
   barsOf,
@@ -434,6 +435,8 @@ export function MediaTimeline({
     const placed: Bar = { ...original, track: now.track, from: stages[now.from].code, to: stages[now.to].code };
     // Let go where it started: nothing changed (and a duplicate dropped there isn't one).
     const moved = now.track !== start.track || now.from !== start.from || now.to !== start.to;
+    // A sound's bar clicked (not moved): Spatialized Audio opens on it.
+    if (!moved && drag.mode === 'move' && !copy && isSound(l)) pickSpatialSound(l);
     if (!moved) return;
     // A picture placed on the room drawing is one picture on several areas: moving it to other stages
     // (or stretching it) takes all its bars along, so it stays one picture. Moved to another track, just
@@ -949,7 +952,8 @@ export function MediaTimeline({
                       e.stopPropagation();
                       letGo(l, i);
                     }}
-                    className={`h-full w-2 shrink-0 cursor-ew-resize bg-ink/20 ${end === 'from' ? 'border-r' : 'border-l'} border-paper/50`}
+                    // Pinned to the bar's edges, so they're there to grab however short the bar is.
+                    className={`absolute inset-y-0 z-20 w-2 cursor-ew-resize bg-ink/20 ${end === 'from' ? 'left-0 border-r' : 'right-0 border-l'} border-paper/50`}
                     aria-hidden="true"
                   />
                 );
@@ -964,7 +968,7 @@ export function MediaTimeline({
                     onPointerUp={() => letGo(l, i)}
                     onPointerCancel={() => setDrag(null)}
                     title={`${l.action || 'Not connected to an action yet'}\n${l.assetId}${l.assetName ? ` ${l.assetName}` : ''} · ${stagesText(place)} — drag to move, drag an end to stretch, Option-drag to duplicate, ▼ to connect it to an action`}
-                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border border-[#3c5eac] text-paper shadow-sm ${
+                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border border-[#3c5eac] px-2 text-paper shadow-sm ${
                       isConnected(l) ? 'bg-[#3c5eac]' : 'border-dashed border-paper/80 bg-[#3c5eac]/60'
                     } ${
                       optionHeld ? 'cursor-copy' : 'cursor-grab active:cursor-grabbing'
@@ -1016,7 +1020,7 @@ export function MediaTimeline({
                           ? 'Delete this bar'
                           : 'Delete this bar — its file is disconnected from the action (connect it again in the Media Library)'
                       }
-                      className="mr-[5px] flex h-full w-6 shrink-0 cursor-pointer items-center justify-center font-body text-xl leading-none text-paper/80 hover:bg-ink/30 hover:text-paper"
+                      className="flex h-full w-6 shrink-0 cursor-pointer items-center justify-center font-body text-xl leading-none text-paper/80 hover:bg-ink/30 hover:text-paper"
                     >
                       ×
                     </button>
@@ -1147,7 +1151,8 @@ function BarVolume({ link }: { link: MediaLink }) {
       onPointerMove={(e) => e.stopPropagation()}
       onPointerUp={(e) => e.stopPropagation()}
       data-bar-volume
-      className="flex h-full shrink-0 items-center gap-1 px-1"
+      // Gives way first on a short bar, so its ▼ and × stay in reach.
+      className="flex h-full min-w-0 shrink items-center gap-1 overflow-hidden px-1"
       title={`Volume ${percent}% — from silent to half as loud again as the file (100% is the file as it is)`}
     >
       <span className="font-body text-[11px] leading-none" aria-hidden="true">
@@ -1169,7 +1174,7 @@ function BarVolume({ link }: { link: MediaLink }) {
         onBlur={save}
         aria-label={`Volume of ${link.assetName ?? link.assetId}`}
         aria-valuetext={`${percent}%`}
-        className="h-1 w-20 cursor-pointer accent-paper"
+        className="h-1 w-20 min-w-[28px] shrink cursor-pointer accent-paper"
       />
       <span className="w-8 text-right font-body text-[11px] tabular-nums leading-none">{percent}%</span>
       <BarLoop link={link} />
@@ -1351,7 +1356,7 @@ function BarThumb({ link, asset, folder }: { link: MediaLink; asset?: MediaAsset
     };
   }, [folder, path, kind, link.assetId]);
 
-  const frame = 'pointer-events-none h-full shrink-0 overflow-hidden border-r border-paper/50';
+  const frame = 'pointer-events-none h-full min-w-0 shrink overflow-hidden border-r border-paper/50';
   if (kind === 'sound') {
     return (
       <span className={`${frame} flex items-center whitespace-nowrap bg-paper px-1.5 font-label text-[10px] uppercase tracking-wide text-ink`}>

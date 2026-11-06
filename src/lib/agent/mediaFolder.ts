@@ -201,6 +201,8 @@ export type MediaLink = {
   loop?: boolean;
   /** A sound's own volume, from its bar's slider: 0 (silent) to 1.5 (half as loud again as the file). Default 1. */
   volume?: number;
+  /** A sound's place in the room (Spatialized Audio): x left -1 … right 1, y back -1 … front 1. Default the middle. */
+  pan?: { x: number; y: number };
   /** The file's name and kind when it was connected (for its bar on the timeline). */
   assetName?: string;
   assetKind?: MediaKind;
