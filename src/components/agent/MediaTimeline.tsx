@@ -186,6 +186,7 @@ export function MediaTimeline({
   const index = found >= 0 ? found : 0;
   // Moved by hand (◀ ▶, the ruler, arrow keys): "on marker arrival" media plays for where it lands.
   const movedByHand = useRef(false);
+  const [soundProblem, setSoundProblem] = useState<string | null>(null);
   const moveTo = (to: number | ((i: number) => number)) => {
     if (count === 0) return;
     movedByHand.current = true;
@@ -218,7 +219,10 @@ export function MediaTimeline({
   useEffect(() => {
     if (!movedByHand.current) return;
     movedByHand.current = false;
-    void markerArrived(scene, stages, headCode);
+    setSoundProblem(null);
+    // A click moved it: the browser may ask to read the media folder (it forgets after a reload), and a
+    // sound that can't play says why.
+    void markerArrived(scene, stages, headCode, { ask: true, onProblem: setSoundProblem });
     // Only the marker landing somewhere new matters (stages and scene go with headCode).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [headCode]);
@@ -655,6 +659,16 @@ export function MediaTimeline({
         </p>
         {current && (
           <div className="flex min-w-0 shrink items-center gap-1">
+            {soundProblem && (
+              <button
+                role="alert"
+                onClick={() => setSoundProblem(null)}
+                title={`${soundProblem} (click to hide)`}
+                className="mr-2 max-w-[320px] truncate border-l-4 border-[#b91c1c] bg-paper px-2 py-1 text-left font-body text-xs text-ink"
+              >
+                {soundProblem}
+              </button>
+            )}
             {historyNote && noteShown === historyNote.at && (
               <span
                 role="status"
@@ -1126,7 +1140,7 @@ function OpenArrow({ open }: { open: boolean }) {
  * whether a video or sound loops. Each change is one undo step, and the bars follow it.
  */
 /**
- * A sound bar's volume: a slider from silent to MAX_SOUND_VOLUME (×1.5). The sound follows it as it
+ * A sound bar's volume: a slider from silent to MAX_SOUND_VOLUME (×4, 400%). The sound follows it as it
  * moves (here and in TouchDesigner); letting go saves it on the bar's connection, as one Undo step.
  */
 function BarVolume({ link }: { link: MediaLink }) {
@@ -1153,7 +1167,7 @@ function BarVolume({ link }: { link: MediaLink }) {
       data-bar-volume
       // Gives way first on a short bar, so its ▼ and × stay in reach.
       className="flex h-full min-w-0 shrink items-center gap-1 overflow-hidden px-1"
-      title={`Volume ${percent}% — from silent to half as loud again as the file (100% is the file as it is)`}
+      title={`Volume ${percent}% — from silent to 400% (100% is the file as it is; above that a limiter keeps it from distorting)`}
     >
       <span className="font-body text-[11px] leading-none" aria-hidden="true">
         {value === 0 ? '🔇' : '🔊'}

@@ -1,7 +1,7 @@
 'use client';
 
 import { useSyncExternalStore } from 'react';
-import { dipToShare, levelToGain } from '@/components/agent/backgroundMusic';
+import { dipToShare } from '@/components/agent/backgroundMusic';
 import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
 import { soundsHere, tdLevels, tdSound, tdSoundLoop, tdSoundPan, tdSoundVolume } from './touchDesigner';
 import { browserChannelLevels, clampPan, panOf, speakerGains, stereoGains, type Pan } from './spatialAudio';
@@ -58,17 +58,17 @@ export async function sceneSounds(scene: SceneRef | null, kind: ActionKind): Pro
 const DUCK_DOWN_MS = 400;
 const DUCK_UP_MS = 1200;
 const LEVEL_CHANGE_MS = 150;
-const levels = { volume: 5, dip: 5 };
+const levels = { volume: 10, dip: 5 };
 let ducked = false;
 const sounding = new Map<HTMLAudioElement, ReturnType<typeof setInterval> | null>();
 
-/** How loud a timeline sound plays now (0–1). */
-const soundVolume = () => levelToGain(levels.volume) * (ducked ? dipToShare(levels.dip) : 1);
+/** How loud a timeline sound plays now (0–1): its own Sounds volume (straight, 10 = full), dipped under the voice. */
+const soundVolume = () => Math.max(0, Math.min(1, levels.volume / 10)) * (ducked ? dipToShare(levels.dip) : 1);
 
 // Each sound's own volume, from its bar's slider on the timeline: 0 (silent) to MAX_SOUND_VOLUME
-// (half as loud again as the file). Up to full it scales the player's volume; above full the
+// (four times the file's level; the limiter keeps it from distorting). Up to full it scales the player's volume; above full the
 // player stays at the panel's level and a Web Audio gain makes up the rest.
-export const MAX_SOUND_VOLUME = 1.5;
+export const MAX_SOUND_VOLUME = 4;
 export const clampSoundVolume = (v: number | undefined) =>
   Math.max(0, Math.min(MAX_SOUND_VOLUME, Number.isFinite(v) ? (v as number) : 1));
 type Own = { assetId: string; volume: number; pan: Pan; gain?: GainNode; speakers?: GainNode[] };
@@ -162,6 +162,38 @@ export async function chooseRoomSpeakers(): Promise<RoomOutput | null> {
 }
 
 /**
+ * The sounds' last stop before the speakers: a limiter on each of the four channels. A sound turned up
+ * past full (its bar's slider, up to 400%) is held just under the loudest the output can play, instead
+ * of distorting; anything quieter passes through untouched.
+ */
+let limiter: AudioNode | null = null;
+function limiterOf(ctx: AudioContext): AudioNode {
+  if (limiter) return limiter;
+  const bus = ctx.createGain();
+  bus.channelCount = 4;
+  bus.channelCountMode = 'explicit';
+  bus.channelInterpretation = 'discrete';
+  const split = ctx.createChannelSplitter(4);
+  const join = ctx.createChannelMerger(4);
+  bus.connect(split);
+  for (let i = 0; i < 4; i++) {
+    const c = ctx.createDynamicsCompressor();
+    c.channelCount = 1;
+    c.channelCountMode = 'explicit';
+    c.threshold.value = -3; // dB below full scale
+    c.knee.value = 0;
+    c.ratio.value = 20;
+    c.attack.value = 0.002;
+    c.release.value = 0.15;
+    split.connect(c, i);
+    c.connect(join, 0, i);
+  }
+  join.connect(ctx.destination);
+  limiter = bus;
+  return bus;
+}
+
+/**
  * Every timeline sound goes through Web Audio (made when it starts; it stays): its own gain above full,
  * then one level per speaker, from where Spatialized Audio places it. On the room's four outputs each
  * speaker plays it on its own; on two, left and right follow the position.
@@ -188,7 +220,7 @@ function boost(audio: HTMLAudioElement) {
         return g;
       });
       context.createMediaElementSource(audio).connect(gain);
-      merger.connect(context.destination);
+      merger.connect(limiterOf(context));
       own.gain = gain;
     } catch {
       return; // No Web Audio: it plays as it is, on the default output.
@@ -285,7 +317,7 @@ function unfollow(audio: HTMLAudioElement) {
   owns.delete(audio);
 }
 
-/** The Music / Sounds panel's Volume and Dip (each 0–10), for the timeline's sounds too. */
+/** The Music / Sounds panel's Sounds volume and Dip (each 0–10), for the timeline's sounds. */
 export function setSoundLevels(volume: number, dip: number) {
   if (volume === levels.volume && dip === levels.dip) return;
   levels.volume = volume;
@@ -307,10 +339,10 @@ const loops = new Set<{ audio: HTMLAudioElement; stop: () => void }>();
  * Starts a sound looping until stopSounds/stopLoops — for "throughout the
  * scene" actions. Rejects if it can't be played.
  */
-export async function startLoop(asset: MediaAsset, volume = soundVolumeOf(asset.id)): Promise<void> {
+export async function startLoop(asset: MediaAsset, volume = soundVolumeOf(asset.id), ask = false): Promise<void> {
   const folder = await savedMediaFolder();
   if (!folder) throw new Error('No media folder has been chosen.');
-  if (!(await allowed(folder, false))) {
+  if (!(await allowed(folder, ask))) {
     throw new Error('The browser needs permission to read the media folder — open the Media Library and click Allow.');
   }
   const url = URL.createObjectURL(await openMediaFile(folder, asset.path));

@@ -16,14 +16,16 @@ export type Pan = { x: number; y: number };
 export const CENTRE: Pan = { x: 0, y: 0 };
 
 /**
- * The room's speakers, seen from the middle facing the front, by the number of the output they're on
- * (the GIGAPORT eX's outputs 1–4): 1 front left, 4 front right, 3 back left, 2 back right.
+ * The room's speakers, seen from the middle facing the front, in the order of the output they're on
+ * (`n`: the GIGAPORT eX's outputs 1–4, which the sound is sent by): 1 front left, 2 back right, 3 back
+ * left, 4 front right. `label` is the number the square shows for each (the room's own numbering,
+ * 2026-11-05): front left 3, front right 4, back left 2, back right 1. Relabelling changes only `label`.
  */
 export const SPEAKERS = [
-  { n: 1, x: -1, y: 1, name: 'Front left' },
-  { n: 2, x: 1, y: -1, name: 'Back right' },
-  { n: 3, x: -1, y: -1, name: 'Back left' },
-  { n: 4, x: 1, y: 1, name: 'Front right' },
+  { n: 1, label: 3, x: -1, y: 1, name: 'Front left' },
+  { n: 2, label: 1, x: 1, y: -1, name: 'Back right' },
+  { n: 3, label: 2, x: -1, y: -1, name: 'Back left' },
+  { n: 4, label: 4, x: 1, y: 1, name: 'Front right' },
 ] as const;
 
 const clamp1 = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0);

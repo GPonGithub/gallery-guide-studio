@@ -57,7 +57,17 @@ export async function markerArrived(
   scene: SceneRef | null,
   stages: { code: string }[],
   code: string | null | undefined,
-  { visualsOnly = false } = {},
+  {
+    visualsOnly = false,
+    ask = false,
+    onProblem,
+  }: {
+    visualsOnly?: boolean;
+    /** From a click (moving the marker by hand): the browser may ask for permission to read the media folder. */
+    ask?: boolean;
+    /** Hears why a sound couldn't play (no folder, no permission, a file that won't open). */
+    onProblem?: (text: string) => void;
+  } = {},
 ) {
   if (!scene || !code) return;
   const at = stages.findIndex((s) => s.code === code);
@@ -83,7 +93,9 @@ export async function markerArrived(
       if (visualsOnly) continue;
       if (covering.length > 0 && !isSoundPlaying(asset.id)) {
         const volume = clampSoundVolume(link.volume);
-        void (loopOf(link) ? startLoop(asset, volume) : playSound(asset, false, volume)).catch(() => undefined);
+        void (loopOf(link) ? startLoop(asset, volume, ask) : playSound(asset, ask, volume)).catch((err: unknown) =>
+          onProblem?.(`“${asset.name}” didn’t play: ${err instanceof Error ? err.message : 'it couldn’t be played.'}`),
+        );
       } else if (covering.length === 0 && isSoundPlaying(asset.id)) {
         stopSounds(asset.id);
       }

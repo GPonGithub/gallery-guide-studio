@@ -283,9 +283,9 @@ def play_sound(msg):
 
 
 def set_volume(ch, msg):
-    # The sound's own volume from its bar's slider: 0 (silent) to 1.5 (half as loud again as the file).
+    # The sound's own volume from its bar's slider: 0 (silent) to 4 (four times the file; the app limits it, TouchDesigner does not).
     if hasattr(ch.par, 'volume'):
-        ch.par.volume = max(0.0, min(1.5, float(msg.get('volume', 1))))
+        ch.par.volume = max(0.0, min(4.0, float(msg.get('volume', 1))))
 
 
 def sound_volume(msg):
@@ -293,7 +293,7 @@ def sound_volume(msg):
     slots = [k for k, rid, _, _ in slot_rows() if rid and rid == sid]
     for k in slots:
         set_volume(lab.op('sound%d' % k), msg)
-    vol = round(max(0.0, min(1.5, float(msg.get('volume', 1)))) * 100)
+    vol = round(max(0.0, min(4.0, float(msg.get('volume', 1)))) * 100)
     return ', '.join('slot %d' % k for k in slots) or 'sound', 'volume %d%%' % vol if slots else 'not playing'
 
 
@@ -613,13 +613,13 @@ GUIDE = [
      '{"type":"media","action":"show","area":5,"path":"forest.jpg","kind":"image","uv":[1,0,0,0,1,0,0,0,1]}'],
     ['(folder)', 'On media and sound messages: the scene\'s media folder, looked for inside the Media Folder',
      '{"type":"media","action":"show","area":2,"folder":"Scene 3 media","path":"forest.jpg","kind":"image"}'],
-    ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped; volume 0-1.5 (its bar\'s slider); pan = speakers 1-4',
+    ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped; volume 0-4 (its bar\'s slider); pan = speakers 1-4',
      '{"type":"sound","action":"play","id":"M-014","path":"ding.mp3","loop":false,"volume":1,"pan":[0.5,0.5,0.5,0.5]}'],
     ['media reload', 'A file the app replaced (converted to H.264): areas showing it open it again',
      '{"type":"media","action":"reload","folder":"Scene 3 media","path":"forest.mov"}'],
     ['sound pan', 'Where a playing sound is heard: how loud speakers 1-4 play it (0-1 each; 1 front left, 2 back right, 3 back left, 4 front right)',
      '{"type":"sound","action":"pan","id":"M-014","pan":[1,0,0,0]}'],
-    ['sound volume', 'Sets a playing sound\'s own volume, 0 (silent) to 1.5', '{"type":"sound","action":"volume","id":"M-014","volume":0.8}'],
+    ['sound volume', 'Sets a playing sound\'s own volume, 0 (silent) to 4', '{"type":"sound","action":"volume","id":"M-014","volume":0.8}'],
     ['sound loop', 'Turns a playing sound\'s looping on or off', '{"type":"sound","action":"loop","id":"M-014","loop":true}'],
     ['sound stop', 'Stops that sound (no id = every sound)', '{"type":"sound","action":"stop","id":"M-014"}'],
     ['levels', 'Sets the sounds\' volume (0-1), easing over ms - the Music / Sounds volume and the dip under the voice',

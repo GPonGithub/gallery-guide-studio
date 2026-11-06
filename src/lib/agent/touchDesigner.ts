@@ -328,7 +328,7 @@ export function tdSoundLoop(id: string, loop: boolean) {
   if (tdSettings().sounds !== 'computer') send({ type: 'sound', action: 'loop', id, loop });
 }
 
-/** A playing sound's own volume (0–1.5, its bar's slider) changed. */
+/** A playing sound's own volume (0–4, its bar's slider) changed. */
 export function tdSoundVolume(id: string, volume: number) {
   if (tdSettings().sounds !== 'computer') send({ type: 'sound', action: 'volume', id, volume });
 }

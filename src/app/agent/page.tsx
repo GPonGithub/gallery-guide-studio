@@ -182,8 +182,10 @@ type Saved = {
   voiceExpressive: boolean;
   /** Background music volume, 0–10. (The file itself lives in IndexedDB — see musicStore.) */
   musicVolume: number;
-  /** How far the music dips while the agent talks, 0–10 (10 = silent). */
+  /** How far the music dips while the agent talks, 0–10 (10 = silent). The timeline's sounds dip too. */
   musicDip: number;
+  /** The timeline's sounds' own volume, 0–10 (straight: 10 = the files at full, 5 = half). Default full. */
+  soundsVolume?: number;
   /** The open project's music (its file is in IndexedDB — see musicStore), or none. */
   musicTrack: { name: string; key: string } | null;
 };
@@ -324,6 +326,7 @@ function loadSaved(): Saved {
     voiceExpressive: false,
     musicVolume: 5,
     musicDip: 5,
+    soundsVolume: 10,
     musicTrack: null,
   };
   try {
@@ -581,9 +584,9 @@ export default function AgentStudioPage() {
   }, [musicKey]); // eslint-disable-line react-hooks/exhaustive-deps -- only a different file needs loading
   useEffect(() => {
     if (saved) musicRef.current?.setLevels(saved.musicVolume, saved.musicDip);
-    // The timeline's sounds follow the same Volume and Dip.
-    if (saved) setSoundLevels(saved.musicVolume, saved.musicDip);
-  }, [saved?.musicVolume, saved?.musicDip]); // eslint-disable-line react-hooks/exhaustive-deps -- only the two levels matter
+    // The timeline's sounds have their own volume, and dip under the voice as the music does.
+    if (saved) setSoundLevels(saved.soundsVolume ?? 10, saved.musicDip);
+  }, [saved?.musicVolume, saved?.musicDip, saved?.soundsVolume]); // eslint-disable-line react-hooks/exhaustive-deps -- only the levels matter
   // While "Try the dip" is running, the agent finishing speaking mustn't cut it short (and vice versa).
   const speakingRef = useRef(false);
   const tryingDipRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2487,6 +2490,7 @@ export default function AgentStudioPage() {
                   soundsPlaying={soundsPlaying}
                   volume={saved.musicVolume}
                   dip={saved.musicDip}
+                  soundsVolume={saved.soundsVolume ?? 10}
                   onFile={async (file) => {
                     const key = crypto.randomUUID();
                     const kept = await saveTrack({ name: file.name, key, blob: file });
@@ -2516,6 +2520,7 @@ export default function AgentStudioPage() {
                   }}
                   onVolumeChange={(musicVolume) => setSaved({ ...saved, musicVolume })}
                   onDipChange={(musicDip) => setSaved({ ...saved, musicDip })}
+                  onSoundsVolumeChange={(soundsVolume) => setSaved({ ...saved, soundsVolume })}
                 />
                 <VoicePanel
                   settings={saved.voiceSettings ?? DEFAULT_VOICE_SETTINGS}

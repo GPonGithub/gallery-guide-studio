@@ -169,8 +169,11 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
 
   const where = isCentre(pan)
     ? 'the middle of the room — all four speakers evenly'
-    : (SPEAKERS.filter((_, i) => gains[i] > 0.995).map((s) => `only speaker ${s.n} (${s.name.toLowerCase()})`)[0] ??
-      SPEAKERS.map((s, i) => `${s.n}: ${Math.round(gains[i] * 100)}%`).join(', '));
+    : (SPEAKERS.filter((_, i) => gains[i] > 0.995).map((s) => `only speaker ${s.label} (${s.name.toLowerCase()})`)[0] ??
+      SPEAKERS.map((s, i) => ({ label: s.label, level: gains[i] }))
+        .sort((a, b) => a.label - b.label)
+        .map((s) => `${s.label}: ${Math.round(s.level * 100)}%`)
+        .join(', '));
 
   return (
     <div className="flex flex-col gap-2" data-tour="spatial-square">
@@ -230,9 +233,9 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
                     background: `rgba(60, 94, 172, ${0.1 + 0.8 * level})`,
                     color: level > 0.55 ? '#fff' : undefined,
                   }}
-                  title={`Speaker ${s.n} — ${s.name}`}
+                  title={`Speaker ${s.label} — ${s.name}`}
                 >
-                  {s.n}
+                  {s.label}
                 </span>
               </span>
             );
