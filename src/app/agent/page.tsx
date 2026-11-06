@@ -20,6 +20,7 @@ import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo
 import { LAYOUT_DEMO_ACTIONS } from '@/components/agent/layoutDemo';
 import { DEMO_SCENE, DEMO_STAGES, endMediaDemo, useMediaDemo } from '@/lib/agent/mediaDemo';
 import { forgetMarker, markerArrived, replayMarker } from '@/lib/agent/markerPlay';
+import { send as sendToTD } from '@/lib/agent/touchDesigner';
 import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -848,6 +849,18 @@ export default function AgentStudioPage() {
     setSelected(stage.id);
   };
 
+  // Stops everything the scene is playing: the voice, background music, every sound and loop, the
+  // pictures and video in the room, and (if it's connected) TouchDesigner's video and sound.
+  const stopSceneMedia = () => {
+    stopAudio();
+    musicRef.current?.stop();
+    stopLoops();
+    stopSounds();
+    clearVisuals();
+    forgetMarker();
+    sendToTD({ type: 'clear' });
+  };
+
   const stopAudio = () => {
     audioRef.current?.pause();
     audioRef.current = null;
@@ -968,6 +981,8 @@ export default function AgentStudioPage() {
     // The mics go off: the scene is starting again, and shouldn't pick anything up meanwhile.
     setOpenMicOn(false);
     if (listening) recognitionRef.current?.stop();
+    // Everything playing stops at once, here and in TouchDesigner, not only once the update is done.
+    stopSceneMedia();
     if (saved.sceneSheet || saved.brief.trim()) setUpdateRequest((n) => n + 1);
     else restart();
     const sceneId = saved.projectId ?? 'unsaved';
@@ -1023,11 +1038,7 @@ export default function AgentStudioPage() {
 
   // "Refresh this scene": just the open scene's conversation starts again.
   const restart = (code = startAt) => {
-    stopAudio();
-    musicRef.current?.stop();
-    stopLoops();
-    clearVisuals();
-    forgetMarker();
+    stopSceneMedia();
     setCueLog([]);
     setSoundLog([]);
     setSession(initialState(flow, code || undefined));
@@ -1042,11 +1053,7 @@ export default function AgentStudioPage() {
     setFlow(next);
     setSelected(select ?? 'design');
     setStartAt('');
-    stopAudio();
-    musicRef.current?.stop();
-    stopLoops();
-    clearVisuals();
-    forgetMarker();
+    stopSceneMedia();
     setCueLog([]);
     setSoundLog([]);
     setSession(initialState(next));
