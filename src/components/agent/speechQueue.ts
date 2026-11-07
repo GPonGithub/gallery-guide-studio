@@ -10,6 +10,7 @@
  */
 
 import type { StreamedClip } from './streamedAudio';
+import { voiceToAllSpeakers } from '@/lib/agent/mediaPlayback';
 
 export type SpeechQueueOptions = {
   /** Starts a sentence's audio streaming in (see streamedAudio.ts and /api/tts/stream). */
@@ -123,6 +124,7 @@ export class SpeechQueue {
   // `release` frees the source once it's done with, either way.
   private play(text: string, src: string, release: () => void, onFail: (detail: string) => void) {
     const audio = new Audio(src);
+    voiceToAllSpeakers(audio);
     this.playing = audio;
     if (this.options.expressive) {
       // The expressive models have no speed setting, so apply it here.

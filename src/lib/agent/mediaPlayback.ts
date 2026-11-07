@@ -241,6 +241,43 @@ function limiterOf(ctx: AudioContext): AudioNode {
 }
 
 /**
+ * The chatbot's voice in the room: a plain <audio> element only reaches the first two outputs
+ * (speakers 1 and 2), so the voice goes through the sounds' Web Audio instead, at the same level on
+ * all four outputs. It's one voice, the same on every channel, so Chrome's channel order doesn't
+ * matter. On a two-channel output it plays on both, as before. Call it once per element, before
+ * play(); without Web Audio the element plays as it is.
+ */
+const VOICE_LEVEL = Math.SQRT1_2; // each of the four: as loud in the room as full on two
+export function voiceToAllSpeakers(audio: HTMLAudioElement) {
+  try {
+    if (!context) {
+      context = new AudioContext();
+      void findRoomOutput(context);
+    }
+    const ctx = context;
+    const mono = ctx.createGain();
+    mono.channelCount = 1;
+    mono.channelCountMode = 'explicit';
+    mono.channelInterpretation = 'speakers';
+    mono.gain.value = VOICE_LEVEL;
+    const merger = ctx.createChannelMerger(4);
+    for (let i = 0; i < 4; i++) mono.connect(merger, 0, i);
+    merger.connect(ctx.destination);
+    ctx.createMediaElementSource(audio).connect(mono);
+    if (ctx.state === 'suspended') void ctx.resume();
+    // Let the nodes go once the element is done with (each clip gets a new element).
+    const done = () => {
+      merger.disconnect();
+      mono.disconnect();
+    };
+    audio.addEventListener('ended', done, { once: true });
+    audio.addEventListener('error', done, { once: true });
+  } catch {
+    // No Web Audio: it plays as it is, on the default output.
+  }
+}
+
+/**
  * Every timeline sound goes through Web Audio (made when it starts; it stays): its own gain above full,
  * then one level per speaker, from where Spatialized Audio places it. On the room's four outputs each
  * speaker plays it on its own; on two, left and right follow the position.

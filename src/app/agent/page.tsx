@@ -42,6 +42,7 @@ import {
   anySoundPlaying,
   onSoundsChange,
   setSoundLevels,
+  voiceToAllSpeakers,
   type PlannedSound,
 } from '@/lib/agent/mediaPlayback';
 import { clearVisuals, dropUnbacked, everyVisuals, hideVisual, isShowing, sceneMedia, showVisual, type PlannedMedia } from '@/lib/agent/mediaShow';
@@ -366,6 +367,34 @@ function loadSaved(): Saved {
   } catch {
     return fallback;
   }
+}
+
+/**
+ * Saves the open scene by itself: AUTOSAVE_MS after the last change (anything that turns the Save
+ * button red), so there's nothing to remember to click. A save that fails (its message shows) isn't
+ * tried again until something changes; a change made while a save is running is saved after it.
+ * Leaving the page saves what's waiting, if it can. Renders nothing.
+ */
+const AUTOSAVE_MS = 1200;
+function AutoSave({ changeKey, saving, save }: { changeKey: string; saving: boolean; save: () => Promise<boolean> }) {
+  const saveRef = useRef(save);
+  const failedKey = useRef<string | null>(null);
+  useEffect(() => {
+    saveRef.current = save;
+  });
+  useEffect(() => {
+    if (!changeKey || saving || failedKey.current === changeKey) return;
+    const timer = setTimeout(async () => {
+      if (!(await saveRef.current())) failedKey.current = changeKey;
+    }, AUTOSAVE_MS);
+    const leaving = () => void saveRef.current();
+    window.addEventListener('pagehide', leaving);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('pagehide', leaving);
+    };
+  }, [changeKey, saving]);
+  return null;
 }
 
 export default function AgentStudioPage() {
@@ -1098,18 +1127,24 @@ export default function AgentStudioPage() {
       return stored && stored.key === key ? stored.blob : null;
     },
   };
-  // The Save button: saves the open scene as it is, timeline and all.
-  const saveNow = async () => {
-    if (!saved.projectId || saving) return;
+  // The Save button (and the autosave below): saves the open scene as it is, timeline and all.
+  // Resolves false if it couldn't.
+  const saveNow = async (): Promise<boolean> => {
+    if (!saved.projectId || saving) return false;
     setSaving(true);
     try {
       markSaved(await saveProjectRequest(current, saved.projectName, false));
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Couldn’t save this scene.');
+      return false;
     } finally {
       setSaving(false);
     }
   };
+  // What the autosave watches: the open scene's content and timeline, while they differ from the save.
+  const autosaveKey =
+    saved.projectId && dirty ? `${saved.projectId}|${snapshotOf(contentOf(saved))}|${timelineSnapshotOf(timeline)}` : '';
   const okToLeave = () =>
     !dirty || window.confirm(`"${saved.projectName}" has unsaved changes. Continue without saving them?`);
 
@@ -1408,6 +1443,7 @@ export default function AgentStudioPage() {
       );
       stopAudio();
       const audio = new Audio(clip.src);
+      voiceToAllSpeakers(audio);
       audioRef.current = audio;
       audioExpressiveRef.current = expressive;
       // The expressive models have no speed setting, so apply the Speed
@@ -2290,6 +2326,7 @@ export default function AgentStudioPage() {
             {dirty ? 'Not Saved' : 'Saved'}
           </button>
           <ProjectFileButtons />
+          <AutoSave changeKey={autosaveKey} saving={saving} save={saveNow} />
         </div>
       </header>
       {/* This computer's copy of the browser's work, and a note when it was just put back (see localBackup.ts). */}

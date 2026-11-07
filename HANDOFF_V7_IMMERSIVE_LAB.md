@@ -62,6 +62,20 @@ Terminal panel tab ("dev server"), at **http://localhost:3000/agent**. TouchDesi
      comparing; before each write the cells were re-read to catch the user's own edits (they had edited row 3
      and row 10; those edits were kept).
 
+### Later 2026-11-07 (after commit `f00674b`; uncommitted)
+
+4. **The chatbot's voice plays on all four speakers.** It was a plain `<audio>` element, which only reaches the
+   GIGAPORT's outputs 1–2. New `voiceToAllSpeakers(audio)` in `mediaPlayback.ts` sends it through the shared
+   AudioContext (mono, `VOICE_LEVEL` = 1/√2 on each of the 4 channels, straight to the destination, no limiter);
+   called in `speechQueue.ts` `play()` and in `page.tsx` where the single reply clip plays. Not yet heard in the room.
+5. **Autosave of the open scene.** `AutoSave` component in `page.tsx` (rendered beside the Save button): 1.2 s after
+   the last change that turns Save red, it calls `saveNow()` (now returns true/false). A failed save isn't retried
+   until something changes; `pagehide` saves what's waiting. A new scene that hasn't been named yet still needs
+   Scenes → name it (no id to save under). Tested in the pane (backup locked): field edit → Not Saved → Saved in
+   ~1.2 s, kept after reload.
+
+Scene 1's stages now exist in the Graham copy (6 stages, seen in the backup at 14:35), so the open problem below is solved.
+
 ### Open problem — Scene 1's stages haven't been built yet (pick up here)
 
 In the **Graham** copy every scene currently shows a single "NEW STAGE" (the scenes were re-imported from the
