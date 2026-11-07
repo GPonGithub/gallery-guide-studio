@@ -6,7 +6,107 @@ feature, read `HANDOFF_V6_IMMERSIVE_MEDIA.md` (§7a–7t — the v7 work is writ
 
 ---
 
-## Latest — 2026-11-06 evening, studio Mac (read this first)
+## Latest — 2026-11-07, studio Mac (read this first)
+
+**Branch `v8`.** Last commit is still `36a6f4c` (2026-11-06). **Today's code changes are NOT committed yet**
+(see "Uncommitted" below). Dev server: `npm run dev` in `gallery-guide-studio`, running in the Code app's
+Terminal panel tab ("dev server"), at **http://localhost:3000/agent**. TouchDesigner unchanged since r1.40.
+
+### Built 2026-11-07
+
+1. **"Graham" button — a third copy of the whole app** (right of Team AE). It works exactly like Team ED / Team AE:
+   its own scenes, settings, keys, media connections and backup; nothing shared.
+   - `src/lib/team.ts`: `TEAMS = ['ED', 'AE', 'Graham']`; new `teamLabel(t)` ("Team ED", "Team AE", "Graham").
+     The storage script now prefixes every non-ED team's localStorage keys with `team-<name>:` (AE keeps
+     `team-AE:`, Graham gets `team-Graham:`); ED keeps unprefixed keys and ignores any `team-AE:`/`team-Graham:` ones.
+     Checked with a Node test against a fake Storage: each team sees only its own keys; an unknown saved team falls back to ED.
+   - `src/lib/browserDb.ts`: IndexedDB `goal-agent-studio` for ED, `goal-agent-studio-<team>` otherwise
+     (`goal-agent-studio-Graham`).
+   - `src/app/api/local-backup/route.ts`: accepts `team=Graham` → `.local-backup/team-Graham.json`.
+   - `TeamToggle.tsx`, `ProjectFileButtons.tsx`: use `teamLabel` (the button reads GRAHAM; CSS capitalises).
+   - Tested in the browser pane (backup folder locked with `chmod a-w` during the test): Graham opens empty,
+     with its own database. Team ED's backup was untouched.
+   - **The Graham copy starts with blank keys** — the user has since pasted the Anthropic and ElevenLabs keys into it.
+2. **API key fields can be pasted into but not copied, cut or dragged out**, in all three copies.
+   New `src/lib/noCopy.ts` (`onCopy`/`onCut`/`onDragStart` → `preventDefault`, `spellCheck: false`), spread onto
+   every `type="password"` input: `src/app/agent/page.tsx` (keys bar, 2 fields — import placed *after*
+   `import '@/lib/team'`, which must stay first), `src/components/ApiKeysModal.tsx` (3), `src/app/phone/page.tsx` (2).
+   Checked in the pane: copy/cut/drag blocked, paste allowed.
+3. **Scene 1 "Introduction" written into the Google Sheet** (column C of the "Chatbot Generator" tab,
+   https://docs.google.com/spreadsheets/d/1Lfn5p0QtZKlrQ2527x3i83Sntkkp8CYviAWrcGUpZ_k/edit). An introduction
+   to the Immersive Lab for visitors; Graham holds the microphone and asks Maya questions.
+   - Row 2 name "Introduction" (the user's). Row 3 Describe the Conversation: exact opening line ("Hello,
+     everyone… can I ask Graham to come forward and take the microphone?"), wait for Graham's greeting, answer
+     only from the knowledge base in short spoken replies, hand unknown questions back to Graham, never talk
+     about Susie/patients; plus a user-added line (suggest beginning by describing the space). Then the demo
+     stages: **#Transforming the Room** (jump straight to the first example when Graham says "Let's take a look
+     at how we can transform the environment" or asks for an example of an immersive scene),
+     **#Immersive Example 1: A Calm Escape**, **#Immersive Example 2: Inside the Hospital**,
+     **#Immersive Example 3: Abstract Worlds** ("next"/"show us another" moves on, loops 3→1),
+     **#Back to Questions**, **#End**.
+   - Row 4 knowledge base, `#` headings: About Maya, The Immersive Lab, This Semester's Project, The Patient
+     Advocate Chatbot, Ethics, How the Room Is Transformed (4 projectors, 11 projection areas, 4 speakers,
+     spatialized sound — user to confirm wording), Taking Part in the Experience, The Teams.
+   - Row 6 cannot-use: all patient information (the "All scenes" knowledge base about Susie is added to every
+     scene, including this one).
+   - Row 10 persona: the user pasted my "quiet host" persona (Maya says very little, one or two sentences,
+     never presents on her own, example reply lengths), plus one added line: "In the example stages she
+     introduces each one in a single sentence."
+   - The draft lives in `Scene 1 - Welcome to the Immersive Lab.md` in the repo root (untracked; it doesn't
+     include the user's later sheet edits — **the sheet is the source of truth**). Delete it or keep it out of
+     git; the user hasn't decided.
+   - How it was written: no Google Sheets connector was available, so the sheet was opened in the Code app's
+     browser pane (anonymous editing works on this sheet), the target cell selected via the Name box, and a
+     synthetic `paste` event with an HTML `<table>` (`<br>` for line breaks) dispatched at
+     `document.activeElement` (`.cell-input`). Every write was checked by re-downloading the CSV export and
+     comparing; before each write the cells were re-read to catch the user's own edits (they had edited row 3
+     and row 10; those edits were kept).
+
+### Open problem — Scene 1's stages haven't been built yet (pick up here)
+
+In the **Graham** copy every scene currently shows a single "NEW STAGE" (the scenes were re-imported from the
+sheet; none has been generated in that copy). Updating Scenes from Google Sheet only brings in the text; the
+stages come from **Update This Scene** (section 3) or **Refresh This Scene** (chat panel), which re-reads the
+sheet and then POSTs `/api/agent/generate`. The server log showed the sheet re-reads (`POST /api/sheets/scenes`)
+but **no `/api/agent/generate` call at all** — consistent with the Graham copy having had no Anthropic key
+(`generate()` in `DesignPanel.tsx` stops and opens the Keys bar when the key is blank). The user has now pasted
+both keys (seen in a read-only screenshot of their Chrome). **Next:** have the user click Refresh This Scene on
+Scene 1 and watch the dev-server tab for `POST /api/agent/generate` and the `[generate] … in …s` line. If it
+still doesn't run, check: a "This scene has been edited here…" confirm being cancelled (`refreshSceneFromSheet`
+returns 'cancelled'), an error line in section 3, or the browser console. Each other scene in the Graham copy
+also needs Update This Scene.
+
+After the stages exist: drag media onto the three example stages on the timeline (suggested, all in the media
+folder: Dolomites/mountain-flight video + "moment of peace" for A Calm Escape; nurses' station video + corridor
+walla / nurse station / machine beeps for Inside the Hospital, moved around the room in Spatialized Audio;
+neon / digital terrain video + "passage at the mythic veil" for Abstract Worlds), then test by voice in the room.
+
+Note: the app's built-in prompt (`runtime.ts`, REFERENCE INFORMATION block) tells the bot to "offer to have
+someone call back" when something isn't in the knowledge base — fine for phone scenes, wrong for this
+introduction. The Scene 1 persona counters it ("never offers a call back"). If Maya still offers call backs,
+that sentence may need to depend on the scene.
+
+### Uncommitted (commit when the user asks)
+
+`src/lib/team.ts`, `src/lib/browserDb.ts`, `src/app/api/local-backup/route.ts`,
+`src/components/agent/TeamToggle.tsx`, `src/components/agent/ProjectFileButtons.tsx`,
+`src/components/ApiKeysModal.tsx`, `src/app/phone/page.tsx`, `src/app/agent/page.tsx` (hand-edited — never
+run prettier on it), new `src/lib/noCopy.ts`. Typecheck and lint were clean. Don't commit
+`Scene 1 - Welcome to the Immersive Lab.md` unless asked (nor the usual never-commit files).
+
+### Reminders
+
+- Keep the app open in **one browser only** (the user's Chrome). If you must open it in the Code app's pane,
+  lock the backup folder first (`chmod a-w .local-backup`, unlock after) and close the tab when done.
+- The user's Chrome is for read-only screenshots (`app_screenshot` of Google Chrome works).
+- The dev server's log is in the Terminal panel tab "dev server" (read it with `read_terminal`).
+- When the user says "speaker N", check which numbering they mean: the room's labels differ from the GigaPort
+  output numbers (front left = 3 / output 1, back right = 1 / output 2, back left = 2 / output 3,
+  front right = 4 / output 4).
+
+---
+
+## Earlier — 2026-11-06 evening, studio Mac
 
 **Branch `v8`**, pushed to GitHub (`origin/v8`) at the end of 2026-11-06 with everything below. v6 is still the
 live site; v8 is only a preview. Dev server: `npm run dev` on :3000 (in the Code app: the `gallery-guide-studio`

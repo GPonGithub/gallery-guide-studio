@@ -9,7 +9,8 @@ import { isHosted } from '@/lib/serverKeys';
 
 const DIR = path.join(process.cwd(), '.local-backup');
 const LARGEST = 500 * 1024 ** 2; // 500 MB (music files are in it)
-const fileFor = (team: string) => path.join(DIR, `team-${team === 'AE' ? 'AE' : 'ED'}.json`);
+const fileFor = (team: string) =>
+  path.join(DIR, `team-${team === 'AE' || team === 'Graham' ? team : 'ED'}.json`);
 
 const sameSite = (req: Request) => {
   const origin = req.headers.get('origin');

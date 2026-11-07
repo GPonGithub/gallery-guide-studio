@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { buttonBusy, buttonOutline } from '@/lib/styles';
 import { exportProject, importProject, readProjectFile } from '@/lib/projectBackup';
-import { currentTeam } from '@/lib/team';
+import { currentTeam, teamLabel } from '@/lib/team';
 import { Spinner } from './Spinner';
 
 /**
@@ -29,8 +29,8 @@ export function ProjectFileButtons() {
     try {
       const project = await readProjectFile(file);
       const ok = window.confirm(
-        `Open “${file.name}”${project.team !== currentTeam() ? ` (exported from Team ${project.team})` : ''}?\n\n` +
-          `It replaces everything Team ${currentTeam()} has in this browser — every scene, conversation, voice, music file, ` +
+        `Open “${file.name}”${project.team !== currentTeam() ? ` (exported from ${project.team === 'Graham' ? 'Graham' : `Team ${project.team}`})` : ''}?\n\n` +
+          `It replaces everything ${teamLabel(currentTeam())} has in this browser — every scene, conversation, voice, music file, ` +
           'patient, media connection and setting. Export Project first if you want to keep what’s here.\n\n' +
           'Your API keys stay as they are. Afterwards, choose the media folder again (Adding Immersive Media → 1).',
       );

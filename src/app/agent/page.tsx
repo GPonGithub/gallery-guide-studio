@@ -2,6 +2,7 @@
 
 // First: splits this browser's storage by student team before anything reads it (see lib/team.ts).
 import '@/lib/team';
+import { noCopy } from '@/lib/noCopy';
 import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { DesignPanel, type SheetImportOutcome, type SheetSync } from '@/components/agent/DesignPanel';
 import { MasterEditor, StageEditor } from '@/components/agent/FlowEditor';
@@ -2300,6 +2301,7 @@ export default function AgentStudioPage() {
             Anthropic API key
             <input
               type="password"
+              {...noCopy}
               autoComplete="off"
               value={saved.anthropicApiKey}
               onChange={(e) => setSaved({ ...saved, anthropicApiKey: e.target.value })}
@@ -2311,6 +2313,7 @@ export default function AgentStudioPage() {
             ElevenLabs API key (for spoken replies)
             <input
               type="password"
+              {...noCopy}
               autoComplete="off"
               value={saved.elevenLabsApiKey}
               onChange={(e) => setSaved({ ...saved, elevenLabsApiKey: e.target.value })}

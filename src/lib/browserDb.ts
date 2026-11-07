@@ -14,7 +14,7 @@ import { currentTeam } from './team';
  */
 
 // Each student team has its own database (see team.ts); team ED keeps the original one.
-const dbName = () => (currentTeam() === 'AE' ? 'goal-agent-studio-AE' : 'goal-agent-studio');
+const dbName = () => (currentTeam() === 'ED' ? 'goal-agent-studio' : `goal-agent-studio-${currentTeam()}`);
 const VERSION = 4;
 export const STORES = ['music', 'projects', 'projectMusic', 'patients', 'media'] as const;
 export type StoreName = (typeof STORES)[number];

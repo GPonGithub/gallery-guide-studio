@@ -1,5 +1,6 @@
 'use client';
 
+import { noCopy } from '@/lib/noCopy';
 import { useCallback, useEffect, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { ChatPanel } from '@/components/ChatPanel';
@@ -153,6 +154,7 @@ export default function PhonePage() {
         Anthropic API key
         <input
           type="password"
+          {...noCopy}
           autoComplete="off"
           value={keys.anthropicApiKey}
           onChange={(e) => updateKeys({ anthropicApiKey: e.target.value })}
@@ -164,6 +166,7 @@ export default function PhonePage() {
         ElevenLabs API key (for the bot&rsquo;s voice)
         <input
           type="password"
+          {...noCopy}
           autoComplete="off"
           value={keys.elevenLabsApiKey}
           onChange={(e) => updateKeys({ elevenLabsApiKey: e.target.value })}
