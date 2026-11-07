@@ -207,6 +207,11 @@ export type MediaLink = {
   volume?: number;
   /** A sound's place in the room (Spatialized Audio): x left -1 … right 1, y back -1 … front 1. Default the middle. */
   pan?: { x: number; y: number };
+  /**
+   * A recorded movement round the room (Spatialized Audio's Record Movement): where the sound is at each
+   * moment, `t` in seconds into the file. While it has one, the sound follows it instead of `pan`.
+   */
+  panPath?: { t: number; x: number; y: number }[];
   /** The file's name and kind when it was connected (for its bar on the timeline). */
   assetName?: string;
   assetKind?: MediaKind;
@@ -243,7 +248,25 @@ export type TimelineBar = {
    * inside the area's outline. None: it fills the area, as before.
    */
   place?: Placement;
+  /**
+   * Fades in (from black, or silence) over FADE_SECONDS as the bar starts. On unless false: clicking the
+   * bar's left end on the timeline turns it off (and on again). Read it with fadesIn().
+   */
+  fadeIn?: boolean;
+  /** Fades out (to black, or silence) as the bar ends: on unless false — its right end. Read with fadesOut(). */
+  fadeOut?: boolean;
 };
+
+/** Whether a bar fades in / out: yes unless it was switched off (and a connection with no bar yet fades too). */
+export const fadesIn = (bar: TimelineBar | undefined) => bar?.fadeIn !== false;
+export const fadesOut = (bar: TimelineBar | undefined) => bar?.fadeOut !== false;
+
+/** How long a bar's fade in or fade out takes. */
+export const FADE_SECONDS = 1;
+
+/** The bar of a connection on an area (a picture or video), or its first bar (a sound). */
+export const barOn = (link: MediaLink, area?: number) =>
+  barsOf(link).find((b) => area === undefined || areaOfTrack(b.track) === area);
 
 /** A picture or video placed over the room drawing, in the drawing's units: its centre, size and turn. */
 export type Placement = { cx: number; cy: number; w: number; h: number; rot: number };
@@ -576,7 +599,9 @@ export function followRewording(
   const here = (l: MediaLink) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number;
   const lost = [
     ...new Set(
-      links.filter((l) => here(l) && isConnected(l) && !isMarker(l) && !actions.includes(l.action)).map((l) => l.action),
+      links
+        .filter((l) => here(l) && isConnected(l) && !isMarker(l) && !actions.includes(l.action))
+        .map((l) => l.action),
     ),
   ];
   if (lost.length === 0) return null;

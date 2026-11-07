@@ -4,9 +4,22 @@ import { useSyncExternalStore } from 'react';
 import { dipToShare } from '@/components/agent/backgroundMusic';
 import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
 import { soundsHere, tdLevels, tdSound, tdSoundLoop, tdSoundPan, tdSoundVolume } from './touchDesigner';
-import { browserChannelLevels, clampPan, panOf, speakerGains, stereoGains, type Pan } from './spatialAudio';
+import {
+  browserChannelLevels,
+  clampPan,
+  panAt,
+  panOf,
+  pathOf,
+  speakerGains,
+  stereoGains,
+  type Pan,
+  type PanPoint,
+} from './spatialAudio';
 import {
   allowed,
+  barOn,
+  FADE_SECONDS,
+  fadesIn,
   currentMediaLinks,
   isConnected,
   isMarker,
@@ -16,7 +29,8 @@ import {
   readingsReady,
   savedMediaFolder,
   timingOf,
-  type MediaLink, mediaSceneKey
+  type MediaLink,
+  mediaSceneKey,
 } from './mediaFolder';
 
 /**
@@ -71,7 +85,18 @@ const soundVolume = () => Math.max(0, Math.min(1, levels.volume / 10)) * (ducked
 export const MAX_SOUND_VOLUME = 4;
 export const clampSoundVolume = (v: number | undefined) =>
   Math.max(0, Math.min(MAX_SOUND_VOLUME, Number.isFinite(v) ? (v as number) : 1));
-type Own = { assetId: string; volume: number; pan: Pan; gain?: GainNode; speakers?: GainNode[] };
+type Own = {
+  assetId: string;
+  volume: number;
+  pan: Pan;
+  /** Its recorded movement, if it has one: the position follows it as the file plays. */
+  path: PanPoint[] | null;
+  /** How far up it is while fading in or out (0–1); 1 otherwise. */
+  fade: number;
+  fadeTimer?: ReturnType<typeof setInterval>;
+  gain?: GainNode;
+  speakers?: GainNode[];
+};
 const owns = new Map<HTMLAudioElement, Own>();
 let context: AudioContext | null = null;
 /** How many speakers the sounds play on: 4 (the room's, each on its own output) or 2 (left and right). */
@@ -84,7 +109,29 @@ export function soundVolumeOf(assetId: string): number {
 
 /** What the player's own volume should be now: the panel's level, times the sound's volume up to full. */
 const playerVolume = (audio: HTMLAudioElement, level = soundVolume()) =>
-  Math.max(0, Math.min(1, level * Math.min(1, owns.get(audio)?.volume ?? 1)));
+  Math.max(0, Math.min(1, level * Math.min(1, owns.get(audio)?.volume ?? 1) * (owns.get(audio)?.fade ?? 1)));
+
+/**
+ * A bar's fade: eases a playing sound's fade level to `to` (0 silent … 1 full) over `seconds`, half a
+ * cosine, then calls `done`. Here only — TouchDesigner is told by the play or stop message.
+ */
+function fadeTo(audio: HTMLAudioElement, to: number, seconds: number, done?: () => void) {
+  const own = owns.get(audio);
+  if (!own) return done?.();
+  if (own.fadeTimer) clearInterval(own.fadeTimer);
+  const from = own.fade;
+  const start = performance.now();
+  own.fadeTimer = setInterval(() => {
+    const t = seconds > 0 ? Math.min(1, (performance.now() - start) / (seconds * 1000)) : 1;
+    own.fade = from + (to - from) * ((1 - Math.cos(Math.PI * t)) / 2);
+    if (!sounding.get(audio)) audio.volume = playerVolume(audio);
+    if (t >= 1) {
+      clearInterval(own.fadeTimer);
+      own.fadeTimer = undefined;
+      done?.();
+    }
+  }, 30);
+}
 
 // The room's speakers are on the GIGAPORT eX's outputs 1–4. The Mac's default output may be a
 // two-channel device (Loopback, the computer's own speakers), so the sounds' Web Audio goes straight to
@@ -247,7 +294,75 @@ export function setSoundPan(assetId: string, pan: Pan) {
     own.pan = p;
     boost(audio);
   }
-  if (found) tdSoundPan(assetId, speakerGains(p));
+  if (found) sendPan(assetId, p);
+}
+
+// TouchDesigner hears a moving sound's position at most this often, and only when it has moved.
+const TD_PAN_MS = 80;
+const sentPan = new Map<string, { pan: Pan; at: number }>();
+function sendPan(assetId: string, p: Pan, force = false) {
+  const last = sentPan.get(assetId);
+  const now = performance.now();
+  if (!force && last) {
+    const still = Math.abs(last.pan.x - p.x) < 0.005 && Math.abs(last.pan.y - p.y) < 0.005;
+    if (still || now - last.at < TD_PAN_MS) return;
+  }
+  sentPan.set(assetId, { pan: p, at: now });
+  tdSoundPan(assetId, speakerGains(p));
+}
+
+/**
+ * Recorded movements: while a sound with one plays, its position follows the recording at the file's
+ * time (here, and sent to TouchDesigner). A sound being recorded (`recording`) follows the dot instead.
+ */
+const recording = new Set<string>();
+let moveTimer: ReturnType<typeof setInterval> | null = null;
+function followPaths() {
+  for (const [audio, own] of owns) {
+    if (!own.path || recording.has(own.assetId)) continue;
+    const p = panAt(own.path, audio.currentTime);
+    if (Math.abs(p.x - own.pan.x) < 1e-3 && Math.abs(p.y - own.pan.y) < 1e-3) continue;
+    own.pan = p;
+    boost(audio);
+    sendPan(own.assetId, p);
+  }
+  if (![...owns.values()].some((o) => o.path) && moveTimer) {
+    clearInterval(moveTimer);
+    moveTimer = null;
+  }
+}
+const watchPaths = () => {
+  if ([...owns.values()].some((o) => o.path)) moveTimer ??= setInterval(followPaths, 40);
+};
+
+/** A sound's recording started (true) or stopped: while recording it doesn't follow its old movement. */
+export function setRecordingMovement(assetId: string, on: boolean) {
+  if (on) recording.add(assetId);
+  else recording.delete(assetId);
+}
+
+/** A sound's recorded movement was made or deleted: the playing sound follows the new one (or stays put). */
+export function setSoundPath(assetId: string, path: PanPoint[] | null, pan: Pan) {
+  for (const [audio, own] of owns) {
+    if (own.assetId !== assetId) continue;
+    own.path = path?.length ? path : null;
+    own.pan = own.path ? panAt(own.path, audio.currentTime) : clampPan(pan);
+    boost(audio);
+    sendPan(assetId, own.pan, true);
+  }
+  watchPaths();
+}
+
+/** How far into the file a sound playing now is (seconds), or null when it isn't playing. */
+export function soundTime(assetId: string): number | null {
+  for (const [audio, own] of owns) if (own.assetId === assetId) return audio.currentTime;
+  return null;
+}
+
+/** Where a sound playing now is in the room (following its recorded movement), or null when it isn't playing. */
+export function livePan(assetId: string): Pan | null {
+  for (const own of owns.values()) if (own.assetId === assetId) return own.pan;
+  return null;
 }
 
 /**
@@ -300,10 +415,20 @@ function rampAll(ms: number) {
 }
 
 /** A sound starting: at the level it should be now, and following every change from here on. */
-function follow(audio: HTMLAudioElement, assetId: string, volume: number) {
-  owns.set(audio, { assetId, volume: clampSoundVolume(volume), pan: panOf(assetId) });
+function follow(audio: HTMLAudioElement, assetId: string, volume: number, fade = 0) {
+  const path = pathOf(assetId);
+  sentPan.delete(assetId);
+  owns.set(audio, {
+    assetId,
+    volume: clampSoundVolume(volume),
+    pan: path ? panAt(path, 0) : panOf(assetId),
+    path,
+    fade: fade > 0 ? 0 : 1,
+  });
   boost(audio);
+  watchPaths();
   audio.volume = playerVolume(audio);
+  if (fade > 0) fadeTo(audio, 1, fade);
   // Silent here (still timing the sound) when TouchDesigner plays the sounds.
   audio.muted = !soundsHere();
   sounding.set(audio, null);
@@ -313,6 +438,8 @@ function follow(audio: HTMLAudioElement, assetId: string, volume: number) {
 function unfollow(audio: HTMLAudioElement) {
   const running = sounding.get(audio);
   if (running) clearInterval(running);
+  const fading = owns.get(audio)?.fadeTimer;
+  if (fading) clearInterval(fading);
   sounding.delete(audio);
   owns.delete(audio);
 }
@@ -339,7 +466,13 @@ const loops = new Set<{ audio: HTMLAudioElement; stop: () => void }>();
  * Starts a sound looping until stopSounds/stopLoops — for "throughout the
  * scene" actions. Rejects if it can't be played.
  */
-export async function startLoop(asset: MediaAsset, volume = soundVolumeOf(asset.id), ask = false): Promise<void> {
+export async function startLoop(
+  asset: MediaAsset,
+  volume = soundVolumeOf(asset.id),
+  ask = false,
+  /** Its bar fades in: eased up from silence over this many seconds. */
+  fade = 0,
+): Promise<void> {
   const folder = await savedMediaFolder();
   if (!folder) throw new Error('No media folder has been chosen.');
   if (!(await allowed(folder, ask))) {
@@ -348,17 +481,21 @@ export async function startLoop(asset: MediaAsset, volume = soundVolumeOf(asset.
   const url = URL.createObjectURL(await openMediaFile(folder, asset.path));
   const audio = new Audio(url);
   audio.loop = true;
-  follow(audio, asset.id, volume);
+  follow(audio, asset.id, volume, fade);
   const loop = {
     audio,
-    stop: () => {
-      audio.pause();
-      tdSound('stop', asset);
-      unfollow(audio);
-      URL.revokeObjectURL(url);
+    stop: (out = 0) => {
+      if (!loops.has(loop)) return;
       loops.delete(loop);
       playing.delete(entry);
       changed();
+      tdSound('stop', asset, false, 1, undefined, out);
+      // Its bar fades out: eased down to silence first.
+      fadeTo(audio, 0, out, () => {
+        audio.pause();
+        unfollow(audio);
+        URL.revokeObjectURL(url);
+      });
     },
   };
   const entry: Playing = { assetId: asset.id, stop: loop.stop };
@@ -367,7 +504,7 @@ export async function startLoop(asset: MediaAsset, volume = soundVolumeOf(asset.
   loops.add(loop);
   playing.add(entry);
   changed();
-  tdSound('play', asset, true, clampSoundVolume(volume), speakerGains(panOf(asset.id)));
+  tdSound('play', asset, true, clampSoundVolume(volume), speakerGains(livePan(asset.id) ?? panOf(asset.id)), fade);
   try {
     await audio.play();
   } catch (err) {
@@ -386,7 +523,7 @@ const LONGEST_WAIT = 15_000;
 
 // The sounds playing now (from a conversation or Try it), so any of them can be stopped,
 // and the Media Library can show which are playing.
-type Playing = { assetId: string; stop: () => void };
+type Playing = { assetId: string; stop: (fade?: number) => void };
 const playing = new Set<Playing>();
 const listeners = new Set<() => void>();
 const changed = () => listeners.forEach((listener) => listener());
@@ -407,11 +544,18 @@ export function onSoundsChange(listener: () => void): () => void {
 
 /** Whether a media file's sound is playing now, kept up to date. */
 export const useSoundPlaying = (assetId: string) =>
-  useSyncExternalStore(onSoundsChange, () => isSoundPlaying(assetId), () => false);
+  useSyncExternalStore(
+    onSoundsChange,
+    () => isSoundPlaying(assetId),
+    () => false,
+  );
 
-/** Stops a file's sound wherever it's playing — or, with no file named, every sound. */
-export function stopSounds(assetId?: string) {
-  for (const p of [...playing]) if (!assetId || p.assetId === assetId) p.stop();
+/**
+ * Stops a file's sound wherever it's playing — or, with no file named, every sound. `fade`: eased down
+ * to silence over this many seconds first (its bar's fade out).
+ */
+export function stopSounds(assetId?: string, fade = 0) {
+  for (const p of [...playing]) if (!assetId || p.assetId === assetId) p.stop(fade);
 }
 
 /**
@@ -424,6 +568,8 @@ export async function playSound(
   asset: MediaAsset,
   ask = false,
   volume = soundVolumeOf(asset.id),
+  /** Its bar fades in: eased up from silence over this many seconds. */
+  fade = 0,
 ): Promise<'ended' | 'stopped' | 'waited'> {
   const folder = await savedMediaFolder();
   if (!folder) throw new Error('No media folder has been chosen.');
@@ -432,7 +578,7 @@ export async function playSound(
   }
   const url = URL.createObjectURL(await openMediaFile(folder, asset.path));
   const audio = new Audio(url);
-  follow(audio, asset.id, volume);
+  follow(audio, asset.id, volume, fade);
   return new Promise((resolve, reject) => {
     let over = false;
     const timer = setTimeout(() => resolve('waited'), LONGEST_WAIT);
@@ -449,17 +595,28 @@ export async function playSound(
     };
     const entry: Playing = {
       assetId: asset.id,
-      stop: () => {
-        audio.pause();
-        tdSound('stop', asset);
-        finish(undefined, 'stopped');
+      stop: (out = 0) => {
+        if (over) return;
+        tdSound('stop', asset, false, 1, undefined, out);
+        if (out <= 0) {
+          audio.pause();
+          return finish(undefined, 'stopped');
+        }
+        // Its bar fades out: it's stopped (for the timeline) now, and eased down to silence before it ends.
+        playing.delete(entry);
+        changed();
+        audio.onended = null;
+        fadeTo(audio, 0, out, () => {
+          audio.pause();
+          finish(undefined, 'stopped');
+        });
       },
     };
     audio.onended = () => finish();
     audio.onerror = () => finish(new Error(`“${asset.name}” couldn’t be played.`));
     playing.add(entry);
     changed();
-    tdSound('play', asset, false, clampSoundVolume(volume), speakerGains(panOf(asset.id)));
+    tdSound('play', asset, false, clampSoundVolume(volume), speakerGains(livePan(asset.id) ?? panOf(asset.id)), fade);
     audio.play().catch((err: unknown) => finish(err ?? new Error('couldn’t start')));
   });
 }
@@ -477,7 +634,8 @@ export async function playEvent(
   await Promise.all(
     sounds.map((sound) => {
       onPlayed(sound);
-      const playing = playSound(sound.asset, ask, clampSoundVolume(sound.link.volume)).catch((err: unknown) =>
+      const fade = fadesIn(barOn(sound.link)) ? FADE_SECONDS : 0;
+      const playing = playSound(sound.asset, ask, clampSoundVolume(sound.link.volume), fade).catch((err: unknown) =>
         onPlayed(sound, err instanceof Error ? err.message : 'It couldn’t be played.'),
       );
       if (sound.timing.voice === 'wait') return playing;

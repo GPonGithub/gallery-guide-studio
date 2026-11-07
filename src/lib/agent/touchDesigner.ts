@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import type { MediaAsset } from './media';
-import { loadLibrary, onMediaSceneChange } from './mediaFolder';
+import { FADE_SECONDS, loadLibrary, onMediaSceneChange } from './mediaFolder';
 import { areaUvMatrix } from './roomPlacement';
 import type { Shown } from './mediaShow';
 
@@ -182,7 +182,8 @@ export function onTDConnected(listener: () => void) {
  * Folder (the browser can't tell it where the folder is on disk — keep each scene's folder in one place).
  */
 let folderName = '';
-const withFolder = <T extends Record<string, unknown>>(message: T) => (folderName ? { ...message, folder: folderName } : message);
+const withFolder = <T extends Record<string, unknown>>(message: T) =>
+  folderName ? { ...message, folder: folderName } : message;
 
 /** The open scene's media list (each scene has its own folder): sent on connecting, and when another scene opens. */
 async function sendMediaList() {
@@ -273,20 +274,26 @@ export const visualMessage = (
 });
 
 /** Mirrors the room diagram into TouchDesigner (called by mediaShow on every change). */
-export function syncVisuals(showing: Shown[]) {
+export function syncVisuals(showing: Shown[], quick = false) {
   current = showing;
   if (!isOpen()) return;
   const now = new Map(showing.map((s) => [s.area, s]));
   for (const [area, s] of now) {
     if (sent.get(area) === s) continue;
-    const message = visualMessage(area, { id: s.assetId, path: s.path, kind: s.kind, value: s.value }, s.loop);
+    const message = {
+      ...visualMessage(area, { id: s.assetId, path: s.path, kind: s.kind, value: s.value }, s.loop),
+      // Its bar fades in: eased up from black.
+      ...(s.fadeIn && !quick && { fade: FADE_SECONDS }),
+    };
     // Placed on the room drawing: the area shows its slice of the whole picture (see roomPlacement.ts).
     send(withFolder(s.place ? { ...message, uv: areaUvMatrix(area, s.place) } : message));
     sent.set(area, s);
   }
   for (const area of [...sent.keys()]) {
     if (now.has(area)) continue;
-    send({ type: 'media', action: 'hide', area });
+    // Its bar fades out: eased down to black, then hidden.
+    const fade = !quick && sent.get(area)?.fadeOut;
+    send({ type: 'media', action: 'hide', area, ...(fade && { fade: FADE_SECONDS }) });
     sent.delete(area);
   }
 }
@@ -304,12 +311,15 @@ export function tdSound(
   volume = 1,
   /** How loud each of the room's speakers 1–4 plays it (Spatialized Audio). */
   pan: number[] = [0.5, 0.5, 0.5, 0.5],
+  /** Eased in from silence (play) or out to it, then stopped (stop), over this many seconds. */
+  fade = 0,
 ) {
   if (tdSettings().sounds === 'computer') return;
+  const fading = fade > 0 ? { fade } : {};
   send(
     action === 'play'
-      ? withFolder({ type: 'sound', action, id: asset.id, path: asset.path, loop, volume, pan })
-      : { type: 'sound', action, id: asset.id },
+      ? withFolder({ type: 'sound', action, id: asset.id, path: asset.path, loop, volume, pan, ...fading })
+      : { type: 'sound', action, id: asset.id, ...fading },
   );
 }
 

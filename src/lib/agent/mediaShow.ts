@@ -19,6 +19,9 @@ import {
   mediaSceneKey,
   type MediaLink,
   type Placement,
+  type TimelineBar,
+  fadesIn,
+  fadesOut,
 } from './mediaFolder';
 import type { SceneRef } from './mediaPlayback';
 import { syncVisuals } from './touchDesigner';
@@ -50,6 +53,15 @@ export type Shown = {
   action: string;
   /** Where it was placed over the room drawing (roomPlacement.ts) — its area shows the part inside its outline. */
   place?: Placement;
+  /** Its bar there fades in as it starts / out as it ends (TouchDesigner eases it from or to black). */
+  fadeIn?: boolean;
+  fadeOut?: boolean;
+};
+
+/** The fades of a connection's bar on one area: the bars playing it now (`bars`), else any on that area. */
+const fadesOf = (link: MediaLink, area: number, bars?: TimelineBar[]) => {
+  const bar = (bars ?? barsOf(link)).find((b) => areaOfTrack(b.track) === area);
+  return { fadeIn: fadesIn(bar), fadeOut: fadesOut(bar) };
 };
 
 /** The placement of a connection's picture on one area (its bar there), if it was placed. */
@@ -83,7 +95,16 @@ export function dropUnbacked(links: MediaLink[]) {
 }
 
 /** A scene's connection to an image, video or sound file, with its timing and (for visuals) the areas it shows in. */
-export type PlannedMedia = { link: MediaLink; asset: MediaAsset; timing: ActionTiming; areas: number[] };
+export type PlannedMedia = {
+  link: MediaLink;
+  asset: MediaAsset;
+  timing: ActionTiming;
+  areas: number[];
+  /** The bars it shows for (the marker's), whose fades it takes; else its bar on each area. */
+  bars?: TimelineBar[];
+  /** Only these areas change: the file stays wherever else it's up (the marker's area-by-area changes). */
+  only?: boolean;
+};
 
 /** The areas a connection shows in: its bars' tracks (duplicated bars put it on several screens; area 1 until it has a bar). */
 export function areasOf(link: MediaLink): number[] {
@@ -120,8 +141,8 @@ export async function sceneMedia(scene: SceneRef | null, kinds: ActionKind[]): P
 
 let showing: Shown[] = [];
 const listeners = new Set<() => void>();
-const changed = () => {
-  syncVisuals(showing); // TouchDesigner shows the same (see touchDesigner.ts)
+const changed = (quick = false) => {
+  syncVisuals(showing, quick); // TouchDesigner shows the same (see touchDesigner.ts)
   listeners.forEach((listener) => listener());
 };
 const NONE: Shown[] = [];
@@ -146,6 +167,9 @@ export const areasShowing = (assetId: string) =>
     .map((s) => s.area)
     .sort((a, b) => a - b)
     .join(',');
+
+/** What an area is showing now, if anything. */
+export const shownIn = (area: number) => showing.find((s) => s.area === area);
 
 /** Whether a file is showing in the room now. */
 export const isShowing = (assetId: string) => showing.some((s) => s.assetId === assetId);
@@ -179,6 +203,7 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
         loop: false,
         action: link.action,
         place: placeOf(link, area),
+        ...fadesOf(link, area, media.bars),
       })),
     );
     return;
@@ -202,13 +227,14 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
     loop: loopOf(link),
     action: link.action,
     place: placeOf(link, area),
+    ...fadesOf(link, area, media.bars),
   }));
   put(media, next);
 }
 
 /** Puts these up in their areas, replacing whatever was there (and this item anywhere else). */
 function put(media: PlannedMedia, next: Shown[]) {
-  const replaced = (s: Shown) => media.areas.includes(s.area) || s.assetId === media.asset.id;
+  const replaced = (s: Shown) => media.areas.includes(s.area) || (!media.only && s.assetId === media.asset.id);
   showing.filter(replaced).forEach(release);
   showing = [...showing.filter((s) => !replaced(s)), ...next];
   changed();
@@ -249,5 +275,5 @@ export function clearVisuals() {
   if (showing.length === 0) return;
   showing.forEach(release);
   showing = [];
-  changed();
+  changed(true); // Straight away: no fading out.
 }

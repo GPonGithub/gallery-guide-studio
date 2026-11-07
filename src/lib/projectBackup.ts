@@ -25,7 +25,7 @@ const skipEntry = (store: string, key: IDBValidKey) =>
     (typeof key === 'string' && (key.startsWith('thumb:') || key.startsWith('folder:'))));
 
 type Encoded = unknown;
-type ProjectFile = {
+export type ProjectFile = {
   format: typeof FORMAT;
   version: number;
   exportedAt: string;
@@ -110,7 +110,8 @@ function currentKeys(): Record<string, Record<string, string>> {
 
 // --- export ---------------------------------------------------------------
 
-export async function exportProject(): Promise<void> {
+/** Everything this team has in this browser, as a project file (API keys blanked). */
+export async function buildProjectFile(): Promise<ProjectFile> {
   const file: ProjectFile = {
     format: FORMAT,
     version: VERSION,
@@ -144,6 +145,11 @@ export async function exportProject(): Promise<void> {
   } finally {
     db.close();
   }
+  return file;
+}
+
+export async function exportProject(): Promise<void> {
+  const file = await buildProjectFile();
   const day = new Date().toLocaleDateString('en-CA');
   const url = URL.createObjectURL(new Blob([JSON.stringify(file)], { type: 'application/json' }));
   const a = document.createElement('a');

@@ -6,8 +6,12 @@ import { kindOf } from '@/lib/agent/media';
 import { barsOf, updateMediaLinks, useMediaLinks, type MediaLink } from '@/lib/agent/mediaFolder';
 import {
   clampSoundVolume,
+  livePan,
   playSound,
+  setRecordingMovement,
   setSoundPan,
+  setSoundPath,
+  soundTime,
   stopSounds,
   useRoomOutput,
   chooseRoomSpeakers,
@@ -17,8 +21,12 @@ import {
   CENTRE,
   clampPan,
   isCentre,
+  panRecorder,
   pickSpatialSound,
-  sameSpatialPick,
+  rememberPan,
+  rememberPath,
+  soundPan,
+  soundPath,
   SPEAKERS,
   speakerGains,
   useSpatialPick,
@@ -43,12 +51,26 @@ export function SpatialAudioPanel({
 }) {
   const links = useMediaLinks();
   const { pick } = useSpatialPick();
+  // Each sound once: its position is the sound's, shared by all its bars.
   const sounds = scene
     ? links.filter(
-        (l) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number && isSound(l) && barsOf(l).length,
+        (l, i, all) =>
+          l.sheetId === scene.sheetId &&
+          l.sceneNumber === scene.number &&
+          isSound(l) &&
+          barsOf(l).length &&
+          all.findIndex(
+            (o) =>
+              o.assetId === l.assetId && o.sheetId === l.sheetId && o.sceneNumber === l.sceneNumber && barsOf(o).length,
+          ) === i,
       )
     : [];
-  const chosen = (pick && sounds.find((l) => sameSpatialPick(pick, l))) ?? null;
+  const chosen =
+    (pick &&
+      sounds.find(
+        (l) => l.assetId === pick.assetId && l.sheetId === pick.sheetId && l.sceneNumber === pick.sceneNumber,
+      )) ??
+    null;
 
   if (!scene)
     return <p className="font-body text-xs italic text-muted-ink">Open a scene to place its sounds in the room.</p>;
@@ -77,50 +99,135 @@ export function SpatialAudioPanel({
         >
           {!chosen && <option value="">Choose a sound…</option>}
           {sounds.map((l, i) => (
-            <option key={`${l.assetId}|${l.action}`} value={i}>
+            <option key={l.assetId} value={i}>
               {nameOf(l)}
-              {l.action ? ` — ${l.action}` : ''}
             </option>
           ))}
         </select>
       </label>
-      {chosen && <RoomSquare key={`${chosen.assetId}|${chosen.action}`} link={chosen} assets={assets} />}
+      {chosen && <RoomSquare key={chosen.assetId} link={chosen} assets={assets} />}
     </>
   );
 }
 
 /** The square: four speakers at its corners, the front of the room at the top, and the sound's dot. */
 function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] }) {
-  const saved = clampPan(link.pan);
+  const allLinks = useMediaLinks();
+  // The sound's position (shared by all its bars in the scene, and remembered for new ones).
+  const saved = soundPan(link.sheetId, link.sceneNumber, link.assetId, allLinks);
+  // Its recorded movement, if it has one: it plays following that instead of staying at `saved`.
+  const path = soundPath(link.sheetId, link.sceneNumber, link.assetId, allLinks);
   const [moving, setMoving] = useState<Pan | null>(null);
-  const pan = moving ?? saved;
+  // Whether the mouse button is down on the square: the dot follows the pointer only then.
+  const dragging = useRef(false);
+  const [recording, setRecording] = useState(false);
+  const playing = useSoundPlaying(link.assetId);
+  // While a recorded movement plays, the dot shows where the sound is now.
+  const [live, setLive] = useState<Pan | null>(null);
+  const followsPath = !!path && playing && !recording;
+  useEffect(() => {
+    if (!followsPath) return;
+    const timer = setInterval(() => setLive(livePan(link.assetId)), 50);
+    return () => clearInterval(timer);
+  }, [followsPath, link.assetId]);
+  const following = followsPath ? live : null;
+  const pan = moving ?? following ?? (path && !recording ? clampPan(path[0]) : saved);
+  // The dot can be moved by hand unless the sound follows a recorded movement (record again, or delete it).
+  const fixed = !!path && !recording;
   const box = useRef<HTMLDivElement>(null);
   const gains = speakerGains(pan);
   const asset = assets.find((a) => a.id === link.assetId);
-  const playing = useSoundPlaying(link.assetId);
   const output = useRoomOutput();
   const [problem, setProblem] = useState('');
 
   // Another bar's sound chosen while dragging: the drag ends.
   useEffect(() => () => setMoving(null), []);
 
+  // Recording: where the dot is, sampled as the sound plays (by the file's time), until Stop Recording,
+  // the sound ending, or the sound starting over (looping).
+  const dot = useRef<Pan>(pan);
+  const rec = useRef<{ timer: ReturnType<typeof setInterval>; finish: () => void } | null>(null);
+  const sameSound = (x: MediaLink) =>
+    x.assetId === link.assetId && x.sheetId === link.sheetId && x.sceneNumber === link.sceneNumber;
+  const keepPath = (p: typeof path, label: string) => {
+    rememberPath(link.sheetId, link.sceneNumber, link.assetId, p);
+    updateMediaLinks((all) => all.map((x) => (sameSound(x) ? { ...x, panPath: p ?? undefined } : x)), label);
+    setSoundPath(link.assetId, p, saved);
+  };
+  const startRecording = async () => {
+    if (rec.current) return;
+    setProblem('');
+    if (!asset) return setProblem('This sound isn’t in the Media Library — refresh the media folder.');
+    dot.current = saved;
+    setSoundPan(link.assetId, saved);
+    setRecordingMovement(link.assetId, true);
+    setRecording(true);
+    const recorder = panRecorder();
+    let started = false;
+    let lastT = -1;
+    const finish = () => {
+      if (!rec.current) return;
+      clearInterval(rec.current.timer);
+      rec.current = null;
+      setRecordingMovement(link.assetId, false);
+      setRecording(false);
+      setMoving(null);
+      const made = recorder.done();
+      if (made.length >= 2 && made[made.length - 1].t > made[0].t) keepPath(made, `Record ${nameOf(link)}'s movement`);
+      else {
+        setProblem('Nothing was recorded — the sound has to be playing while you move the dot.');
+        setSoundPath(link.assetId, path, saved);
+      }
+    };
+    const timer = setInterval(() => {
+      const t = soundTime(link.assetId);
+      if (t === null) {
+        if (started) finish();
+        return;
+      }
+      if (started && t + 0.25 < lastT) return finish(); // It looped back to the start.
+      started = true;
+      lastT = t;
+      recorder.add(t, dot.current);
+    }, 40);
+    rec.current = { timer, finish };
+    if (!playing) {
+      try {
+        await playSound(asset, true, clampSoundVolume(link.volume));
+      } catch (err) {
+        setProblem(err instanceof Error ? err.message : 'It couldn’t be played.');
+        finish();
+      }
+    }
+  };
+  const stopRecording = () => rec.current?.finish();
+  // Leaving the step (or choosing another sound) while recording keeps what was recorded so far.
+  useEffect(() => () => rec.current?.finish(), []);
+  const deleteRecording = () => {
+    if (rec.current) return;
+    keepPath(null, `Delete ${nameOf(link)}'s recorded movement`);
+  };
+
   const save = (p: Pan) => {
+    if (rec.current || fixed) return; // Recording: the path is saved, not one place.
     const same = Math.abs(p.x - saved.x) < 1e-3 && Math.abs(p.y - saved.y) < 1e-3;
     if (same) return;
+    // Every bar of this sound in the scene, and remembered for the sound: it plays here from now on, until
+    // it's moved again. (The middle is kept too, as a choice: it isn't "not set".)
+    rememberPan(link.sheetId, link.sceneNumber, link.assetId, p);
     updateMediaLinks(
       (all) =>
         all.map((x) =>
-          x.assetId === link.assetId &&
-          x.action === link.action &&
-          x.sheetId === link.sheetId &&
-          x.sceneNumber === link.sceneNumber
-            ? { ...x, pan: isCentre(p) ? undefined : p }
+          x.assetId === link.assetId && x.sheetId === link.sheetId && x.sceneNumber === link.sceneNumber
+            ? { ...x, pan: p }
             : x,
         ),
       `Move ${link.assetId} in the room`,
     );
   };
   const move = (p: Pan) => {
+    if (fixed) return;
+    dot.current = p;
     setMoving(p);
     setSoundPan(link.assetId, p);
   };
@@ -140,6 +247,7 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
       ArrowUp: [0, step],
       ArrowDown: [0, -step],
     };
+    if (fixed) return;
     if (e.key === 'Home') {
       e.preventDefault();
       move(CENTRE);
@@ -190,28 +298,39 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
           aria-valuemin={-100}
           aria-valuemax={100}
           onPointerDown={(e) => {
-            if (e.button !== 0) return;
+            if (e.button !== 0 || fixed) return;
             e.currentTarget.setPointerCapture(e.pointerId);
+            dragging.current = true;
             move(at(e));
           }}
           onPointerMove={(e) => {
-            if (moving) move(at(e));
+            if (dragging.current) move(at(e));
           }}
           onPointerUp={(e) => {
-            if (!moving) return;
+            if (!dragging.current) return;
+            dragging.current = false;
             const p = at(e);
+            // Recording: the dot stays where it was let go (the sound stays there) until it's moved again.
+            if (rec.current) return move(p);
             setMoving(null);
             save(p);
           }}
-          onPointerCancel={() => setMoving(null)}
+          onPointerCancel={() => {
+            dragging.current = false;
+            if (!rec.current) setMoving(null);
+          }}
           onDoubleClick={() => {
             move(CENTRE);
             save(CENTRE);
             setMoving(null);
           }}
           onKeyDown={key}
-          className="relative mx-auto aspect-square w-full max-w-[260px] cursor-crosshair touch-none select-none border-2 border-ink bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3c5eac]"
-          title="Drag the dot (or click anywhere) — double-click puts it back in the middle; arrow keys move it"
+          className={`relative mx-auto aspect-square w-full max-w-[260px] touch-none select-none border-2 bg-paper focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3c5eac] ${recording ? 'border-[#b91c1c]' : 'border-ink'} ${fixed ? 'cursor-not-allowed' : 'cursor-crosshair'}`}
+          title={
+            fixed
+              ? 'This sound follows its recorded movement. Record Movement again to replace it, or delete the recording to place it in one spot.'
+              : 'Drag the dot (or click anywhere) — double-click puts it back in the middle; arrow keys move it'
+          }
         >
           {/* Guides: the middle lines. */}
           <span className="pointer-events-none absolute inset-y-0 left-1/2 border-l border-dashed border-hair" />
@@ -265,7 +384,26 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
         </div>
       </div>
       <span className="text-center font-label text-[10px] uppercase tracking-wide text-muted-ink">Back</span>
-      <p className="font-body text-xs text-ink">Heard: {where}.</p>
+      <p className="font-body text-xs text-ink">
+        {recording
+          ? 'Recording — heard now: '
+          : following
+            ? 'Following the recorded movement — heard now: '
+            : 'Heard: '}
+        {where}.
+      </p>
+      {recording ? (
+        <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">
+          Move the dot as the sound plays. The recording stops when you click Stop Recording, or when the sound ends.
+        </p>
+      ) : (
+        path && (
+          <p className="font-body text-xs text-muted-ink">
+            This sound has a recorded movement ({Math.round(path[path.length - 1].t)} s long): it moves round the room
+            this way every time it plays. Record Movement again to replace it.
+          </p>
+        )
+      )}
       {output && (
         // Where this browser plays the sounds: the room's four speakers, or only left and right.
         <p
@@ -298,12 +436,31 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
           {playing ? '■ Stop' : '▶ Play it to listen'}
         </button>
         <button
+          onClick={() => void (recording ? stopRecording() : startRecording())}
+          className={`${buttonOutlineCompact} ${recording ? 'border-[#b91c1c] text-[#b91c1c]' : ''}`}
+          title={
+            recording
+              ? 'Stops recording and keeps the movement'
+              : 'Plays the sound and records how you move the dot, so it moves the same way every time it plays'
+          }
+        >
+          {recording ? '■ Stop Recording' : '● Record Movement'}
+        </button>
+        <button
+          onClick={deleteRecording}
+          disabled={!path || recording}
+          className={`${buttonOutlineCompact} disabled:opacity-40`}
+          title="Deletes the recorded movement: the sound stays in one place again"
+        >
+          Delete Movement Recording
+        </button>
+        <button
           onClick={() => {
             move(CENTRE);
             save(CENTRE);
             setMoving(null);
           }}
-          disabled={isCentre(pan)}
+          disabled={isCentre(pan) || fixed || recording}
           className={`${buttonOutlineCompact} disabled:opacity-40`}
         >
           Middle of the room

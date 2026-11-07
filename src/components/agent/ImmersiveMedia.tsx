@@ -497,6 +497,14 @@ export function ImmersiveMedia({
             Open a scene from your Google Sheet to choose its media folder.
           </p>
         )}
+        {/* The list is here but the browser has forgotten the folder itself (put back from a backup or an
+            imported project, or the browser's storage was wiped): name it, so the right one is chosen again. */}
+        {!folder && library?.folderName && sceneSheet && pickable && (
+          <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">
+            This browser has forgotten scene {sceneSheet.number}&rsquo;s media folder. Click <b>Choose Media Folder</b>{' '}
+            and choose <b>{library.folderName}</b> again — its media, IDs and timeline connections carry on.
+          </p>
+        )}
         {folder && (
           <p className="font-label text-[10px] uppercase tracking-wide text-muted-ink">
             Scene {sceneSheet?.number}&rsquo;s media folder: {folder.name}

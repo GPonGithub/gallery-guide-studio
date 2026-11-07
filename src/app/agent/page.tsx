@@ -14,6 +14,7 @@ import { OnboardingTour } from '@/components/agent/OnboardingTour';
 import { SceneButtons } from '@/components/agent/SceneButtons';
 import { TeamToggle } from '@/components/agent/TeamToggle';
 import { ProjectFileButtons } from '@/components/agent/ProjectFileButtons';
+import { LocalBackupNote } from '@/components/agent/LocalBackupNote';
 import { useHosting } from '@/lib/agent/hosting';
 import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
@@ -47,6 +48,10 @@ import {
   currentMediaLinks,
   followRewording,
   loopOf,
+  barOn,
+  FADE_SECONDS,
+  fadesIn,
+  fadesOut,
   mediaLinksLoaded,
   redoMediaLinks,
   restoreTimeline,
@@ -1737,7 +1742,9 @@ export default function AgentStudioPage() {
     if (media.asset.kind === 'sound') {
       // "Loop, when user instructs": it loops until removed (or the call ends).
       const volume = clampSoundVolume(media.link.volume);
-      (loopOf(media.link) ? startLoop(media.asset, volume) : playSound(media.asset, false, volume)).catch(fail);
+      // Its bar fades in: eased up from silence.
+      const fade = fadesIn(barOn(media.link)) ? FADE_SECONDS : 0;
+      (loopOf(media.link) ? startLoop(media.asset, volume, false, fade) : playSound(media.asset, false, volume, fade)).catch(fail);
       return;
     }
     mediaStarting.current.add(id);
@@ -1747,7 +1754,8 @@ export default function AgentStudioPage() {
   };
   const endMedia = (media: PlannedMedia, afterMessage: number) => {
     noteMedia(media, afterMessage, 'removed');
-    if (media.asset.kind === 'sound') stopSounds(media.asset.id);
+    // Its bar fades out: eased down to silence (pictures and video: their area's bar says, in mediaShow).
+    if (media.asset.kind === 'sound') stopSounds(media.asset.id, fadesOut(barOn(media.link)) ? FADE_SECONDS : 0);
     else hideVisual(media.asset.id);
   };
 
@@ -1938,8 +1946,8 @@ export default function AgentStudioPage() {
           noteSound(s, 0);
           // Its bar's loop button off: it plays once as the call begins.
           (s.link.loop === false
-            ? playSound(s.asset, false, clampSoundVolume(s.link.volume))
-            : startLoop(s.asset, clampSoundVolume(s.link.volume))
+            ? playSound(s.asset, false, clampSoundVolume(s.link.volume), fadesIn(barOn(s.link)) ? FADE_SECONDS : 0)
+            : startLoop(s.asset, clampSoundVolume(s.link.volume), false, fadesIn(barOn(s.link)) ? FADE_SECONDS : 0)
           ).catch((err: unknown) =>
             noteSound(s, 0, err instanceof Error ? err.message : 'It couldn’t be played.'),
           );
@@ -2283,6 +2291,8 @@ export default function AgentStudioPage() {
           <ProjectFileButtons />
         </div>
       </header>
+      {/* This computer's copy of the browser's work, and a note when it was just put back (see localBackup.ts). */}
+      <LocalBackupNote />
 
       {keysOpen && (
         <div className="flex flex-wrap items-end gap-3 border-b-2 border-ink bg-muted px-5 py-3" data-tour="keys-panel">

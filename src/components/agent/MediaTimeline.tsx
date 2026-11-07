@@ -26,6 +26,9 @@ import { pickSpatialSound } from '@/lib/agent/spatialAudio';
 import {
   areaOfTrack,
   barsOf,
+  FADE_SECONDS,
+  fadesIn,
+  fadesOut,
   loadLibrary,
   loadThumbnail,
   mediaSceneKey,
@@ -441,6 +444,16 @@ export function MediaTimeline({
     const moved = now.track !== start.track || now.from !== start.from || now.to !== start.to;
     // A sound's bar clicked (not moved): Spatialized Audio opens on it.
     if (!moved && drag.mode === 'move' && !copy && isSound(l)) pickSpatialSound(l);
+    // An end clicked (not dragged): its fade in (left) or fade out (right) turns on or off.
+    if (!moved && drag.mode !== 'move' && original) {
+      const which = drag.mode === 'from' ? 'fadeIn' : 'fadeOut';
+      const on = !(which === 'fadeIn' ? fadesIn(original) : fadesOut(original));
+      updateMediaLinks(
+        (all) => all.map((x) => (sameLink(x, l) ? withBar(x, i, { ...original, [which]: on }) : x)),
+        `${on ? 'Add' : 'Remove'} fade ${drag.mode === 'from' ? 'in' : 'out'}`,
+      );
+      return;
+    }
     if (!moved) return;
     // A picture placed on the room drawing is one picture on several areas: moving it to other stages
     // (or stretching it) takes all its bars along, so it stays one picture. Moved to another track, just
@@ -954,23 +967,53 @@ export function MediaTimeline({
                     <span className="truncate font-body text-[11px] leading-none opacity-80">{what}</span>
                   </span>
                 );
-                const handle = (end: 'from' | 'to') => (
-                  <span
-                    data-bar-end={end}
-                    onPointerDown={(e) => grab(e, l, i, end)}
-                    onPointerMove={(e) => {
-                      e.stopPropagation();
-                      follow(e, l, i);
-                    }}
-                    onPointerUp={(e) => {
-                      e.stopPropagation();
-                      letGo(l, i);
-                    }}
-                    // Pinned to the bar's edges, so they're there to grab however short the bar is.
-                    className={`absolute inset-y-0 z-20 w-2 cursor-ew-resize bg-ink/20 ${end === 'from' ? 'left-0 border-r' : 'right-0 border-l'} border-paper/50`}
-                    aria-hidden="true"
-                  />
-                );
+                // Its ends: drag to stretch it; click to turn its fade in (left) or fade out (right) on or off.
+                const handle = (end: 'from' | 'to') => {
+                  const fades = end === 'from' ? fadesIn(bar) : fadesOut(bar);
+                  const what = end === 'from' ? 'fade in' : 'fade out';
+                  return (
+                    <span
+                      data-bar-end={end}
+                      data-fade={fades ? 'on' : undefined}
+                      title={`Click: ${fades ? `no ${what}` : `${what} over ${FADE_SECONDS} s`} · drag: stretch`}
+                      onPointerDown={(e) => grab(e, l, i, end)}
+                      onPointerMove={(e) => {
+                        e.stopPropagation();
+                        follow(e, l, i);
+                      }}
+                      onPointerUp={(e) => {
+                        e.stopPropagation();
+                        letGo(l, i);
+                      }}
+                      // Pinned to the bar's edges, so they're there to grab however short the bar is.
+                      className={`absolute inset-y-0 z-20 w-4 cursor-ew-resize bg-ink/20 ${end === 'from' ? 'left-0 border-r' : 'right-0 border-l'} border-paper/50`}
+                      aria-hidden="true"
+                    >
+                      {fades && (
+                        // A ramp: rising from the bottom for a fade in, falling to it for a fade out.
+                        <svg
+                          className="pointer-events-none absolute inset-0 h-full w-full"
+                          viewBox="0 0 16 32"
+                          preserveAspectRatio="none"
+                        >
+                          <polygon
+                            points={end === 'from' ? '0,32 16,0 16,32' : '0,0 16,32 0,32'}
+                            fill="rgba(255,255,255,0.3)"
+                          />
+                          <line
+                            x1="0"
+                            y1={end === 'from' ? 32 : 0}
+                            x2="16"
+                            y2={end === 'from' ? 0 : 32}
+                            stroke="#fff"
+                            strokeWidth="2"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </svg>
+                      )}
+                    </span>
+                  );
+                };
                 return [
                   <div
                     key={key}
@@ -982,7 +1025,7 @@ export function MediaTimeline({
                     onPointerUp={() => letGo(l, i)}
                     onPointerCancel={() => setDrag(null)}
                     title={`${l.action || 'Not connected to an action yet'}\n${l.assetId}${l.assetName ? ` ${l.assetName}` : ''} · ${stagesText(place)} — drag to move, drag an end to stretch, Option-drag to duplicate, ▼ to connect it to an action`}
-                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border border-[#3c5eac] px-2 text-paper shadow-sm ${
+                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border border-[#3c5eac] px-5 text-paper shadow-sm ${
                       isConnected(l) ? 'bg-[#3c5eac]' : 'border-dashed border-paper/80 bg-[#3c5eac]/60'
                     } ${
                       optionHeld ? 'cursor-copy' : 'cursor-grab active:cursor-grabbing'

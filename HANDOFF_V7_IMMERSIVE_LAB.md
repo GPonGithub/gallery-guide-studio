@@ -6,6 +6,113 @@ feature, read `HANDOFF_V6_IMMERSIVE_MEDIA.md` (§7a–7t — the v7 work is writ
 
 ---
 
+## Latest — 2026-11-06 evening, studio Mac (read this first)
+
+**Branch `v8`**, pushed to GitHub (`origin/v8`) at the end of 2026-11-06 with everything below. v6 is still the
+live site; v8 is only a preview. Dev server: `npm run dev` on :3000 (in the Code app: the `gallery-guide-studio`
+entry in `.claude/launch.json`). TouchDesigner file: **`F2026_StudioMap_r1.40.toe`** in
+`Fall 2026 Grahams Work/TouchDesigner_Graham_Fall_2026/` (saved with everything below).
+
+### Built 2026-11-06
+
+1. **Local backup on this computer** (finished). `/api/local-backup` (GET/PUT `?team=ED|AE` →
+   `.local-backup/team-ED.json`, atomic write, keeps `.previous.json`, localhost only) + `src/lib/localBackup.ts`
+   + `LocalBackupNote.tsx` (mounted under the header in `page.tsx`). Saves 4 s after any change. If the browser
+   has **no scenes** and a backup has some, it puts the backup back and shows a note; step 1 then names each
+   scene's media folder to choose again. A copy with no scenes is never saved (client and server both refuse).
+   **Caveat:** one backup per team per computer — the last browser to save wins. The Code app's browser pane
+   holds an older copy of the scenes; with the app open there it saved over the Chrome copy twice today (put
+   back from `.previous.json`). **Keep the app open in one browser only** (the user's Chrome); if a pane test is
+   needed, `chmod a-w .local-backup` first and restore it after.
+2. **Spatialized audio (step 6): the balance belongs to the sound.** Moving the dot sets `pan` on every bar of
+   that sound in the scene and remembers it (localStorage `sound-pans`, key `sheet#scene|assetId`), so a bar
+   added later starts there. The middle is stored explicitly. The Sound list shows each sound once.
+3. **Record Movement / Delete Movement Recording** (step 6). ● Record Movement plays the sound (if it isn't
+   already) and samples the dot every 40 ms against the file's time, until Stop Recording, the sound ending or
+   looping. Saved as `MediaLink.panPath [{t,x,y}]` on all the sound's bars + localStorage `sound-pan-paths`
+   (holds compressed to their ends). On playback the position follows the path (`panAt`, interpolated) in the
+   browser and is sent to TouchDesigner (`sound pan`, at most every 80 ms, only when it moved). While a sound has
+   a recording its dot can't be dragged by hand. Fixed: the dot only follows the pointer while the button is held.
+4. **Fades on timeline bars.** Bar ends are 16 px (were 8); bar contents are padded 20 px so thumbnails and ×
+   clear them. **Click an end** (not drag) to switch its fade in (left) / fade out (right); a white ramp shows
+   when on. **Fades are on by default** — `TimelineBar.fadeIn/fadeOut` are on unless `false`
+   (`fadesIn()/fadesOut()` in `mediaFolder.ts`); applies to existing bars too. `FADE_SECONDS = 1`.
+   - Pictures/video/colours: `Shown.fadeIn/fadeOut` → `media show/play` and `media hide` carry `"fade": 1`.
+     Clearing (restart, scene change) is immediate.
+   - Sounds: browser fades its own volume (`fadeTo` in `mediaPlayback.ts`); `sound play/stop` carry `fade`.
+   - **Marker moves are now per area** (`markerPlay.ts`): an area whose bar carries on into the next stage is
+     left alone even when the same file/colour ends or starts on another area (before, the whole file was
+     re-shown, so it faded again). `showVisual(..., only: true)` changes only the named areas.
+5. **TouchDesigner fades** (`build_immersive_lab.py` + `Claude/TouchDesigner/add_fades.py`, run and saved in
+   r1.40): a `levelTOP fadeN` between `placedN` and `areaN`; the receiver eases `brightness1` (or a sound slot's
+   volume) with an expression only while fading, then back to a constant. Test without the app: POST
+   `{"type":"media","action":"hide","area":11,"fade":4}` to :9980 → reply "fading out". `fade_check.py` /
+   `fade_measure.py` read it frame by frame.
+
+### Known problem: TouchDesigner slows down over hours
+After a restart it runs at 60 fps; after ~5 h it was down to ~20 fps (video jerky, fades visibly stepped). The
+GPU time at `MAPPER/projectorBlend/in1` grows while it runs — root cause **not found yet**. Restarting fixes it
+for a few hours: TouchDesigner ▸ Quit, `open .../F2026_StudioMap_r1.40.toe` (opens one copy), then POST
+`{"type":"projectors","action":"open"}` to :9980 to reopen the 4 projector windows. Check with `fade_measure.py`
+(every frame = 60 fps) or the FPS readout in TD's top bar. Finding the leak is the main open job.
+
+### Next steps
+- Find why TouchDesigner slows down over time (above).
+- Listen to recorded movements and fades in the room (sound fades in TD not yet heard by anyone).
+- Optional: share one movie player when a video is on several areas; convert the 25 fps nurses video to 30 fps.
+- The room drawing in the app doesn't show fades (only the projectors and speakers fade).
+
+---
+
+## Earlier — 2026-11-05/06 on the studio Mac
+
+**Branch `v8`**, studio Mac (`ixdstudio`): `70b1cb4` Spatialized audio · `9fe01bf` video converter groundwork ·
+`8298804` sounds volume/limiter, stage clicks, room numbering. (The local backup that was half built here was
+finished on 2026-11-06 — see above.)
+
+**Why the backup:** this Mac's Chrome is cloud-managed by the school with an **ephemeral profile**
+(`Local State` → `Profile 167`, `is_ephemeral: true`). Quitting Chrome wipes all of the app's browser storage:
+media lists (incl. made colours/text), folder handles and permission, connections, saved scenes, settings,
+API keys. Symptom: timeline bars come back from the scene but thumbnails are black. Long-term fix is IT
+turning off `ForceEphemeralProfiles` in the Google Admin console (user to ask). Don't tell the user to quit
+Chrome.
+
+**Built this round (committed):**
+- **Immersive Media step 6 · Spatialized audio** (`SpatialAudioPanel.tsx`, `spatialAudio.ts`): clicking a sound
+  bar opens it (`pickSpatialSound`, `CollapsiblePanel.openRequest`). Square with a speaker per corner and a
+  draggable dot; equal-power levels (corner = only that speaker, middle = all four at 0.5). Saved as
+  `MediaLink.pan {x,y}` (-1..1, y+ = front), with Undo. Labels shown are the **room's numbering**: front left 3,
+  front right 4, back left 2, back right 1 (`SPEAKERS[].label`); routing goes by **output number** `n` (output 1
+  front left, 2 back right, 3 back left, 4 front right). Changing labels must not change `n`.
+- **Browser playback to 4 speakers** (`mediaPlayback.ts`): every timeline sound goes through Web Audio → mono →
+  4 per-speaker gains → limiter (4 mono DynamicsCompressors, −3 dB, 20:1) → `AudioContext.setSinkId` to the
+  GIGAPORT eX (needs Chrome to name devices: mic permission; "Use the room's speakers" button asks). Chrome
+  shuffles channels on the GigaPort, found by ear: `BROWSER_CHANNEL_FOR_SPEAKER = [2, 0, 1, 3]` — re-check by ear
+  if the Mac's output or speaker setup changes (it was found with the GigaPort as macOS output; the Mac's output
+  is now Loopback Audio 3 again).
+- **Volume**: Music / Sounds panel has its own **Sounds volume** (straight, default 100%; was the music's squared
+  Volume, 25% at 5), Music volume, Dip (both). Bar slider 0–400% (`MAX_SOUND_VOLUME = 4`); TouchDesigner clamps
+  at 4 (no limiter there). macOS GigaPort channels are 100%, nothing muted.
+- **Stage clicks**: moving the marker by hand passes `ask: true` (Chrome may ask for folder permission) and a
+  sound that fails shows a red note at the top of the timeline (it used to fail silently).
+- **Short sound bars**: stretch handles pinned to the bar edges; volume control and thumbnail shrink first.
+- **TouchDesigner**: build script makes a 4-speaker network (`build_spatial`: per slot mono → `sp_pan{k}`
+  levels → 4 buses → `audio_out` on the GIGAPORT, outputs 1–4); receiver handles `sound pan` and `pan` on
+  `sound play`. Installed in the running StudioMap with `Claude/TouchDesigner/add_spatial_audio.py`
+  (no rebuild); **the .toe isn't saved** and nobody has listened to it yet. TD's audio_out must stay on the
+  GigaPort, not Loopback/default (or sound doubles).
+- **Video converter** (parked, groundwork only): `/api/media/convert` (ffmpeg → H.264 1080p or HAP Alpha),
+  TD `media reload`, Media Library skips `Originals before H.264/`. Still to do: codec check in the browser,
+  queue + progress on thumbnails, write the file back and move the original.
+
+**The room's audio (outside the repo):** 4 speakers on the GIGAPORT eX (8 outputs). macOS output = Loopback
+Audio 3 (Pass-Thru L → GigaPort 1+3, R → 2+4), set up by the speaker session; notes in its
+`gigaport-4-speaker-setup.md`. GigaPort's macOS speaker layout labels outputs 1–4 L/R/Ls/Rs
+(`Claude/TouchDesigner/gigaport_speaker_layout.swift`; `swift <file> restore` undoes) — without it Chrome folds
+4 channels to stereo.
+
+---
+
 ## 0. Where things stand
 
 - **Branch `v8`** (made 2026-10-20 from v7 `3e7e028`) is now the working branch — everything below, plus
@@ -148,7 +255,10 @@ must click Deploy themselves (publishing was blocked for the assistant).
 
 Paste this as the first message:
 
-> Continue developing the Immersive Lab Chatbot Designer on branch **v7** in this project. First read
-> `HANDOFF_V7_IMMERSIVE_LAB.md` in the project root in full, then `HANDOFF_V6_IMMERSIVE_MEDIA.md` §7t.
+> Continue developing the Immersive Lab Chatbot Designer on branch **v8** in this project. First read
+> `HANDOFF_V7_IMMERSIVE_LAB.md` in the project root in full, starting with "Latest — 2026-11-05/06".
 > Tell me briefly where things stand (including what's uncommitted) and ask what I'd like to work on next.
 > Don't change anything until I ask.
+
+Next up when continuing: finish the local backup (see "Uncommitted right now" at the top), then listen to
+TouchDesigner's 4-speaker output and save the StudioMap .toe if the user wants, then push v8 when asked.

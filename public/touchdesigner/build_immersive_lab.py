@@ -54,7 +54,8 @@ def setp(o, name, value):
         warn('%s has no parameter "%s"' % (o.path, name))
         return
     try:
-        if p.isMenu and isinstance(value, str) and value not in p.menuNames:
+        # A menu that also takes any text (a rename's To, say) offers suggestions only: those take what's given.
+        if p.isMenu and not p.isString and isinstance(value, str) and value not in p.menuNames:
             warn('%s.%s: no option "%s" (options: %s)' % (o.path, name, value, ', '.join(p.menuNames)))
             return
         p.val = value
@@ -71,6 +72,7 @@ CALLBACKS = r'''# The Immersive Lab receiver: what each message from the Chatbot
 # (Made by build_immersive_lab.py - run that again rather than editing here.)
 
 import json
+import math
 import os
 import time
 
@@ -180,6 +182,100 @@ def route(area, index, msg):
         p.val = 1 if placed else 0
 
 
+# --- fades -----------------------------------------------------------------------
+# A bar with a fade in / fade out on the app's timeline: its picture or video eases up from black (or
+# down to black, then hides), and its sound eases up from silence (or down, then stops), over "fade"
+# seconds. While fading, the area's fadeN levelTOP (or the sound's volume) follows an expression;
+# otherwise it's a plain value, so nothing cooks for it.
+
+FADE_EXPR = "op('receiver_callbacks').module.fade_level(%r, absTime.seconds)"
+
+
+def fades():
+    f = lab.fetch('fades', None)
+    if f is None:
+        f = {}
+        lab.store('fades', f)
+    return f
+
+
+def fade_level(key, t=None):
+    """How far up a fading area or sound is now (0-1); 1 when it isn't fading."""
+    f = fades().get(key)
+    if not f:
+        return 1.0
+    t0, a, b, dur = f[0], f[1], f[2], f[3]
+    t = absTime.seconds if t is None else t
+    u = 1.0 if dur <= 0 else max(0.0, min(1.0, (t - t0) / dur))
+    u = (1 - math.cos(math.pi * u)) / 2
+    return a + (b - a) * u
+
+
+def fade_par(key):
+    """The parameter a fade moves: the area's fadeN brightness, or the sound slot's volume."""
+    if isinstance(key, int):
+        lv = lab.op('fade%d' % key)
+        return lv.par.brightness1 if lv is not None else None
+    ch = lab.op('sound%d' % int(key[1:]))
+    return ch.par.volume if ch is not None and hasattr(ch.par, 'volume') else None
+
+
+def fade_target(key):
+    # A sound's own volume (its bar's slider), which its fade eases up to.
+    return float(lab.fetch('slot_volume', {}).get(key, 1.0)) if isinstance(key, str) else 1.0
+
+
+def start_fade(key, a, b, seconds, then=None):
+    """Eases an area (int) or sound slot ('sK') from a to b over `seconds`; `then` ('hide' / 'stop') after."""
+    tok = lab.fetch('fade_token', 0) + 1
+    lab.store('fade_token', tok)
+    f = fades()
+    p = fade_par(key)
+    if seconds <= 0 or p is None:
+        f.pop(key, None)
+        if p is not None:
+            p.mode = ParMode.CONSTANT
+            p.val = b * fade_target(key)
+        return
+    f[key] = (absTime.seconds, a, b, seconds, tok)
+    lab.store('fades', f)
+    p.expr = (FADE_EXPR % key) + (' * %r' % fade_target(key) if isinstance(key, str) else '')
+    p.mode = ParMode.EXPRESSION
+    run("op(%r).module.end_fade(%r, %r, %r)" % (lab.op('receiver_callbacks').path, key, tok, then), delayMilliSeconds=int(seconds * 1000) + 30)
+
+
+def end_fade(key, tok, then):
+    f = fades()
+    if f.get(key, (0, 0, 0, 0, None))[4] != tok:
+        return  # Something newer came for this area or sound: it's in charge now.
+    b = f.pop(key)[2]
+    p = fade_par(key)
+    if p is not None:
+        p.mode = ParMode.CONSTANT
+        p.val = b * fade_target(key)
+    if then == 'hide':
+        hide_area(key)
+    elif then == 'stop':
+        stop_slot(int(key[1:]))
+
+
+def stop_fade(key):
+    """No fade for this area or sound any more (shown or hidden straight away): full up again."""
+    fades().pop(key, None)
+    p = fade_par(key)
+    if p is not None:
+        p.mode = ParMode.CONSTANT
+        p.val = fade_target(key)
+
+
+def fade_in(key, msg):
+    secs = float(msg.get('fade') or 0)
+    if secs > 0:
+        start_fade(key, 0.0, 1.0, secs)
+    else:
+        stop_fade(key)
+
+
 def show(msg):
     area = int(msg.get('area', 0))
     if not 1 <= area <= AREAS:
@@ -197,6 +293,7 @@ def show(msg):
         col.par.colorr, col.par.colorg, col.par.colorb = r, g, b
         lab.op('movie%d' % area).par.play = 0
         route(area, 2, msg)
+        fade_in(area, msg)
         now(where, dict(msg, path=msg.get('value')))
         return where, 'colour shown'
     if kind == 'text':
@@ -204,6 +301,7 @@ def show(msg):
         lab.op('words%d' % area).par.text = msg.get('value') or ''
         lab.op('movie%d' % area).par.play = 0
         route(area, 3, msg)
+        fade_in(area, msg)
         now(where, dict(msg, path=(msg.get('value') or '')[:60]))
         return where, 'text shown'
     path = full_path(msg)
@@ -215,6 +313,7 @@ def show(msg):
     movie.par.play = 1
     movie.par.cuepulse.pulse()
     route(area, 1, msg)
+    fade_in(area, msg)
     now(where, msg)
     return where, 'shown' if msg.get('kind') == 'image' else 'playing'
 
@@ -230,6 +329,7 @@ def reload_file(msg):
 
 
 def hide_area(area):
+    stop_fade(area)
     route(area, 0, {})
     lab.op('movie%d' % area).par.play = 0
     now('area %d' % area)
@@ -239,6 +339,10 @@ def hide(msg):
     area = int(msg.get('area', 0))
     if not 1 <= area <= AREAS:
         return 'area %s?' % msg.get('area'), 'no such area'
+    secs = float(msg.get('fade') or 0)
+    if secs > 0:
+        start_fade(area, fade_level(area), 0.0, secs, 'hide')
+        return 'area %d' % area, 'fading out'
     hide_area(area)
     return 'area %d' % area, 'hidden'
 
@@ -262,6 +366,7 @@ def free_slot():
 
 
 def stop_slot(k):
+    fades().pop('s%d' % k, None)
     lab.op('sound%d' % k).par.play = 0
     now('sound %d' % k)
 
@@ -274,7 +379,8 @@ def play_sound(msg):
     ch = lab.op('sound%d' % k)
     ch.par.file = path
     set_loop_audio(ch, bool(msg.get('loop')))
-    set_volume(ch, msg)
+    set_volume(ch, msg, k)
+    fade_in('s%d' % k, msg)
     set_pan(k, msg)
     ch.par.play = 1
     ch.par.cuepulse.pulse()
@@ -282,17 +388,28 @@ def play_sound(msg):
     return 'slot %d' % k, 'playing'
 
 
-def set_volume(ch, msg):
+def set_volume(ch, msg, k):
     # The sound's own volume from its bar's slider: 0 (silent) to 4 (four times the file; the app limits it, TouchDesigner does not).
-    if hasattr(ch.par, 'volume'):
-        ch.par.volume = max(0.0, min(4.0, float(msg.get('volume', 1))))
+    v = max(0.0, min(4.0, float(msg.get('volume', 1))))
+    vols = lab.fetch('slot_volume', {})
+    vols['s%d' % k] = v
+    lab.store('slot_volume', vols)
+    if not hasattr(ch.par, 'volume'):
+        return
+    f = fades().get('s%d' % k)
+    if f:
+        # Fading: it eases to (or from) the new volume instead.
+        ch.par.volume.expr = (FADE_EXPR % ('s%d' % k)) + ' * %r' % v
+    else:
+        ch.par.volume.mode = ParMode.CONSTANT
+        ch.par.volume = v
 
 
 def sound_volume(msg):
     sid = msg.get('id')
     slots = [k for k, rid, _, _ in slot_rows() if rid and rid == sid]
     for k in slots:
-        set_volume(lab.op('sound%d' % k), msg)
+        set_volume(lab.op('sound%d' % k), msg, k)
     vol = round(max(0.0, min(4.0, float(msg.get('volume', 1)))) * 100)
     return ', '.join('slot %d' % k for k in slots) or 'sound', 'volume %d%%' % vol if slots else 'not playing'
 
@@ -331,9 +448,14 @@ def sound_loop(msg):
 def stop_sound(msg):
     sid = msg.get('id')
     stopped = [k for k, rid, _, _ in slot_rows() if rid and (not sid or rid == sid)]
+    secs = float(msg.get('fade') or 0)
     for k in stopped:
-        stop_slot(k)
-    return ', '.join('slot %d' % k for k in stopped) or 'sound', 'stopped' if stopped else 'not playing'
+        if secs > 0:
+            start_fade('s%d' % k, fade_level('s%d' % k), 0.0, secs, 'stop')
+        else:
+            stop_slot(k)
+    done = 'fading out' if secs > 0 else 'stopped'
+    return ', '.join('slot %d' % k for k in stopped) or 'sound', done if stopped else 'not playing'
 
 
 def levels(msg):
@@ -608,6 +730,9 @@ GUIDE = [
     ['media play', 'Plays a video in an area; loop true = loops, false = plays once and holds the last frame',
      '{"type":"media","action":"play","area":5,"id":"M-007","path":"monitor.mov","kind":"video","loop":true}'],
     ['media hide', 'Clears an area to black', '{"type":"media","action":"hide","area":5}'],
+    ['(fade)', 'On media show / play / hide and sound play / stop: eases it in from black or silence (or out, '
+     'then hides or stops it) over this many seconds - a bar\'s fade on the app\'s timeline',
+     '{"type":"media","action":"hide","area":5,"fade":1}'],
     ['(uv)', 'On media show / play: placed on the app\'s room drawing - the area shows its slice of the whole '
      'picture (output u,v -> picture u,v, a 3x3 matrix row by row; divide by the third)',
      '{"type":"media","action":"show","area":5,"path":"forest.jpg","kind":"image","uv":[1,0,0,0,1,0,0,0,1]}'],
@@ -854,8 +979,12 @@ def build():
                     break
             else:
                 problems.append('%s: no uniform name parameter for %s' % (g.path, name))
+        # Fades in and out (a bar's fade on the app's timeline): brightness, 1 unless fading.
+        fade = place(lab.create(levelTOP, 'fade%d' % a), 350, y)
+        fade.inputConnectors[0].connect(g)
+        setp(fade, 'brightness1', 1)
         area = place(lab.create(nullTOP, 'area%d' % a), 400, y)
-        area.inputConnectors[0].connect(g)
+        area.inputConnectors[0].connect(fade)
         out = place(lab.create(outTOP, 'out%d' % a), 600, y)
         out.inputConnectors[0].connect(area)
         # The preview only: the area's number in its corner, so even black areas can be told apart.

@@ -1,9 +1,23 @@
 'use client';
 
 import { useSyncExternalStore } from 'react';
-import { areaOfTrack, barsOf, isMarker, loadLibrary, loadMediaLinks, loopOf, timingOf, mediaSceneKey } from './mediaFolder';
+import {
+  areaOfTrack,
+  barsOf,
+  FADE_SECONDS,
+  fadesIn,
+  fadesOut,
+  isMarker,
+  loadLibrary,
+  loadMediaLinks,
+  loopOf,
+  timingOf,
+  mediaSceneKey,
+  type MediaLink,
+  type TimelineBar,
+} from './mediaFolder';
 import { clampSoundVolume, isSoundPlaying, playSound, startLoop, stopSounds, type SceneRef } from './mediaPlayback';
-import { areasShowing, hideVisual, placeOf, placesShowing, showVisual } from './mediaShow';
+import { hideVisualExcept, placeOf, showVisual, shownIn } from './mediaShow';
 import { onTDConnected } from './touchDesigner';
 
 /**
@@ -74,39 +88,77 @@ export async function markerArrived(
   if (at < 0) return;
   const key = `${scene.sheetId}#${scene.number}`;
   if (last?.scene === key && last.stage === code) return;
+  // The stage the marker left (in this scene), for the fade out of the bars that ended there.
+  const left = last?.scene === key ? stages.findIndex((s) => s.code === last!.stage) : -1;
+  const before = left >= 0 ? left : null;
   last = { scene: key, stage: code };
   const index = (c: string, fallback: number) => {
     const i = stages.findIndex((s) => s.code === c);
     return i >= 0 ? i : fallback;
   };
+  const covers = (b: { from: string; to: string }, stage: number) => {
+    const from = index(b.from, 0);
+    return from <= stage && stage <= Math.max(from, index(b.to, stages.length - 1));
+  };
   const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary(mediaSceneKey(scene))]);
   const assets = new Map((library?.assets ?? []).map((a) => [a.id, a]));
+  // Pictures, video and colours, area by area: for each file, the areas a bar of it covers on this stage
+  // (and which connection's bar). An area whose bar carries on from the last stage is left as it is — no
+  // fade, no video starting over — even when the same file comes down on another area, or goes up on one.
+  const wanted = new Map<string, Map<number, { link: MediaLink; bars: TimelineBar[] }>>();
   for (const link of links) {
     if (link.sheetId !== scene.sheetId || link.sceneNumber !== scene.number || !isMarker(link)) continue;
     const asset = assets.get(link.assetId);
     if (!asset || asset.status !== 'present') continue;
-    const covering = barsOf(link).filter((b) => {
-      const from = index(b.from, 0);
-      return from <= at && at <= Math.max(from, index(b.to, stages.length - 1));
-    });
+    const covering = barsOf(link).filter((b) => covers(b, at));
     if (asset.kind === 'sound') {
       if (visualsOnly) continue;
       if (covering.length > 0 && !isSoundPlaying(asset.id)) {
         const volume = clampSoundVolume(link.volume);
-        void (loopOf(link) ? startLoop(asset, volume, ask) : playSound(asset, ask, volume)).catch((err: unknown) =>
-          onProblem?.(`“${asset.name}” didn’t play: ${err instanceof Error ? err.message : 'it couldn’t be played.'}`),
+        // Its bar fades in: eased up from silence.
+        const fade = covering.some(fadesIn) ? FADE_SECONDS : 0;
+        void (loopOf(link) ? startLoop(asset, volume, ask, fade) : playSound(asset, ask, volume, fade)).catch(
+          (err: unknown) =>
+            onProblem?.(
+              `“${asset.name}” didn’t play: ${err instanceof Error ? err.message : 'it couldn’t be played.'}`,
+            ),
         );
       } else if (covering.length === 0 && isSoundPlaying(asset.id)) {
-        stopSounds(asset.id);
+        // The bar it played for (on the stage the marker left) fades out: eased down, then stopped.
+        const ended = before === null ? [] : barsOf(link).filter((b) => covers(b, before));
+        stopSounds(asset.id, ended.some(fadesOut) ? FADE_SECONDS : 0);
       }
       continue;
     }
-    const areas = [...new Set(covering.flatMap((b) => areaOfTrack(b.track) ?? []))].sort((a, b) => a - b);
-    if (areas.length === 0) {
-      if (areasShowing(asset.id)) hideVisual(asset.id);
-    } else if (placesShowing(asset.id) !== JSON.stringify(areas.map((a) => [a, placeOf(link, a) ?? null]))) {
-      // Already up in exactly these areas, placed the same: left alone, so a video doesn't start over.
-      void showVisual({ link, asset, timing: timingOf(link), areas }).catch(() => undefined);
+    const mine = wanted.get(asset.id) ?? new Map();
+    wanted.set(asset.id, mine);
+    for (const b of covering) {
+      const area = areaOfTrack(b.track);
+      if (area !== null && !mine.has(area)) mine.set(area, { link, bars: covering });
+    }
+  }
+  for (const [assetId, areas] of wanted) {
+    const asset = assets.get(assetId)!;
+    // Taken down where no bar of it covers this stage any more (each area with its own bar's fade out).
+    hideVisualExcept(assetId, [...areas.keys()]);
+    // Put up where it isn't up yet, or is placed differently now — only those areas.
+    const fresh = new Map<MediaLink, number[]>();
+    for (const [area, { link }] of areas) {
+      const now = shownIn(area);
+      const place = JSON.stringify(placeOf(link, area) ?? null);
+      if (now?.assetId === assetId && JSON.stringify(now.place ?? null) === place) continue;
+      fresh.set(link, [...(fresh.get(link) ?? []), area]);
+    }
+    for (const [link, list] of fresh) {
+      const bars = areas.get(list[0])!.bars;
+      void showVisual({
+        link,
+        asset,
+        timing: timingOf(link),
+        areas: list.sort((a, b) => a - b),
+        bars,
+        only: true,
+      }).catch(() => undefined);
     }
   }
 }
