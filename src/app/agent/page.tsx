@@ -8,6 +8,7 @@ import { DesignPanel, type SheetImportOutcome, type SheetSync } from '@/componen
 import { MasterEditor, StageEditor } from '@/components/agent/FlowEditor';
 import { OpenMic, type OpenMicStatus, type UtteranceTiming } from '@/components/agent/OpenMic';
 import { SpeechQueue } from '@/components/agent/speechQueue';
+import { sentencePauseMs } from '@/lib/agent/sentencePause';
 import { startStreamedClip, type StreamedClip } from '@/components/agent/streamedAudio';
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
@@ -43,6 +44,7 @@ import {
   onSoundsChange,
   setSoundLevels,
   voiceToAllSpeakers,
+  setVoiceVolume,
   type PlannedSound,
 } from '@/lib/agent/mediaPlayback';
 import { clearVisuals, dropUnbacked, everyVisuals, hideVisual, isShowing, sceneMedia, showVisual, type PlannedMedia } from '@/lib/agent/mediaShow';
@@ -177,6 +179,8 @@ type Saved = {
   savedSnapshot: string;
   /** The scene's media timeline as last saved/opened (null/missing = not known yet). */
   savedTimeline?: string | null;
+  /** The agent's voice volume, 0–3 (1 = 100%, as ElevenLabs made it). Missing = 1. */
+  voiceVolume?: number;
   /** Open mic: seconds of quiet before what was said is sent. */
   pauseSeconds: number;
   /** Open mic: the caller can talk over the agent to interrupt it (the mic keeps listening while it speaks). */
@@ -544,6 +548,17 @@ export default function AgentStudioPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only a change to the voice should save it
   }, [sceneVoice]);
 
+  // The voice's volume (Voice panel), applied to the voice as it plays, live.
+  const voiceVolume = saved?.voiceVolume ?? 1;
+  useEffect(() => {
+    setVoiceVolume(voiceVolume);
+  }, [voiceVolume]);
+  // The pause between spoken sentences, from the open scene's Describe the Conversation (sentencePause.ts).
+  const pauseRef = useRef(sentencePauseMs(''));
+  const sceneBrief = saved?.brief;
+  useEffect(() => {
+    pauseRef.current = sentencePauseMs(sceneBrief);
+  }, [sceneBrief]);
   const voiceRef = useRef({ voiceId: '', apiKey: '', settings: DEFAULT_VOICE_SETTINGS });
   useEffect(() => {
     if (!saved) return;
@@ -1669,6 +1684,7 @@ export default function AgentStudioPage() {
       expressive,
       beforeFirst: hooks.beforeFirst,
       playbackRate: () => voiceRef.current.settings.speed,
+      pauseMs: () => pauseRef.current,
       onSpeakingChange: (speakingNow) => {
         setSpeaking(speakingNow);
         if (!speakingNow) hooks.onQuiet?.();
@@ -2587,6 +2603,8 @@ export default function AgentStudioPage() {
                   }}
                   spokenReplies={voiceOn}
                   onSpokenRepliesChange={setVoiceOn}
+                  voiceVolume={saved.voiceVolume ?? 1}
+                  onVoiceVolumeChange={(voiceVolume) => setSaved({ ...saved, voiceVolume })}
                   pauseSeconds={saved.pauseSeconds}
                   onPauseSecondsChange={(pauseSeconds) => setSaved({ ...saved, pauseSeconds })}
                   interruptByVoice={saved.interruptByVoice}

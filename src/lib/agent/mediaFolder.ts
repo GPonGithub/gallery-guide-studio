@@ -336,7 +336,8 @@ let loading = false;
 const sharedListeners = new Set<() => void>();
 const tellAll = () => sharedListeners.forEach((listener) => listener());
 
-function subscribeMediaLinks(listener: () => void) {
+/** Hears every change to the connections (the timeline's bars included); returns how to stop. */
+export function subscribeMediaLinks(listener: () => void) {
   sharedListeners.add(listener);
   if (!shared && !loading) {
     loading = true;

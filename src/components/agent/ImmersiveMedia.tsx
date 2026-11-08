@@ -8,6 +8,7 @@ import { DEMO_SCENE, DEMO_SHEET_ID, useMediaDemo, useMediaFolderRevision } from 
 import { ProjectorsPanel } from './ProjectorsPanel';
 import { TouchDesignerPanel } from './TouchDesignerPanel';
 import { ShowFilePanel } from './ShowFilePanel';
+import AiCharacterOrb from './AiCharacterOrb';
 import { useShowAutosave } from '@/lib/agent/showSave';
 import { buttonGhost, buttonOutline } from '@/lib/styles';
 import { parseSheetUrl } from '@/lib/agent/sheetScenes';
@@ -310,14 +311,16 @@ export function ImmersiveMedia({
       `${connected(links) ? 'Disconnect' : 'Connect'} ${assetId}`,
     );
   };
-  /** Adds a text or colour item to the library, with the next ID (made in the app: no file). */
-  const addMade = async (kind: 'text' | 'color', name: string, value: string) => {
+  /** Adds a text, colour or AI character to the library, with the next ID (made in the app: no file). */
+  const addMade = async (kind: MadeKind, name: string, value: string) => {
     const assets = library?.assets ?? [];
     const n = Math.max(0, ...assets.map((a) => Number(/^M-(\d+)$/i.exec(a.id)?.[1] ?? 0))) + 1;
     const item: MediaAsset = {
       id: formatId(n),
       path: '',
-      name: name.trim() || (kind === 'text' ? value.trim().split('\n')[0].slice(0, 40) : value),
+      name:
+        name.trim() ||
+        (kind === 'text' ? value.trim().split('\n')[0].slice(0, 40) : kind === 'character' ? 'AI Character' : value),
       kind,
       status: 'present',
       added: new Date().toLocaleDateString('en-CA'),
@@ -330,6 +333,16 @@ export function ImmersiveMedia({
     };
     await saveLibrary(next, mediaKey);
     setLibrary(next);
+  };
+  /** Changes a made item's value — an AI character's colour, from its colour picker in the list. */
+  const setMadeValue = async (asset: MediaAsset, value: string) => {
+    if (!library) return;
+    const next: StoredLibrary = {
+      ...library,
+      assets: library.assets.map((a) => (a.id === asset.id ? { ...a, value } : a)),
+    };
+    setLibrary(next);
+    await saveLibrary(next, mediaKey);
   };
   /** Deletes a text or colour item, and its connections (with their bars) — the room takes it down. */
   const removeMade = async (asset: MediaAsset) => {
@@ -547,6 +560,7 @@ export function ImmersiveMedia({
               folder={folder}
               assets={assets}
               onRemoveMade={(a) => void removeMade(a)}
+              onMadeValue={(a, v) => void setMadeValue(a, v)}
               show={libraryOpen && readable === true}
               connect={{
                 scene: sceneSheet ? { sheetId: sceneSheet.sheetId, number: sceneSheet.number, name: sceneName } : null,
@@ -692,14 +706,18 @@ const ORDERS: { value: ListOrder; label: string; hint: string }[] = [
   { value: 'video', label: 'Video', hint: 'Videos first' },
   { value: 'sound', label: 'Sound', hint: 'Sounds first' },
   { value: 'image', label: 'Image', hint: 'Images first' },
+  { value: 'color', label: 'Color', hint: 'Colors first' },
+  { value: 'character', label: 'AI Character', hint: 'Only the AI characters — each with its colour' },
 ];
 
 /**
  * The list in `order` — a kind's files first, the rest after them as listed;
  * "With actions": the files connected to an action (`connected`) first.
+ * "AI Character" lists the AI characters alone.
  */
 function arrange(assets: MediaAsset[], order: ListOrder, connected: Set<string>): MediaAsset[] {
   if (order === 'listed') return assets;
+  if (order === 'character') return assets.filter((a) => a.kind === 'character');
   if (order === 'actions') return [...assets.filter((a) => connected.has(a.id)), ...assets.filter((a) => !connected.has(a.id))];
   // Newest first: by the day it was added, then by ID (IDs are given out in order).
   if (order === 'recent') return [...assets].reverse().sort((a, b) => (b.added || '').localeCompare(a.added || ''));
@@ -769,6 +787,7 @@ function MediaList({
   show,
   connect,
   onRemoveMade,
+  onMadeValue,
 }: {
   folder: MediaFolder;
   assets: MediaAsset[];
@@ -776,6 +795,8 @@ function MediaList({
   connect: Connect;
   /** Deletes a text or colour item (files are only ever removed from the folder). */
   onRemoveMade: (asset: MediaAsset) => void;
+  /** Changes a made item's value (an AI character's colour). */
+  onMadeValue: (asset: MediaAsset, value: string) => void;
 }) {
   /** The file whose Connect with Action list is open. */
   const [connecting, setConnecting] = useState<string | null>(null);
@@ -861,6 +882,11 @@ function MediaList({
         aria-label="Media Library"
         data-tour="media-list"
       >
+        {order === 'character' && shown.length === 0 && (
+          <li className="p-3 font-body text-xs italic text-muted-ink">
+            No AI characters yet — Make → + AI Character, above, to add one.
+          </li>
+        )}
         {shown.map((a) => (
           <li
             key={a.id}
@@ -905,6 +931,9 @@ function MediaList({
                     </>
                   )}
                 </p>
+                {a.kind === 'character' && (
+                  <CharacterColour value={a.value ?? ''} onChange={(v) => onMadeValue(a, v)} />
+                )}
                 <button
                   onClick={() => {
                     const opening = connecting !== a.id;
@@ -1650,6 +1679,14 @@ function Thumbnail({
 
 /** A text or colour item's thumbnail: the words, white on black, or the colour itself — as the room shows it. */
 function MadeThumbnail({ asset }: { asset: MediaAsset }) {
+  if (asset.kind === 'character') {
+    // The character itself, live: it moves whenever the chatbot speaks.
+    return (
+      <span className="block aspect-video w-[176px] shrink-0 overflow-hidden border border-ink bg-black">
+        <AiCharacterOrb color={asset.value || null} />
+      </span>
+    );
+  }
   if (asset.kind === 'color') {
     return (
       <span
@@ -1671,30 +1708,65 @@ function MadeThumbnail({ asset }: { asset: MediaAsset }) {
   );
 }
 
-/** + Text / + Colour: a title, caption or colour wash for the room — no file needed. */
-function MakeItem({ onAdd }: { onAdd: (kind: 'text' | 'color', name: string, value: string) => Promise<void> }) {
-  const [making, setMaking] = useState<'text' | 'color' | null>(null);
+/**
+ * An AI character's colour: Spectrum (its multi-colour look, value '') or one colour from the picker.
+ * A setting of the character — every scene it's placed in shows it in this colour.
+ */
+function CharacterColour({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const one = /^#[0-9a-f]{6}$/i.test(value);
+  const pill = 'border border-ink px-2 py-0.5 font-label text-[10px] uppercase tracking-wide';
+  return (
+    <span className="mt-1 flex flex-wrap items-center gap-1.5" onPointerDown={(e) => e.stopPropagation()}>
+      <span className="font-label text-[10px] uppercase tracking-wide text-muted-ink">Colour</span>
+      <button
+        onClick={() => onChange('')}
+        aria-pressed={!one}
+        title="Its multi-colour look"
+        className={`${pill} ${one ? 'bg-paper text-ink hover:bg-ink/10' : 'bg-ink text-paper'}`}
+      >
+        Spectrum
+      </button>
+      <input
+        type="color"
+        value={one ? value : '#36d6ff'}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label="AI character colour"
+        title="Pick one colour"
+        className={`h-6 w-9 cursor-pointer border bg-paper ${one ? 'border-ink outline outline-2 outline-ink' : 'border-ink'}`}
+      />
+      {one && <span className="font-label text-[10px] uppercase text-muted-ink">{value}</span>}
+    </span>
+  );
+}
+
+type MadeKind = 'text' | 'color' | 'character';
+const MAKE_LABEL: Record<MadeKind, string> = { text: 'Text', color: 'Colour', character: 'AI Character' };
+
+/** + Text / + Colour / + AI Character: a title, caption, colour wash or voice character for the room — no file needed. */
+function MakeItem({ onAdd }: { onAdd: (kind: MadeKind, name: string, value: string) => Promise<void> }) {
+  const [making, setMaking] = useState<MadeKind | null>(null);
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
-  const open = (kind: 'text' | 'color') => {
+  const open = (kind: MadeKind) => {
     setMaking(making === kind ? null : kind);
     setName('');
     setValue(kind === 'color' ? '#0b1d36' : '');
   };
   const small = 'border border-ink px-2.5 py-1 font-label text-[10px] uppercase tracking-wide';
-  const ready = making === 'color' ? /^#[0-9a-f]{6}$/i.test(value) : value.trim() !== '';
+  const ready =
+    making === 'character' ? true : making === 'color' ? /^#[0-9a-f]{6}$/i.test(value) : value.trim() !== '';
   return (
     <div className="flex flex-col gap-1.5" data-tour="media-make">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="font-label text-[10px] uppercase tracking-wide text-muted-ink">Make</span>
-        {(['text', 'color'] as const).map((k) => (
+        {(['text', 'color', 'character'] as const).map((k) => (
           <button
             key={k}
             onClick={() => open(k)}
             aria-expanded={making === k}
             className={`${small} ${making === k ? 'bg-ink text-paper' : 'bg-paper text-ink hover:bg-ink/10'}`}
           >
-            + {k === 'text' ? 'Text' : 'Colour'}
+            + {MAKE_LABEL[k]}
           </button>
         ))}
       </div>
@@ -1703,11 +1775,27 @@ function MakeItem({ onAdd }: { onAdd: (kind: 'text' | 'color', name: string, val
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder={making === 'text' ? 'Name, e.g. Welcome title' : 'Name, e.g. Night blue'}
+            placeholder={
+              making === 'text'
+                ? 'Name, e.g. Welcome title'
+                : making === 'character'
+                  ? 'Name, e.g. Maya (blue)'
+                  : 'Name, e.g. Night blue'
+            }
             aria-label="Name"
             className="border border-ink bg-paper px-2 py-1 font-body text-xs text-ink"
           />
-          {making === 'text' ? (
+          {making === 'character' ? (
+            <span className="flex items-stretch gap-2">
+              <span className="block aspect-video w-[140px] shrink-0 overflow-hidden border border-ink bg-black">
+                <AiCharacterOrb color={value || null} />
+              </span>
+              <span className="flex flex-col justify-center gap-1 font-body text-[11px] text-muted-ink">
+                Moves with the chatbot&rsquo;s voice.
+                <CharacterColour value={value} onChange={setValue} />
+              </span>
+            </span>
+          ) : making === 'text' ? (
             <textarea
               value={value}
               onChange={(e) => setValue(e.target.value)}

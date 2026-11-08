@@ -18,6 +18,8 @@ export type SpeechQueueOptions = {
   /** Safety net: the whole clip for a sentence, fetched in one go, if streaming it failed. */
   requestClip: (text: string, previousText: string) => Promise<Blob>;
   playbackRate: () => number;
+  /** The pause between one sentence and the next, in ms (the scene's, see sentencePause.ts). */
+  pauseMs: () => number;
   expressive: boolean;
   onSpeakingChange: (speaking: boolean) => void;
   /** The voice has actually started playing a sentence (audio coming out, not just requested). */
@@ -45,6 +47,8 @@ export class SpeechQueue {
   private waiting = false;
   // beforeFirst has run (or is running).
   private begun = false;
+  // When the last sentence finished playing (null before the first): the next waits out the pause after it.
+  private endedAt: number | null = null;
 
   constructor(private options: SpeechQueueOptions) {}
 
@@ -117,6 +121,14 @@ export class SpeechQueue {
       return;
     }
     if (!clip) return this.playNext();
+    // A breath between sentences, so the reply doesn't sound rushed (the scene says how long). (Time spent waiting for the
+    // sentence to be written counts towards it.)
+    const wait = this.endedAt === null ? 0 : this.options.pauseMs() - (performance.now() - this.endedAt);
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    if (this.cancelled) {
+      clip.release();
+      return;
+    }
     this.play(next.text, clip.src, clip.release, () => this.playFallback(next));
   }
 
@@ -142,6 +154,7 @@ export class SpeechQueue {
       if (settled) return;
       settled = true;
       release();
+      this.endedAt = performance.now();
       void this.playNext();
     };
     audio.onplaying = () => {

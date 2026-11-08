@@ -523,7 +523,7 @@ export function MediaTimeline({
     if (here?.stage !== dropHere?.stage || here?.track !== dropHere?.track || ok !== dropHere?.ok)
       setDropHere(here ? { ...here, ok } : null);
   };
-  /** A dropped item: a bar at that stage and row, not yet connected to an action (its ▼ picks one). */
+  /** A dropped item: a bar at that stage and row (a picture, video, colour or character plays on marker arrival; a sound waits for its ▼). */
   const drop = (e: React.DragEvent) => {
     const here = dropAt(e);
     setDropHere(null);
@@ -539,8 +539,13 @@ export function MediaTimeline({
     if ((item.kind === 'sound') !== isSoundTrack(here.track)) return;
     const bar: Bar = { track: here.track, from: stages[here.stage].code, to: stages[here.stage].code };
     const ours = (l: MediaLink) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number;
+    // A picture, video, colour or character dropped on an area's row plays on marker arrival straight away
+    // (as when it's dropped on the room drawing), so it shows in the room the moment it lands on the
+    // marker's stage; its ▼ can still connect it to one of the scene's actions instead. A sound waits
+    // to be connected, as before.
+    const action = item.kind === 'sound' ? '' : MARKER_ACTION;
     updateMediaLinks((all) => {
-      const unplaced = all.find((l) => ours(l) && l.assetId === item.id && !isConnected(l));
+      const unplaced = all.find((l) => ours(l) && l.assetId === item.id && l.action === action);
       if (unplaced)
         return all.map((l) =>
           l === unplaced ? (l.bar ? { ...l, copies: [...(l.copies ?? []), bar] } : { ...l, bar }) : l,
@@ -550,7 +555,7 @@ export function MediaTimeline({
         sheetId: scene.sheetId,
         sceneNumber: scene.number,
         sceneName: sceneTitle.replace(/^Scene\s+\S+\s+·\s+/, ''),
-        action: '',
+        action,
         assetName: item.name,
         assetKind: item.kind,
         bar,
@@ -1423,6 +1428,14 @@ function BarThumb({ link, asset, folder }: { link: MediaLink; asset?: MediaAsset
   }
   if (kind === 'color') {
     return <span className={`${frame} aspect-video`} style={{ background: asset?.value || '#000' }} aria-hidden="true" />;
+  }
+  if (kind === 'character') {
+    // A still glowing dot in its colour (the live character is in the library and the room).
+    const c = asset?.value || '#36d6ff';
+    const glow = asset?.value
+      ? `radial-gradient(circle at 50% 50%, #fff 0 8%, ${c} 22%, transparent 42%)`
+      : 'radial-gradient(circle at 45% 45%, #fff 0 8%, #36d6ff 20%, #b44dff 32%, #ff3fa4 38%, transparent 44%)';
+    return <span className={`${frame} aspect-video bg-black`} style={{ backgroundImage: glow }} aria-hidden="true" />;
   }
   if (kind === 'text') {
     return (

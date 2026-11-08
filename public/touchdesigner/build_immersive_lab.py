@@ -163,9 +163,77 @@ def vec_par(g, i, comp):
     return None
 
 
+# --- AI characters ---------------------------------------------------------------
+# An AI character is a page of the app (the orb that moves with the chatbot's voice), shown in an
+# area by a Web Render TOP, characterN - made the first time that area shows one, as switch and raw
+# input 4. The page connects back to this receiver and says "listen"; the app sends the voice's
+# readings ("voice level", ~30 a second) and they're passed straight on to the listening pages
+# (not logged or answered - see onWebSocketReceiveText).
+
+CHARACTER_INPUT = 4
+LISTENERS = set()
+
+
+def set_par(o, name, value):
+    p = getattr(o.par, name, None)
+    if p is None:
+        return False
+    try:
+        p.val = value
+        return True
+    except Exception:
+        return False
+
+
+def character_top(area):
+    """The area's Web Render TOP for AI characters (made now if it's the first)."""
+    w = lab.op('character%d' % area)
+    if w is not None:
+        return w
+    sw, raw = lab.op('switch%d' % area), lab.op('raw%d' % area)
+    # Inputs 0-3 (black, media, colour, words) come first; a character is always input 4.
+    if len(sw.inputs) != CHARACTER_INPUT or len(raw.inputs) != CHARACTER_INPUT:
+        raise Exception('switch%d / raw%d have %d / %d inputs, expected %d'
+                        % (area, area, len(sw.inputs), len(raw.inputs), CHARACTER_INPUT))
+    w = lab.create(webrenderTOP, 'character%d' % area)
+    w.nodeX, w.nodeY = sw.nodeX - 200, sw.nodeY - 150
+    set_par(w, 'outputresolution', 'custom')
+    for name, expr in (('resolutionw', 'parent().par.Width'), ('resolutionh', 'parent().par.Height')):
+        p = getattr(w.par, name, None)
+        if p is not None:
+            p.expr = expr
+    sw.inputConnectors[CHARACTER_INPUT].connect(w)
+    raw.inputConnectors[CHARACTER_INPUT].connect(w)
+    return w
+
+
+def character_off(area):
+    """Stops an area's character page rendering (it isn't showing)."""
+    w = lab.op('character%d' % area)
+    if w is not None:
+        set_par(w, 'active', False)
+
+
+def show_character(area, msg):
+    url = msg.get('url') or ''
+    if not url.startswith('http'):
+        return 'no page address'
+    w = character_top(area)
+    waking = not w.par.active.eval()
+    if str(w.par.url.eval()) != url:
+        w.par.url = url
+    set_par(w, 'active', True)
+    # Switched off and on again, the Web Render TOP stays blank until its page is loaded again.
+    if waking and getattr(w.par, 'reloadsrc', None) is not None:
+        w.par.reloadsrc.pulse()
+    return ''
+
+
 def route(area, index, msg):
     """Shows switch input `index` on an area; a placed picture (msg "uv": 9 numbers, row by row) shows
     its slice of the whole, unfitted picture instead of the fitted one."""
+    if index != CHARACTER_INPUT:
+        character_off(area)
     lab.op('switch%d' % area).par.index = index
     lab.op('raw%d' % area).par.index = index
     g = lab.op('placed%d' % area)
@@ -304,6 +372,16 @@ def show(msg):
         fade_in(area, msg)
         now(where, dict(msg, path=(msg.get('value') or '')[:60]))
         return where, 'text shown'
+    if kind == 'character':
+        # An AI character: the app's character page (input 4), moving with the chatbot's voice.
+        problem = show_character(area, msg)
+        if problem:
+            return where, problem
+        lab.op('movie%d' % area).par.play = 0
+        route(area, CHARACTER_INPUT, msg)
+        fade_in(area, msg)
+        now(where, dict(msg, path='AI character ' + (msg.get('value') or 'spectrum')))
+        return where, 'character shown'
     path = full_path(msg)
     if not path or not os.path.isfile(path):
         return where, 'file missing'
@@ -671,7 +749,24 @@ def handle(text):
 
 # --- Web Server DAT callbacks -------------------------------------------------
 
+def voice(webServerDAT, client, data):
+    """The voice stream for AI characters: True if `data` was one of its messages (handled here)."""
+    if not data.startswith('{"type":"voice"'):
+        return False
+    if '"action":"listen"' in data:
+        LISTENERS.add(client)
+        return True
+    for c in list(LISTENERS):
+        try:
+            webServerDAT.webSocketSendText(c, data)
+        except Exception:
+            LISTENERS.discard(c)
+    return True
+
+
 def onWebSocketReceiveText(webServerDAT, client, data):
+    if voice(webServerDAT, client, data):
+        return
     webServerDAT.webSocketSendText(client, json.dumps(handle(data)))
 
 
@@ -696,7 +791,7 @@ def onWebSocketOpen(webServerDAT, client, uri):
 
 
 def onWebSocketClose(webServerDAT, client):
-    return
+    LISTENERS.discard(client)
 
 
 def onWebSocketReceiveBinary(webServerDAT, client, data):
@@ -727,6 +822,12 @@ GUIDE = [
      '{"type":"media","action":"show","area":4,"id":"M-020","kind":"color","value":"#0b1d36"}'],
     ['media show (text)', 'Shows words in an area (white on black, centred), no file',
      '{"type":"media","action":"show","area":5,"id":"M-021","kind":"text","value":"Welcome to the clinic"}'],
+    ['media show (AI character)', 'Shows an AI character (the app page at url, in a Web Render TOP) that moves with the chatbot\'s voice',
+     '{"type":"media","action":"show","area":3,"id":"M-030","kind":"character","value":"#ff2a2a","url":"http://localhost:3000/ai-character/show?td=ws://localhost:9980&color=ff2a2a"}'],
+    ['voice listen', 'From a character page: send it the voice from now on (not logged, no reply)',
+     '{"type":"voice","action":"listen"}'],
+    ['voice level', 'From the app, ~30 a second while a character shows: passed on to the listening pages (not logged, no reply)',
+     '{"type":"voice","action":"level","level":0.6,"low":0.4,"mid":0.7,"high":0.2}'],
     ['media play', 'Plays a video in an area; loop true = loops, false = plays once and holds the last frame',
      '{"type":"media","action":"play","area":5,"id":"M-007","path":"monitor.mov","kind":"video","loop":true}'],
     ['media hide', 'Clears an area to black', '{"type":"media","action":"hide","area":5}'],

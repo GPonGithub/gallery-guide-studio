@@ -13,6 +13,7 @@ import {
   loopOf,
   timingOf,
   mediaSceneKey,
+  subscribeMediaLinks,
   type MediaLink,
   type TimelineBar,
 } from './mediaFolder';
@@ -60,12 +61,22 @@ export const useMarkerStage = () =>
 /** Puts up again the pictures, video and colours with a bar on the marker's stage (no sounds). */
 export async function replayMarker() {
   if (!here) return;
-  forgetMarker();
+  // Pictures only: where the marker last arrived is kept, so its sounds aren't started over.
   await markerArrived(here.scene, here.stages, here.code, { visualsOnly: true });
 }
 
 // Connecting to TouchDesigner clears its room: put the marker's stage back up there.
 onTDConnected(() => void replayMarker());
+
+// A bar dropped, connected, moved, stretched or removed on the timeline: the room shows the marker's stage
+// as it is now, straight away (pictures, video and colours; sounds wait for the marker to arrive).
+if (typeof window !== 'undefined') {
+  let soon: ReturnType<typeof setTimeout> | null = null;
+  subscribeMediaLinks(() => {
+    if (soon) clearTimeout(soon);
+    soon = setTimeout(() => void replayMarker(), 60);
+  });
+}
 
 export async function markerArrived(
   scene: SceneRef | null,
@@ -87,11 +98,14 @@ export async function markerArrived(
   const at = stages.findIndex((s) => s.code === code);
   if (at < 0) return;
   const key = `${scene.sheetId}#${scene.number}`;
-  if (last?.scene === key && last.stage === code) return;
+  // A pictures-only refresh (a scene opening, TouchDesigner connecting, a picture dropped on the room)
+  // doesn't count as the marker arriving: if it did, the real arrival at the same stage would be
+  // skipped as "already here", and its sounds would never start.
+  if (!visualsOnly && last?.scene === key && last.stage === code) return;
   // The stage the marker left (in this scene), for the fade out of the bars that ended there.
   const left = last?.scene === key ? stages.findIndex((s) => s.code === last!.stage) : -1;
   const before = left >= 0 ? left : null;
-  last = { scene: key, stage: code };
+  if (!visualsOnly) last = { scene: key, stage: code };
   const index = (c: string, fallback: number) => {
     const i = stages.findIndex((s) => s.code === c);
     return i >= 0 ? i : fallback;

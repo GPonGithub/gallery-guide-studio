@@ -74,6 +74,14 @@ Terminal panel tab ("dev server"), at **http://localhost:3000/agent**. TouchDesi
    Scenes → name it (no id to save under). Tested in the pane (backup locked): field edit → Not Saved → Saved in
    ~1.2 s, kept after reload.
 
+6. **Pause between spoken sentences, set per scene in Describe the Conversation** (uncommitted). New
+   `src/lib/agent/sentencePause.ts`: any sentence in the description naming a number of seconds and "between …
+   sentence(s)" (e.g. the user's "Always include a 1 second silence gap between each sentence.") sets the pause,
+   0–5 s, default 0.5 s. `SpeechQueue` takes `pauseMs()` (page passes `pauseRef`, updated from `saved.brief`) and
+   waits that long after each sentence ends before the next plays. `/api/agent/generate` strips that sentence
+   (`withoutPauseLine`) from the brief and the previous brief, so the stage designer never sees it. The text alone
+   can't make silence: the brief only goes to the stage generator, and ElevenLabs speaks whatever is written.
+
 Scene 1's stages now exist in the Graham copy (6 stages, seen in the backup at 14:35), so the open problem below is solved.
 
 ### Open problem — Scene 1's stages haven't been built yet (pick up here)

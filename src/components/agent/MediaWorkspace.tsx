@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as R
 import { LAYOUT_SIZE, PROJECTION_SHAPES, ROOM_DRAWING, type ProjectionShape } from '@/lib/agent/projectionLayout';
 import { dropUnbacked, hideArea, useShowing, type Shown } from '@/lib/agent/mediaShow';
 import type { MediaAsset } from '@/lib/agent/media';
+import AiCharacterOrb from './AiCharacterOrb';
 import {
   allowed,
   areaOfTrack,
@@ -381,6 +382,14 @@ function PlacedPicture({
   const at = { x: -place.w / 2, y: -place.h / 2, width: place.w, height: place.h };
   let body: React.ReactNode = null;
   if (kind === 'color') body = <rect {...at} fill={value || '#000'} />;
+  else if (kind === 'character')
+    body = (
+      <foreignObject {...at}>
+        <div style={{ width: '100%', height: '100%', background: '#000' }}>
+          <AiCharacterOrb color={value || null} />
+        </div>
+      </foreignObject>
+    );
   else if (kind === 'text')
     body = (
       <>
@@ -933,6 +942,18 @@ function AreaMedia({ shape, shown }: { shape: ProjectionShape; shown: Shown }) {
       <rect {...box} fill={shown.value || '#000'} clipPath={clip}>
         {title}
       </rect>
+    );
+  }
+  // An AI character: the orb on black, moving with the chatbot's voice.
+  if (shown.kind === 'character') {
+    return (
+      <g>
+        {title}
+        <rect {...box} fill="#000" clipPath={clip} />
+        <foreignObject {...box} clipPath={clip}>
+          <AiCharacterOrb color={shown.value || null} />
+        </foreignObject>
+      </g>
     );
   }
   if (shown.kind === 'text') {

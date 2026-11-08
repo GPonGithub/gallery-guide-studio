@@ -1,10 +1,11 @@
 'use client';
 
 import { useSyncExternalStore } from 'react';
-import type { MediaAsset } from './media';
+import { isMade, type MediaAsset } from './media';
 import { FADE_SECONDS, loadLibrary, onMediaSceneChange } from './mediaFolder';
 import { areaUvMatrix } from './roomPlacement';
 import type { Shown } from './mediaShow';
+import { onVoiceReading } from './voiceLevel';
 
 /**
  * The live link to TouchDesigner for the room's media. The browser connects
@@ -268,9 +269,39 @@ export const visualMessage = (
   area,
   id: asset.id,
   // A text or colour has no file: its words or hex colour travel instead.
-  ...(asset.kind === 'text' || asset.kind === 'color' ? { value: asset.value ?? '' } : { path: asset.path }),
+  ...(isMade(asset.kind) ? { value: asset.value ?? '' } : { path: asset.path }),
+  // An AI character: TouchDesigner shows this app's character page (a Web Render TOP).
+  ...(asset.kind === 'character' && { url: characterUrl(asset.value ?? '') }),
   kind: asset.kind,
   loop,
+});
+
+/**
+ * The page TouchDesigner shows for an AI character: the orb in its colour, which connects back to
+ * TouchDesigner's receiver to hear the voice (the voice plays here, in the Designer).
+ */
+function characterUrl(color: string): string {
+  if (typeof window === 'undefined') return '';
+  const q = new URLSearchParams({ td: tdSettings().address.trim() });
+  if (/^#[0-9a-f]{6}$/i.test(color)) q.set('color', color.slice(1));
+  return `${window.location.origin}/ai-character/show?${q}`;
+}
+
+/*
+ * The voice, for the characters in TouchDesigner's areas: while one is showing there, each reading of
+ * the chatbot's voice goes to TouchDesigner (~30 a second), which hands it to the character pages.
+ * Not logged or answered there — it's a stream, not a command.
+ */
+onVoiceReading((r) => {
+  if (!current.some((s) => s.kind === 'character')) return;
+  send({
+    type: 'voice',
+    action: 'level',
+    level: +r.level.toFixed(3),
+    low: +r.low.toFixed(3),
+    mid: +r.mid.toFixed(3),
+    high: +r.high.toFixed(3),
+  });
 });
 
 /** Mirrors the room diagram into TouchDesigner (called by mediaShow on every change). */

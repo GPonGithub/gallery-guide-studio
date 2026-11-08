@@ -42,10 +42,10 @@ export type Shown = {
   name: string;
   /** Its path inside the media folder (the Media tab's column C) — what TouchDesigner opens. */
   path: string;
-  kind: 'image' | 'video' | 'text' | 'color';
+  kind: 'image' | 'video' | 'text' | 'color' | 'character';
   /** The file itself (an object URL); empty for a text or colour, which have no file. */
   url: string;
-  /** A text's words or a colour's hex colour. */
+  /** A text's words, a colour's hex colour, or an AI character's colour (empty = spectrum). */
   value?: string;
   /** For video Chrome can't play (e.g. ProRes with alpha): its first frame, made by ffmpeg, if there is one. */
   still?: string;
@@ -188,7 +188,7 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
   const { asset, link, areas } = media;
   const kind = asset.kind;
   if (kind === 'sound') return;
-  if (kind === 'text' || kind === 'color') {
+  if (kind === 'text' || kind === 'color' || kind === 'character') {
     // Made in the app: nothing to open — its words or colour are drawn as they are.
     put(
       media,

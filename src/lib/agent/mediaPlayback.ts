@@ -4,6 +4,7 @@ import { useSyncExternalStore } from 'react';
 import { dipToShare } from '@/components/agent/backgroundMusic';
 import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
 import { soundsHere, tdLevels, tdSound, tdSoundLoop, tdSoundPan, tdSoundVolume } from './touchDesigner';
+import { voiceAnalyser } from './voiceLevel';
 import {
   browserChannelLevels,
   clampPan,
@@ -244,10 +245,18 @@ function limiterOf(ctx: AudioContext): AudioNode {
  * The chatbot's voice in the room: a plain <audio> element only reaches the first two outputs
  * (speakers 1 and 2), so the voice goes through the sounds' Web Audio instead, at the same level on
  * all four outputs. It's one voice, the same on every channel, so Chrome's channel order doesn't
- * matter. On a two-channel output it plays on both, as before. Call it once per element, before
- * play(); without Web Audio the element plays as it is.
+ * matter. On a two-channel output it plays on both, as before. Its loudness follows setVoiceVolume, live.
+ * Call it once per element, before play(); without Web Audio the element plays as it is.
  */
 const VOICE_LEVEL = Math.SQRT1_2; // each of the four: as loud in the room as full on two
+/** The voice's own volume (the Voice panel's slider): 1 = as ElevenLabs made it, up to 3 (300%). */
+export const MAX_VOICE_VOLUME = 3;
+let voiceVolume = 1;
+const voiceGains = new Set<GainNode>();
+export function setVoiceVolume(volume: number) {
+  voiceVolume = Number.isFinite(volume) ? Math.max(0, Math.min(MAX_VOICE_VOLUME, volume)) : 1;
+  for (const g of voiceGains) g.gain.value = voiceVolume;
+}
 export function voiceToAllSpeakers(audio: HTMLAudioElement) {
   try {
     if (!context) {
@@ -255,20 +264,41 @@ export function voiceToAllSpeakers(audio: HTMLAudioElement) {
       void findRoomOutput(context);
     }
     const ctx = context;
-    const mono = ctx.createGain();
-    mono.channelCount = 1;
-    mono.channelCountMode = 'explicit';
-    mono.channelInterpretation = 'speakers';
-    mono.gain.value = VOICE_LEVEL;
+    // The voice as one channel, turned up or down by the slider.
+    const volume = ctx.createGain();
+    volume.channelCount = 1;
+    volume.channelCountMode = 'explicit';
+    volume.channelInterpretation = 'speakers';
+    volume.gain.value = voiceVolume;
+    // Turned up past 100%, its loudest moments are held just under full instead of distorting.
+    const limit = ctx.createDynamicsCompressor();
+    limit.channelCount = 1;
+    limit.channelCountMode = 'explicit';
+    limit.threshold.value = -2;
+    limit.knee.value = 0;
+    limit.ratio.value = 20;
+    limit.attack.value = 0.002;
+    limit.release.value = 0.15;
+    const level = ctx.createGain();
+    level.channelCount = 1;
+    level.channelCountMode = 'explicit';
+    level.gain.value = VOICE_LEVEL;
     const merger = ctx.createChannelMerger(4);
-    for (let i = 0; i < 4; i++) mono.connect(merger, 0, i);
+    volume.connect(limit);
+    limit.connect(level);
+    limit.connect(voiceAnalyser(ctx)); // the AI character listens here (voiceLevel.ts)
+    for (let i = 0; i < 4; i++) level.connect(merger, 0, i);
     merger.connect(ctx.destination);
-    ctx.createMediaElementSource(audio).connect(mono);
+    ctx.createMediaElementSource(audio).connect(volume);
+    voiceGains.add(volume);
     if (ctx.state === 'suspended') void ctx.resume();
     // Let the nodes go once the element is done with (each clip gets a new element).
     const done = () => {
+      voiceGains.delete(volume);
       merger.disconnect();
-      mono.disconnect();
+      level.disconnect();
+      limit.disconnect();
+      volume.disconnect();
     };
     audio.addEventListener('ended', done, { once: true });
     audio.addEventListener('error', done, { once: true });
