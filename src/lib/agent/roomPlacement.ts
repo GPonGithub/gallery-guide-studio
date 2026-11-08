@@ -23,11 +23,23 @@ import { PROJECTION_SHAPES, type ProjectionShape } from './projectionLayout';
  * where the drawing is drawn (the room is projected live, so students judge it there).
  *
  * One picture per area at a time: a newly placed one replaces whatever else was on that area for
- * those stages.
+ * those stages. The same file can be placed more than once at a stage (dropped again on another area):
+ * each copy is its own group of bars — the bars with the same placement — and is moved on its own.
  */
 
-/** The placed picture being edited: a connection, and the stages its placed bars cover. */
-export type Placing = { sheetId: string; sceneNumber: string; assetId: string; action: string; from: string; to: string };
+/**
+ * The placed picture being edited: a connection, the stages its placed bars cover, and an area it's
+ * on — which copy, when the file is placed more than once at those stages (no area: all of them).
+ */
+export type Placing = {
+  sheetId: string;
+  sceneNumber: string;
+  assetId: string;
+  action: string;
+  from: string;
+  to: string;
+  area?: number;
+};
 
 let placing: Placing | null = null;
 const listeners = new Set<() => void>();
@@ -86,13 +98,25 @@ export function fillArea(area: number): Placement {
   return { cx: b.x + b.width / 2, cy: b.y + b.height / 2, w: b.width, h: b.height, rot: 0 };
 }
 
-/** The placed bars a Placing refers to (its connection's bars with a placement over those stages). */
+/** Whether two placements are the same (one copy of a picture: its bars share one placement). */
+export const samePlace = (a?: Placement, b?: Placement) =>
+  Boolean(a && b && a.cx === b.cx && a.cy === b.cy && a.w === b.w && a.h === b.h && a.rot === b.rot);
+
+/** A connection's bars that make up the copy a Placing refers to: placed, over those stages, sharing its placement. */
+function groupOf(link: MediaLink, p: Placing): TimelineBar[] {
+  const stages = barsOf(link).filter((b) => b.place && b.from === p.from && b.to === p.to);
+  if (p.area === undefined) return stages;
+  const anchor = stages.find((b) => areaOfTrack(b.track) === p.area);
+  return anchor ? stages.filter((b) => samePlace(b.place, anchor.place)) : [];
+}
+
+/** The placed bars a Placing refers to (its copy's bars). */
 export function placedBars(links: MediaLink[], p: Placing): { link: MediaLink; bars: TimelineBar[] } | null {
   const link = links.find(
     (l) => l.sheetId === p.sheetId && l.sceneNumber === p.sceneNumber && l.assetId === p.assetId && l.action === p.action,
   );
   if (!link) return null;
-  const bars = barsOf(link).filter((b) => b.place && b.from === p.from && b.to === p.to);
+  const bars = groupOf(link, p);
   return bars.length ? { link, bars } : null;
 }
 
@@ -148,14 +172,18 @@ export function dropOnArea(
     action: MARKER_ACTION,
     from: stage,
     to: stage,
+    area,
   };
   const bar: TimelineBar = { track: area, from: stage, to: stage, place: fillArea(area) };
   updateMediaLinks((all) => {
     const cleared = clearArea(all, p, area, order);
     const mine = cleared.find((l) => sameLink(l, p));
     if (mine) {
-      // Already placed on marker arrival: this placement replaces its bars over these stages.
-      const kept = barsOf(mine).filter((b) => !(b.from === stage && b.to === stage && b.place));
+      // Already placed on marker arrival: the new copy goes on this area as well. Only a bar already on
+      // this same area is replaced — copies on other areas stay where they are.
+      const kept = barsOf(mine).filter(
+        (b) => !(b.from === stage && b.to === stage && b.place && areaOfTrack(b.track) === area),
+      );
       return cleared.map((l) => (l === mine ? (withBars(l, [...kept, bar]) ?? l) : l));
     }
     const link: MediaLink = {
@@ -174,13 +202,14 @@ export function dropOnArea(
   return p;
 }
 
-/** Moves, resizes, stretches or turns the picture: every area it's on follows. */
+/** Moves, resizes, stretches or turns the picture: every area this copy is on follows (other copies stay). */
 export function setPlacement(p: Placing, place: Placement, label?: string) {
   updateMediaLinks(
     (all) =>
       all.map((l) => {
         if (!sameLink(l, p)) return l;
-        const bars = barsOf(l).map((b) => (b.place && b.from === p.from && b.to === p.to ? { ...b, place } : b));
+        const group = groupOf(l, p);
+        const bars = barsOf(l).map((b) => (group.includes(b) ? { ...b, place } : b));
         return withBars(l, bars) ?? l;
       }),
     label,
@@ -189,35 +218,44 @@ export function setPlacement(p: Placing, place: Placement, label?: string) {
 
 /** Clicking an area while placing: the picture goes on it (replacing what was there), or comes off it. */
 export function toggleArea(p: Placing, area: number, order: string[]) {
-  let gone = false;
+  let after: Placing | null | undefined;
   updateMediaLinks((all) => {
     const link = all.find((l) => sameLink(l, p));
     if (!link) return all;
     const bars = barsOf(link);
-    const group = bars.filter((b) => b.place && b.from === p.from && b.to === p.to);
+    const group = groupOf(link, p);
     const on = group.find((b) => areaOfTrack(b.track) === area);
     if (on) {
+      const rest = group.filter((b) => b !== on);
+      // The copy comes off its last area: placing stops. Off the area it was picked up by: another of its areas.
+      if (!rest.length) after = null;
+      else if (p.area === area) after = { ...p, area: areaOfTrack(rest[0].track) ?? undefined };
       const left = bars.filter((b) => b !== on);
-      gone = !left.some((b) => b.place && b.from === p.from && b.to === p.to);
       const next = withBars(link, left);
       return next ? all.map((l) => (l === link ? next : l)) : all.filter((l) => l !== link);
     }
     const place = group[0]?.place;
     if (!place) return all;
     const cleared = clearArea(all, p, area, order);
-    return cleared.map((l) =>
-      sameLink(l, p) ? (withBars(l, [...barsOf(l), { track: area, from: p.from, to: p.to, place }]) ?? l) : l,
-    );
+    return cleared.map((l) => {
+      if (!sameLink(l, p)) return l;
+      // Another copy of this file already on that area (same stages) gives way to this one.
+      const kept = barsOf(l).filter(
+        (b) => !(b.place && b.from === p.from && b.to === p.to && areaOfTrack(b.track) === area),
+      );
+      return withBars(l, [...kept, { track: area, from: p.from, to: p.to, place }]) ?? l;
+    });
   }, `Area ${area}`);
-  if (gone) setPlacing(null);
+  if (after !== undefined) setPlacing(after);
 }
 
-/** Deletes the picture being placed: its bars on every area for those stages (one undo step). */
+/** Deletes the picture being placed: this copy's bars on every area for those stages (one undo step). */
 export function removePlacement(p: Placing) {
   updateMediaLinks((all) => {
     const link = all.find((l) => sameLink(l, p));
     if (!link) return all;
-    const left = barsOf(link).filter((b) => !(b.place && b.from === p.from && b.to === p.to));
+    const group = groupOf(link, p);
+    const left = barsOf(link).filter((b) => !group.includes(b));
     const next = withBars(link, left);
     return next ? all.map((l) => (l === link ? next : l)) : all.filter((l) => l !== link);
   }, `Delete ${p.assetId}`);
@@ -229,7 +267,8 @@ export function placingAt(links: MediaLink[], scene: { sheetId: string; number: 
   for (const l of links) {
     if (l.sheetId !== scene.sheetId || l.sceneNumber !== scene.number) continue;
     const bar = barsOf(l).find((b) => b.place && areaOfTrack(b.track) === area && overlaps(order, b, { from: stage, to: stage }));
-    if (bar) return { sheetId: l.sheetId, sceneNumber: l.sceneNumber, assetId: l.assetId, action: l.action, from: bar.from, to: bar.to };
+    if (bar)
+      return { sheetId: l.sheetId, sceneNumber: l.sceneNumber, assetId: l.assetId, action: l.action, from: bar.from, to: bar.to, area };
   }
   return null;
 }

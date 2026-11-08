@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { buttonIcon } from '@/lib/styles';
 import { DropdownArrow } from './DropdownArrow';
 import { markerArrived, markerIsAt } from '@/lib/agent/markerPlay';
-import { setPlacing, usePlacing } from '@/lib/agent/roomPlacement';
+import { samePlace, setPlacing, usePlacing } from '@/lib/agent/roomPlacement';
 import {
   ACTION_KINDS,
   isStill,
@@ -592,9 +592,9 @@ export function MediaTimeline({
     const bar = barsOf(l)[i];
     if (!bar) return;
     // A picture placed on the room drawing is one picture on several areas: all its bars (those
-    // stages, placed) connect together, so it stays one picture.
+    // stages, the same placement) connect together, so it stays one picture. Other copies stay.
     const moving = barsOf(l).filter((b) =>
-      bar.place ? b.place && b.from === bar.from && b.to === bar.to : b === bar,
+      bar.place ? b.place && b.from === bar.from && b.to === bar.to && samePlace(b.place, bar.place) : b === bar,
     );
     updateMediaLinks((all) => {
       const next = all.flatMap((x) => {
@@ -634,7 +634,8 @@ export function MediaTimeline({
       placing.assetId === l.assetId &&
       placing.action === l.action &&
       placing.from === bar.from &&
-      placing.to === bar.to
+      placing.to === bar.to &&
+      (placing.area === undefined || moving.some((b) => areaOfTrack(b.track) === placing.area))
     )
       setPlacing({ ...placing, action });
   };
