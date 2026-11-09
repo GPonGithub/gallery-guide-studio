@@ -588,6 +588,41 @@ def projector_windows(po):
     return sorted(po.findChildren(type=windowCOMP, depth=1), key=lambda w: w.digits or 0)
 
 
+# Each projector window's screen, remembered by WHERE that screen is (its left/top corner), not by its
+# number: TouchDesigner numbers monitors by position, so plugging a projector in or out renumbers them
+# while the windows stay put - and a window's "display" number then points at another screen (2026-11-09:
+# two new projectors went in on the left and every number moved up by 2). Before any projector action the
+# numbers are put right from the remembered positions; after a swap the new positions are remembered.
+
+def monitor_at(left, top):
+    for m in monitors:
+        if m.left == left and m.top == top:
+            return m
+    return None
+
+
+def remember_screens(wins):
+    for w in wins:
+        d = w.par.display.eval()
+        m = next((m for m in monitors if m.index == d), None)
+        if m is not None:
+            w.store('screen_at', [m.left, m.top])
+
+
+def heal_screens(wins):
+    """Puts each window's display number right from its remembered screen; returns the windows moved."""
+    moved = []
+    for w in wins:
+        at = w.fetch('screen_at', None, search=False)
+        if not at:
+            continue
+        m = monitor_at(at[0], at[1])
+        if m is not None and m.index != w.par.display.eval():
+            w.par.display = m.index
+            moved.append(w)
+    return moved
+
+
 def projector_state():
     """What the app's projector step shows: how many projectors, and whether their numbers are up."""
     po = projector_out()
@@ -609,6 +644,10 @@ def projectors(msg):
     if po is None:
         return 'projectors', NO_PROJECTORS, {'ok': False, 'projectors': None}
     wins = projector_windows(po)
+    # Screens renumbered since (a projector plugged in or out): point the numbers back at the same screens.
+    healed = heal_screens(wins)
+    if any(w.fetch('screen_at', None, search=False) is None for w in wins):
+        remember_screens(wins)
     if action == 'identify':
         po.par.Identify = bool(msg.get('on'))
         result = 'numbers shown' if msg.get('on') else 'numbers hidden'
@@ -635,6 +674,7 @@ def projectors(msg):
         before = [w.par.display.eval() for w in wins]
         for r, w in enumerate(wins):
             w.par.display = before[shows[r] - 1]
+        remember_screens(wins)
         reopen = [w for w in wins if getattr(w, 'isOpen', False)]
         for w in reopen:
             w.par.winclose.pulse()

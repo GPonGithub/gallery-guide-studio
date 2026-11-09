@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { buttonOutline, fieldInput } from '@/lib/styles';
 import { send, useTDStatus } from '@/lib/agent/touchDesigner';
 
@@ -19,6 +19,10 @@ export function ProjectorsPanel() {
   const connected = status.state === 'connected';
   const projectors = connected ? status.projectors : undefined;
   const count = projectors?.count ?? 0;
+  // Ask again each time this step opens: projectors may have been added since connecting (5 and 6 on 2026-11-09).
+  useEffect(() => {
+    if (connected) send({ type: 'projectors', action: 'status' });
+  }, [connected]);
   // shows[r - 1]: the number projector r (as labelled in the room) is showing now.
   const [shows, setShows] = useState<number[]>([]);
   const current = Array.from({ length: count }, (_, i) => shows[i] ?? i + 1);
