@@ -1,7 +1,7 @@
 'use client';
 
 import { openDb, STORES } from './browserDb';
-import { currentTeam } from './team';
+import { currentTeam, isTeamControlKey } from './team';
 
 /**
  * Export Project / Import Project: everything this team has in this browser, in one file — every
@@ -123,7 +123,7 @@ export async function buildProjectFile(): Promise<ProjectFile> {
   // This team's settings only (localStorage is kept per team — see team.ts).
   for (let i = 0; i < localStorage.length; i++) {
     const name = localStorage.key(i);
-    if (name) file.localStorage[name] = withKeys(localStorage.getItem(name) ?? '');
+    if (name && !isTeamControlKey(name)) file.localStorage[name] = withKeys(localStorage.getItem(name) ?? '');
   }
   const db = await openDb();
   try {
@@ -196,6 +196,8 @@ export async function importProject(project: ProjectFile): Promise<void> {
   }
   // This team's settings only (localStorage.clear() is kept to the team — see team.ts).
   localStorage.clear();
-  for (const [name, raw] of Object.entries(project.localStorage)) localStorage.setItem(name, withKeys(raw, keys[name]));
+  // Never another team's settings, nor which team this browser is on (see isTeamControlKey).
+  for (const [name, raw] of Object.entries(project.localStorage))
+    if (!isTeamControlKey(name)) localStorage.setItem(name, withKeys(raw, keys[name]));
   window.location.reload();
 }

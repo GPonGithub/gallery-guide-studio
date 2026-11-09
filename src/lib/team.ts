@@ -20,6 +20,15 @@ const TEAM_KEY = 'studio-team';
 
 const isTeam = (t: unknown): t is Team => (TEAMS as readonly unknown[]).includes(t);
 
+/**
+ * A setting name a project file must never write: the shared "which team" key, or a name carrying a
+ * team's "team-<name>:" prefix. Exports never contain these (each team sees its own names unprefixed),
+ * but a hand-edited file could — and for team ED, whose names aren't prefixed, writing "team-Graham:…"
+ * would land straight in Graham's copy.
+ */
+export const isTeamControlKey = (name: string) =>
+  name === TEAM_KEY || TEAMS.some((t) => t !== 'ED' && name.startsWith(`team-${t}:`));
+
 /** The button's words: "Team ED", "Team AE", "Graham". */
 export const teamLabel = (t: Team) => (t === 'Graham' ? 'Graham' : `Team ${t}`);
 
