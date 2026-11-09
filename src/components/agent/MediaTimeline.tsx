@@ -23,6 +23,7 @@ import { useMediaFolderRevision } from '@/lib/agent/mediaDemo';
 import { clampSoundVolume, MAX_SOUND_VOLUME, setSoundLoop, setSoundVolume, stopSounds } from '@/lib/agent/mediaPlayback';
 import { hideVisualExcept } from '@/lib/agent/mediaShow';
 import { pickSpatialSound } from '@/lib/agent/spatialAudio';
+import { audible, checkVideoSound, useVideoSoundResults } from '@/lib/agent/videoSound';
 import {
   areaOfTrack,
   barsOf,
@@ -260,6 +261,11 @@ export function MediaTimeline({
       gone = true;
     };
   }, [folderRevision, barItems, mediaKey]);
+  // Videos with a sound track get a volume slider and open Spatialized Audio, as sounds do: find out which.
+  useVideoSoundResults();
+  useEffect(() => {
+    for (const a of assets.values()) if (a.kind === 'video' && a.status === 'present') checkVideoSound(a, folder);
+  }, [assets, folder]);
 
   // The sound tracks: one ♪ row, which its arrow opens into all MAX_SOUND_TRACKS (remembered). Closed,
   // every sound shows on the one row. They're tinted light blue, for audio.
@@ -443,7 +449,8 @@ export function MediaTimeline({
     // Let go where it started: nothing changed (and a duplicate dropped there isn't one).
     const moved = now.track !== start.track || now.from !== start.from || now.to !== start.to;
     // A sound's bar clicked (not moved): Spatialized Audio opens on it.
-    if (!moved && drag.mode === 'move' && !copy && isSound(l)) pickSpatialSound(l);
+    // (A video with a sound track too: its sound is placed in the room the same way.)
+    if (!moved && drag.mode === 'move' && !copy && audible(l)) pickSpatialSound(l);
     // An end clicked (not dragged): its fade in (left) or fade out (right) turns on or off.
     if (!moved && drag.mode !== 'move' && original) {
       const which = drag.mode === 'from' ? 'fadeIn' : 'fadeOut';
@@ -1053,7 +1060,7 @@ export function MediaTimeline({
                     {handle('from')}
                     <BarThumb link={l} asset={asset} folder={folder} />
                     {label}
-                    {isSound(l) && <BarVolume link={l} />}
+                    {audible(l) && <BarVolume link={l} />}
                     <button
                       // Not a drag: pressing it mustn't pick the bar up.
                       onPointerDown={(e) => e.stopPropagation()}

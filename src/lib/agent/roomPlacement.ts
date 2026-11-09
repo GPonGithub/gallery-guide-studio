@@ -100,7 +100,16 @@ export function fillArea(area: number): Placement {
 
 /** Whether two placements are the same (one copy of a picture: its bars share one placement). */
 export const samePlace = (a?: Placement, b?: Placement) =>
-  Boolean(a && b && a.cx === b.cx && a.cy === b.cy && a.w === b.w && a.h === b.h && a.rot === b.rot);
+  Boolean(
+    a &&
+      b &&
+      a.cx === b.cx &&
+      a.cy === b.cy &&
+      a.w === b.w &&
+      a.h === b.h &&
+      a.rot === b.rot &&
+      JSON.stringify(a.pin ?? null) === JSON.stringify(b.pin ?? null),
+  );
 
 /** A connection's bars that make up the copy a Placing refers to: placed, over those stages, sharing its placement. */
 function groupOf(link: MediaLink, p: Placing): TimelineBar[] {
@@ -295,25 +304,26 @@ function cornersOf(area: number): [number, number][] {
   return [near(b.x, b.y), near(b.x + b.width, b.y), near(b.x + b.width, b.y + b.height), near(b.x, b.y + b.height)];
 }
 
-type Mat3 = [number, number, number, number, number, number, number, number, number];
+export type Mat3 = [number, number, number, number, number, number, number, number, number];
 const multiply = (a: Mat3, b: Mat3): Mat3 => {
   const m = (r: number, c: number) => a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c];
   return [m(0, 0), m(0, 1), m(0, 2), m(1, 0), m(1, 1), m(1, 2), m(2, 0), m(2, 1), m(2, 2)];
 };
+function invert(m: Mat3): Mat3 {
+  const [a, b, c, d, e, f, g, h, i] = m;
+  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  return [A, -(b * i - c * h), b * f - c * e, B, a * i - c * g, -(a * f - c * d), C, -(a * h - b * g), a * e - b * d].map(
+    (n) => n / det,
+  ) as Mat3;
+}
 
 /**
- * Where each point of an area's projector output falls on a placed picture: a 3x3 matrix (row by row)
- * taking the output's u, v (0-1, v upwards, as TouchDesigner has them) to the picture's u, v (the same
- * way up) — divide by the third value. The output fills the area's outline as drawn (in perspective),
- * so a picture spread over several areas lines up as it does on the drawing.
+ * The unit square onto a four-sided shape, in perspective (Heckbert's square-to-quad): (0,0) → q[0],
+ * (1,0) → q[1], (1,1) → q[2], (0,1) → q[3]. Divide by the third value.
  */
-export function areaUvMatrix(area: number, place: Placement): number[] {
-  const [tl, tr, br, bl] = cornersOf(area);
-  // The unit square to the outline (Heckbert's square-to-quad): (0,0) bottom-left … (0,1) top-left.
-  const [x0, y0] = bl;
-  const [x1, y1] = br;
-  const [x2, y2] = tr;
-  const [x3, y3] = tl;
+export function squareToQuad(q: [number, number][]): Mat3 {
+  const [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = q;
   const dx1 = x1 - x2, dx2 = x3 - x2, dx3 = x0 - x1 + x2 - x3;
   const dy1 = y1 - y2, dy2 = y3 - y2, dy3 = y0 - y1 + y2 - y3;
   let g = 0;
@@ -323,7 +333,82 @@ export function areaUvMatrix(area: number, place: Placement): number[] {
     g = (dx3 * dy2 - dx2 * dy3) / det;
     h = (dx1 * dy3 - dx3 * dy1) / det;
   }
-  const square: Mat3 = [x1 - x0 + g * x1, x3 - x0 + h * x3, x0, y1 - y0 + g * y1, y3 - y0 + h * y3, y0, g, h, 1];
+  return [x1 - x0 + g * x1, x3 - x0 + h * x3, x0, y1 - y0 + g * y1, y3 - y0 + h * y3, y0, g, h, 1];
+}
+
+// --- corner pin: a placed picture's corners moved on their own (Command-drag a corner handle) ---------
+
+/** A picture's corners in its own frame (0-1 across and down; top-left, top-right, bottom-right, bottom-left). */
+export const UNPINNED: [number, number][] = [
+  [0, 0],
+  [1, 0],
+  [1, 1],
+  [0, 1],
+];
+export const pinOf = (p: Placement): [number, number][] => p.pin ?? UNPINNED;
+
+/** Whether four corners still make a shape a picture can be drawn on (convex, not folded over). */
+export function pinIsConvex(q: [number, number][]): boolean {
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const [ax, ay] = q[i];
+    const [bx, by] = q[(i + 1) % 4];
+    const [cx, cy] = q[(i + 2) % 4];
+    const cross = (bx - ax) * (cy - by) - (by - ay) * (cx - bx);
+    if (Math.abs(cross) < 1e-9) return false;
+    if (sign === 0) sign = Math.sign(cross);
+    else if (Math.sign(cross) !== sign) return false;
+  }
+  return true;
+}
+
+/** A corner of the picture in its own frame (u, v) → the picture's unturned frame around its centre. */
+export const pinLocal = (p: Placement, [u, v]: [number, number]): [number, number] => [(u - 0.5) * p.w, (v - 0.5) * p.h];
+
+/** The picture's four corners on the drawing (top-left, top-right, bottom-right, bottom-left), pinned or not. */
+export function placeCorners(p: Placement): [number, number][] {
+  const r = (p.rot * Math.PI) / 180;
+  const cos = Math.cos(r);
+  const sin = Math.sin(r);
+  return pinOf(p).map((c) => {
+    const [x, y] = pinLocal(p, c);
+    return [p.cx + x * cos - y * sin, p.cy + x * sin + y * cos];
+  });
+}
+
+/**
+ * A CSS matrix3d taking a w x h box (its top-left at 0,0) onto the pinned corners in that box's own frame —
+ * how the drawing shows a corner-pinned picture in perspective.
+ */
+export function pinCssMatrix(w: number, h: number, pin: [number, number][]): string {
+  const H = multiply(
+    squareToQuad(pin.map(([u, v]) => [u * w, v * h])),
+    [1 / w, 0, 0, 0, 1 / h, 0, 0, 0, 1],
+  );
+  const k = H[8];
+  const [a, b, c, d, e, f, g, hh, i] = H.map((n) => n / k);
+  return `matrix3d(${[a, d, 0, g, b, e, 0, hh, 0, 0, 1, 0, c, f, 0, i].join(',')})`;
+}
+
+/**
+ * Where each point of an area's projector output falls on a placed picture: a 3x3 matrix (row by row)
+ * taking the output's u, v (0-1, v upwards, as TouchDesigner has them) to the picture's u, v (the same
+ * way up) — divide by the third value. The output fills the area's outline as drawn (in perspective),
+ * so a picture spread over several areas lines up as it does on the drawing.
+ */
+export function areaUvMatrix(area: number, place: Placement): number[] {
+  const [tl, tr, br, bl] = cornersOf(area);
+  // The unit square to the outline: (0,0) bottom-left … (0,1) top-left.
+  const square = squareToQuad([bl, br, tr, tl]);
+  if (place.pin) {
+    // Corner-pinned: the drawing to the picture is a perspective one — from its four corners on the
+    // drawing (bottom-left = 0,0 … top-left = 0,1, v upwards) back to the unit square.
+    const [ptl, ptr, pbr, pbl] = placeCorners(place);
+    const m = multiply(invert(squareToQuad([pbl, pbr, ptr, ptl])), square);
+    // Scaled so the third value is 1 at the area's middle (TouchDesigner only draws where it's positive).
+    const z = m[6] * 0.5 + m[7] * 0.5 + m[8];
+    return m.map((n) => Math.round((n / z) * 1e6) / 1e6);
+  }
   // The drawing to the picture: back to its centre, unturned, scaled to 0-1 (v upwards).
   const r = (-place.rot * Math.PI) / 180;
   const cos = Math.cos(r);

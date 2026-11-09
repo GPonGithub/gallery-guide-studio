@@ -23,12 +23,17 @@ import {
   areaAt,
   boxOfShape,
   dropOnArea,
+  pinCssMatrix,
+  pinIsConvex,
+  pinLocal,
+  pinOf,
   placedBars,
   placingAt,
   removePlacement,
   setPlacement,
   setPlacing,
   toggleArea,
+  UNPINNED,
   usePlacing,
 } from '@/lib/agent/roomPlacement';
 import { buttonOutline } from '@/lib/styles';
@@ -319,7 +324,8 @@ const SMALLEST = 12;
 
 type Handle = 'nw' | 'ne' | 'se' | 'sw' | 'n' | 's' | 'e' | 'w' | 'rotate';
 type Gesture = {
-  kind: 'move' | 'handle' | 'pan';
+  /** 'pin': a corner handle Command-dragged — that corner moves on its own (corner pin). */
+  kind: 'move' | 'handle' | 'pan' | 'pin';
   handle?: Handle;
   start: { x: number; y: number };
   client: { x: number; y: number };
@@ -380,6 +386,54 @@ function PlacedPicture({
   onVideoError?: () => void;
 }) {
   const at = { x: -place.w / 2, y: -place.h / 2, width: place.w, height: place.h };
+  if (place.pin) {
+    // Corner-pinned: drawn as HTML in perspective (a CSS 3D transform from its box onto the four corners),
+    // inside a foreignObject big enough for wherever the corners went.
+    const q = place.pin.map((c) => pinLocal(place, c));
+    const xs = [at.x, at.x + at.width, ...q.map((c) => c[0])];
+    const ys = [at.y, at.y + at.height, ...q.map((c) => c[1])];
+    const fo = { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+    const fill: CSSProperties = { width: '100%', height: '100%', display: 'block' };
+    let html: React.ReactNode;
+    if (kind === 'color') html = <div style={{ ...fill, background: value || '#000' }} />;
+    else if (kind === 'character')
+      html = (
+        <div style={{ ...fill, background: '#000' }}>
+          <AiCharacterOrb color={value || null} />
+        </div>
+      );
+    else if (kind === 'text') html = <div style={{ ...textStyle(place.w, place.h), background: '#000' }}>{value}</div>;
+    // eslint-disable-next-line @next/next/no-img-element -- a local object URL, drawn in perspective
+    else if (kind === 'image' && url) html = <img src={url} alt="" style={{ ...fill, objectFit: 'fill' }} />;
+    else if (kind === 'video' && url)
+      html = (
+        <video src={url} autoPlay muted loop playsInline onError={onVideoError} style={{ ...fill, objectFit: 'fill' }} />
+      );
+    else html = <div style={{ ...fill, background: '#3c5eac', opacity: 0.35 }} />;
+    return (
+      <g clipPath={clip} mask={mask} opacity={opacity} style={{ pointerEvents: 'none' }}>
+        <g transform={`translate(${place.cx} ${place.cy}) rotate(${place.rot})`}>
+          <foreignObject {...fo}>
+            <div style={{ position: 'relative', width: fo.width, height: fo.height }}>
+              <div
+                style={{
+                  position: 'absolute',
+                  left: at.x - fo.x,
+                  top: at.y - fo.y,
+                  width: place.w,
+                  height: place.h,
+                  transformOrigin: '0 0',
+                  transform: pinCssMatrix(place.w, place.h, place.pin),
+                }}
+              >
+                {html}
+              </div>
+            </div>
+          </foreignObject>
+        </g>
+      </g>
+    );
+  }
   let body: React.ReactNode = null;
   if (kind === 'color') body = <rect {...at} fill={value || '#000'} />;
   else if (kind === 'character')
@@ -586,6 +640,9 @@ function ProjectionDiagram({
     } catch {
       // Not a real pointer (a scripted test) — moves still reach the drawing.
     }
+    // Command (or Ctrl) on a corner handle: corner pin.
+    const corner = handle === 'nw' || handle === 'ne' || handle === 'se' || handle === 'sw';
+    if (corner && kind === 'handle' && (e.metaKey || e.ctrlKey)) kind = 'pin';
     gesture.current = {
       kind,
       handle,
@@ -614,15 +671,28 @@ function ProjectionDiagram({
       setDraft({ ...s, cx: s.cx + p.x - g.start.x, cy: s.cy + p.y - g.start.y });
       return;
     }
-    // The pointer in the picture's own frame (unturned, centred).
+    // The pointer in the picture's own frame (unturned, centred) — now, and where the drag began.
     const turn = (-s.rot * Math.PI) / 180;
-    const dx = p.x - s.cx;
-    const dy = p.y - s.cy;
-    const lx = dx * Math.cos(turn) - dy * Math.sin(turn);
-    const ly = dx * Math.sin(turn) + dy * Math.cos(turn);
+    const local = (x: number, y: number) => {
+      const dx = x - s.cx;
+      const dy = y - s.cy;
+      return [dx * Math.cos(turn) - dy * Math.sin(turn), dx * Math.sin(turn) + dy * Math.cos(turn)];
+    };
+    const [lx, ly] = local(p.x, p.y);
+    const [lx0, ly0] = local(g.start.x, g.start.y);
     const h = g.handle!;
+    if (g.kind === 'pin') {
+      // Corner pin: this corner follows the pointer on its own; the picture is drawn in perspective.
+      const i = (['nw', 'ne', 'se', 'sw'] as const).indexOf(h as 'nw' | 'ne' | 'se' | 'sw');
+      const was = pinOf(s);
+      const pin = was.map((c) => [...c] as [number, number]);
+      pin[i] = [was[i][0] + (lx - lx0) / s.w, was[i][1] + (ly - ly0) / s.h];
+      // Never folded over or inside out (it couldn't be drawn): it stops where it still can be.
+      if (pinIsConvex(pin)) setDraft({ ...s, pin });
+      return;
+    }
     if (h === 'rotate') {
-      let rot = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
+      let rot = (Math.atan2(p.y - s.cy, p.x - s.cx) * 180) / Math.PI + 90;
       if (e.shiftKey) rot = Math.round(rot / 15) * 15;
       setDraft({ ...s, rot: ((rot % 360) + 360) % 360 });
       return;
@@ -631,10 +701,11 @@ function ProjectionDiagram({
     const sx = h.includes('e') ? 1 : h.includes('w') ? -1 : 0;
     const sy = h.includes('s') ? 1 : h.includes('n') ? -1 : 0;
     const centred = e.altKey;
-    const reach = (l: number, size: number, sign: number) =>
-      Math.max(SMALLEST, centred ? 2 * Math.abs(l) : sign * l + size / 2);
-    let w = sx ? reach(lx, s.w, sx) : s.w;
-    let hh = sy ? reach(ly, s.h, sy) : s.h;
+    // By how far the pointer has moved since the drag began (so a handle on a corner-pinned edge doesn't jump).
+    const reach = (l: number, l0: number, size: number, sign: number) =>
+      Math.max(SMALLEST, size + (centred ? 2 : 1) * sign * (l - l0));
+    let w = sx ? reach(lx, lx0, s.w, sx) : s.w;
+    let hh = sy ? reach(ly, ly0, s.h, sy) : s.h;
     if (sx && sy && !e.shiftKey) {
       // Corners keep the picture's proportions (Shift: free).
       const k = Math.max(w / s.w, hh / s.h);
@@ -657,9 +728,26 @@ function ProjectionDiagram({
     const g = gesture.current;
     gesture.current = null;
     if (!g) return;
+    if (g.kind === 'pin' && !g.moved) {
+      // Command-click a corner (no drag): that corner goes back where it was; all back: no pin at all.
+      if (placing && g.place?.pin) {
+        const i = (['nw', 'ne', 'se', 'sw'] as const).indexOf(g.handle as 'nw' | 'ne' | 'se' | 'sw');
+        const pin = g.place.pin.map((c, k) => (k === i ? ([...UNPINNED[k]] as [number, number]) : c));
+        const plain = pin.every((c, k) => c[0] === UNPINNED[k][0] && c[1] === UNPINNED[k][1]);
+        const { pin: _gone, ...rest } = g.place;
+        void _gone;
+        setPlacement(placing, plain ? rest : { ...g.place, pin }, 'Reset corner');
+        void replayMarker();
+      }
+      return;
+    }
     if (g.moved) {
       if (draft && placing) {
-        setPlacement(placing, draft, g.kind === 'move' ? 'Move picture' : 'Resize picture');
+        setPlacement(
+          placing,
+          draft,
+          g.kind === 'move' ? 'Move picture' : g.kind === 'pin' ? 'Corner pin' : 'Resize picture',
+        );
         void replayMarker();
       }
       setDraft(null);
@@ -798,11 +886,10 @@ function ProjectionDiagram({
         {group && place && (
           <g transform={`translate(${place.cx} ${place.cy}) rotate(${place.rot})`}>
             {/* Dragging inside the picture moves it (a click there toggles the area under it). */}
-            <rect
-              x={-place.w / 2}
-              y={-place.h / 2}
-              width={place.w}
-              height={place.h}
+            <polygon
+              points={pinOf(place)
+                .map((c) => pinLocal(place, c).join(','))
+                .join(' ')}
               fill="transparent"
               stroke="#3c5eac"
               strokeWidth={1.5 * unitsPerPixel}
@@ -826,20 +913,25 @@ function ProjectionDiagram({
                 ['se', 1, 1],
                 ['sw', -1, 1],
               ] as const
-            ).map(([h, sx, sy]) => (
-              <rect
-                key={h}
-                data-handle={h}
-                x={(sx * place.w) / 2 - hs / 2}
-                y={(sy * place.h) / 2 - hs / 2}
-                width={hs}
-                height={hs}
-                className="fill-paper stroke-[#3c5eac]"
-                strokeWidth={1.5 * unitsPerPixel}
-                style={{ cursor: sx === sy ? 'nwse-resize' : 'nesw-resize' }}
-                onPointerDown={(e) => begin(e, 'handle', h)}
-              />
-            ))}
+            ).map(([h, sx, sy], i) => {
+              const [x, y] = pinLocal(place, pinOf(place)[i]);
+              return (
+                <rect
+                  key={h}
+                  data-handle={h}
+                  x={x - hs / 2}
+                  y={y - hs / 2}
+                  width={hs}
+                  height={hs}
+                  className={`stroke-[#3c5eac] ${place.pin && (place.pin[i][0] !== UNPINNED[i][0] || place.pin[i][1] !== UNPINNED[i][1]) ? 'fill-[#3c5eac]' : 'fill-paper'}`}
+                  strokeWidth={1.5 * unitsPerPixel}
+                  style={{ cursor: sx === sy ? 'nwse-resize' : 'nesw-resize' }}
+                  onPointerDown={(e) => begin(e, 'handle', h)}
+                >
+                  <title>Drag: resize · ⌘-drag: move this corner on its own (corner pin) · ⌘-click: put it back</title>
+                </rect>
+              );
+            })}
             {(
               [
                 ['n', 0, -1],
@@ -847,17 +939,22 @@ function ProjectionDiagram({
                 ['e', 1, 0],
                 ['w', -1, 0],
               ] as const
-            ).map(([h, sx, sy]) => {
+            ).map(([h, sx]) => {
               const long = 2.2 * hs;
               const across = 0.8 * hs;
               const tw = sx ? across : long;
               const th = sx ? long : across;
+              // Midway along its side (the side's two corners, wherever they're pinned).
+              const q = pinOf(place).map((c) => pinLocal(place, c));
+              const [a, b] = { n: [0, 1], e: [1, 2], s: [2, 3], w: [3, 0] }[h];
+              const mx = (q[a][0] + q[b][0]) / 2;
+              const my = (q[a][1] + q[b][1]) / 2;
               return (
                 <rect
                   key={h}
                   data-handle={h}
-                  x={(sx * place.w) / 2 - tw / 2}
-                  y={(sy * place.h) / 2 - th / 2}
+                  x={mx - tw / 2}
+                  y={my - th / 2}
                   width={tw}
                   height={th}
                   className="fill-[#3c5eac] stroke-paper"

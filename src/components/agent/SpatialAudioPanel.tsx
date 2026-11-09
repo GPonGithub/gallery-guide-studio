@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { MediaAsset } from '@/lib/agent/media';
-import { kindOf } from '@/lib/agent/media';
 import { barsOf, updateMediaLinks, useMediaLinks, type MediaLink } from '@/lib/agent/mediaFolder';
 import {
   clampSoundVolume,
@@ -33,8 +32,10 @@ import {
   type Pan,
 } from '@/lib/agent/spatialAudio';
 import { buttonOutlineCompact } from '@/lib/styles';
+import { audible, checkVideoSound, useVideoSoundResults } from '@/lib/agent/videoSound';
 
-const isSound = (l: MediaLink) => (l.assetKind ?? kindOf(l.assetName ?? '')) === 'sound';
+// A sound file, or a video with a sound track (its sound is placed in the room the same way).
+const isSound = audible;
 const nameOf = (l: MediaLink) => l.assetName ?? l.assetId;
 
 /**
@@ -51,6 +52,10 @@ export function SpatialAudioPanel({
 }) {
   const links = useMediaLinks();
   const { pick } = useSpatialPick();
+  useVideoSoundResults();
+  useEffect(() => {
+    for (const a of assets) if (a.kind === 'video' && a.status === 'present') checkVideoSound(a);
+  }, [assets]);
   // Each sound once: its position is the sound's, shared by all its bars.
   const sounds = scene
     ? links.filter(
@@ -77,7 +82,8 @@ export function SpatialAudioPanel({
   if (!sounds.length)
     return (
       <p className="font-body text-xs italic text-muted-ink">
-        No sounds on this scene&rsquo;s timeline yet. Drag a sound from the Media Library onto a ♪ sound track.
+        No sounds on this scene&rsquo;s timeline yet. Drag a sound from the Media Library onto a ♪ sound track (a
+        video with sound on the timeline shows here too).
       </p>
     );
 

@@ -20,6 +20,8 @@ import {
 import { clampSoundVolume, isSoundPlaying, playSound, startLoop, stopSounds, type SceneRef } from './mediaPlayback';
 import { hideVisualExcept, placeOf, showVisual, shownIn } from './mediaShow';
 import { onTDConnected } from './touchDesigner';
+// Videos with a sound track play their sound with the picture (wherever they go up).
+import './videoSound';
 
 /**
  * "Play on marker arrival" (see MARKER_ACTION): each time the timeline's marker lands on a stage,

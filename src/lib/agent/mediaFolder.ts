@@ -269,7 +269,19 @@ export const barOn = (link: MediaLink, area?: number) =>
   barsOf(link).find((b) => area === undefined || areaOfTrack(b.track) === area);
 
 /** A picture or video placed over the room drawing, in the drawing's units: its centre, size and turn. */
-export type Placement = { cx: number; cy: number; w: number; h: number; rot: number };
+export type Placement = {
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
+  rot: number;
+  /**
+   * Corner pin: where its four corners are in its own frame (0-1 across and down; top-left, top-right,
+   * bottom-right, bottom-left) once moved on their own — the picture is drawn in perspective between them.
+   * None: a plain rectangle.
+   */
+  pin?: [number, number][];
+};
 
 /** The projection area a track shows on (5 for 5 and '5-3'), or null for a sound track. */
 export function areaOfTrack(track: TimelineBar['track']): number | null {

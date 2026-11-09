@@ -160,6 +160,17 @@ export const useShowing = () =>
     () => NONE,
   );
 
+/** What's showing now (each area's entry), for code outside React. */
+export const currentShowing = () => showing;
+
+/** Hears every change to what's showing; returns how to stop listening. */
+export function onShowingChange(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 /** The areas a file is showing in now (sorted), e.g. "1,5". */
 export const areasShowing = (assetId: string) =>
   showing
