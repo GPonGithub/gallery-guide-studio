@@ -31,7 +31,8 @@ export const PROJECTION_SHAPES: ProjectionShape[] = [
     holes: [3],
   },
   { area: 3, points: [[337.83, 247.08], [167.78, 273.52], [147.59, 125.29], [325.98, 134.45]], label: [240, 194] },
-  { area: 4, points: [[591.8, 237.87], [472.57, 244.93], [449.93, 208.82], [569.98, 204.08]], label: [518, 224], small: true },
+  // From "Immersive Space Projection Outlines_03.svg": panel 4 now reaches further down.
+  { area: 4, points: [[630.26, 288.12], [510.42, 305.44], [449.93, 208.82], [569.98, 204.08]], label: [537, 246], small: true },
   {
     area: 5,
     points: [[900.75, 256.57], [616.5, 259.8], [572.09, 197.62], [463.7, 200.85], [459.84, 65.99], [899.13, 67.61]],
