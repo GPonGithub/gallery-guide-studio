@@ -162,6 +162,13 @@ export function ProjectorsPanel() {
               Open Kantan Mapper
             </button>
             <button
+              onClick={() => send({ type: 'kantan', action: 'open', mapper: 'p56' })}
+              className={small}
+              title="Opens the Kantan Mapper for projectors 5 and 6 (shapes 5-1 to 6-3) in TouchDesigner"
+            >
+              Open Kantan 5 &amp; 6
+            </button>
+            <button
               onClick={() => send({ type: 'numbers', action: status.areaNumbers === false ? 'show' : 'hide' })}
               disabled={status.areaNumbers === null}
               className={`${small} w-[120px]`}
@@ -173,7 +180,14 @@ export function ProjectorsPanel() {
             >
               {status.areaNumbers === false ? 'Show numbers' : 'Hide numbers'}
             </button>
-            <button onClick={() => send({ type: 'kantan', action: 'close' })} className={small}>
+            <button
+              onClick={() => {
+                send({ type: 'kantan', action: 'close' });
+                send({ type: 'kantan', action: 'close', mapper: 'p56' });
+              }}
+              className={small}
+              title="Closes both Kantan Mapper editors"
+            >
               Close
             </button>
           </div>

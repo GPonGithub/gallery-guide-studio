@@ -699,8 +699,14 @@ def kantan_mapper():
 
 
 def kantan(msg):
-    """kantan open / close: Kantan Mapper's editor window, on this computer's screen."""
-    m = kantan_mapper()
+    """kantan open / close: Kantan Mapper's editor window, on this computer's screen.
+    "mapper": "p56" picks projectors 5 and 6's mapper (kantanMapper_P56) instead of the walls'."""
+    if msg.get('mapper') == 'p56':
+        m = op('/project1/MAPPER/kantanMapper_P56')
+        if m is None:
+            return 'kantan', 'no Kantan Mapper for projectors 5 and 6 - run add_kantan_p56.py', {'ok': False}
+    else:
+        m = kantan_mapper()
     if m is None:
         return 'kantan', 'no Kantan Mapper in this project', {'ok': False}
     if msg.get('action') == 'close':
