@@ -2,8 +2,9 @@
  * Student teams. Each team gets its own copy of the whole app in this browser:
  * keys, scenes, conversations, patients, media folder and connections, layout —
  * nothing is shared. Team ED keeps the app's original storage (so work from
- * before teams existed stays with ED); team AE's localStorage keys carry a
- * "team-AE:" prefix and its IndexedDB is a separate database (browserDb.ts).
+ * before teams existed stays with ED); every other team's localStorage keys carry a
+ * "team-<name>:" prefix (e.g. "team-AE:") and its IndexedDB is a separate database (browserDb.ts).
+ * "Graham" is a third copy, labelled with the name alone.
  *
  * The split is made by TEAM_STORAGE_SCRIPT, run in the root layout before any
  * of the app's code: it fixes the team for the page and makes localStorage
@@ -11,17 +12,31 @@
  * reloads the page.
  */
 
-export const TEAMS = ['ED', 'AE'] as const;
+export const TEAMS = ['ED', 'AE', 'Graham'] as const;
 export type Team = (typeof TEAMS)[number];
 
-/** The one localStorage key both teams share: which team this browser is on. */
+/** The one localStorage key all teams share: which team this browser is on. */
 const TEAM_KEY = 'studio-team';
-const PREFIX = 'team-AE:';
+
+const isTeam = (t: unknown): t is Team => (TEAMS as readonly unknown[]).includes(t);
+
+/**
+ * A setting name a project file must never write: the shared "which team" key, or a name carrying a
+ * team's "team-<name>:" prefix. Exports never contain these (each team sees its own names unprefixed),
+ * but a hand-edited file could — and for team ED, whose names aren't prefixed, writing "team-Graham:…"
+ * would land straight in Graham's copy.
+ */
+export const isTeamControlKey = (name: string) =>
+  name === TEAM_KEY || TEAMS.some((t) => t !== 'ED' && name.startsWith(`team-${t}:`));
+
+/** The button's words: "Team ED", "Team AE", "Graham". */
+export const teamLabel = (t: Team) => (t === 'Graham' ? 'Graham' : `Team ${t}`);
 
 /** The team this page was loaded as. */
 export function currentTeam(): Team {
   if (typeof window === 'undefined') return 'ED';
-  return (window as { __studioTeam?: Team }).__studioTeam === 'AE' ? 'AE' : 'ED';
+  const t = (window as { __studioTeam?: unknown }).__studioTeam;
+  return isTeam(t) ? t : 'ED';
 }
 
 export function switchTeam(team: Team) {
@@ -36,18 +51,20 @@ export function switchTeam(team: Team) {
 
 export const TEAM_STORAGE_SCRIPT = `(function () {
   if (window.__studioTeam) return;
-  var KEY = ${JSON.stringify(TEAM_KEY)}, P = ${JSON.stringify(PREFIX)};
+  var KEY = ${JSON.stringify(TEAM_KEY)}, TEAMS = ${JSON.stringify(TEAMS)};
   var ls;
   try { ls = window.localStorage; } catch (e) { return; }
   var proto = Storage.prototype;
   var get = proto.getItem, set = proto.setItem, rem = proto.removeItem, key = proto.key;
   var len = Object.getOwnPropertyDescriptor(proto, 'length').get;
   var team = 'ED';
-  try { if (get.call(ls, KEY) === 'AE') team = 'AE'; } catch (e) {}
+  try { var saved = get.call(ls, KEY); if (TEAMS.indexOf(saved) >= 0) team = saved; } catch (e) {}
   window.__studioTeam = team;
-  var ae = team === 'AE';
+  // ED keeps unprefixed keys; every other team's keys start with "team-<name>:".
+  var ae = team !== 'ED', P = 'team-' + team + ':';
+  function anyTeam(k) { return k.indexOf('team-') === 0 && TEAMS.some(function (t) { return t !== 'ED' && k.indexOf('team-' + t + ':') === 0; }); }
   function scoped(k) { k = String(k); return k === KEY || !ae ? k : P + k; }
-  function mine(k) { return ae ? k.indexOf(P) === 0 : k !== KEY && k.indexOf(P) !== 0; }
+  function mine(k) { return ae ? k.indexOf(P) === 0 : k !== KEY && !anyTeam(k); }
   function keys(s) {
     var out = [];
     for (var i = 0; i < len.call(s); i++) { var k = key.call(s, i); if (k !== null && mine(k)) out.push(k); }

@@ -45,3 +45,6 @@ next-env.d.ts
 
 # kept out of iCloud sync (see .next symlink)
 /.next.nosync/
+
+# this computer's backup of the browser's storage (see src/lib/localBackup.ts)
+/.local-backup/

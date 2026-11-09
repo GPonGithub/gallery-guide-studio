@@ -14,7 +14,7 @@ import { currentTeam } from './team';
  */
 
 // Each student team has its own database (see team.ts); team ED keeps the original one.
-const dbName = () => (currentTeam() === 'AE' ? 'goal-agent-studio-AE' : 'goal-agent-studio');
+const dbName = () => (currentTeam() === 'ED' ? 'goal-agent-studio' : `goal-agent-studio-${currentTeam()}`);
 const VERSION = 4;
 export const STORES = ['music', 'projects', 'projectMusic', 'patients', 'media'] as const;
 export type StoreName = (typeof STORES)[number];
@@ -30,6 +30,12 @@ export function openDb(): Promise<IDBDatabase> {
   });
 }
 
+// Something was written: the local backup (localBackup.ts) hears it, to save a fresh copy soon.
+const writeListeners = new Set<() => void>();
+export function onDbWrite(listener: () => void) {
+  writeListeners.add(listener);
+}
+
 /** One request against one store, in its own transaction. */
 export async function run<T>(
   storeName: StoreName,
@@ -40,7 +46,10 @@ export async function run<T>(
   try {
     return await new Promise<T>((resolve, reject) => {
       const request = work(db.transaction(storeName, mode).objectStore(storeName));
-      request.onsuccess = () => resolve(request.result as T);
+      request.onsuccess = () => {
+        if (mode === 'readwrite') writeListeners.forEach((l) => l());
+        resolve(request.result as T);
+      };
       request.onerror = () => reject(request.error);
     });
   } finally {

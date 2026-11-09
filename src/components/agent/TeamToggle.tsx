@@ -2,14 +2,14 @@
 
 import { useSyncExternalStore } from 'react';
 import { buttonOutline } from '@/lib/styles';
-import { currentTeam, switchTeam, TEAMS } from '@/lib/team';
+import { currentTeam, switchTeam, teamLabel, TEAMS } from '@/lib/team';
 
 const noSubscribe = () => () => {};
 /** The open team's button: the outline button with a thick 4px border. */
 const thick = buttonOutline.replace('border-2 ', 'border-4 ');
 
 /**
- * Team ED / Team AE: each team has its own copy of the whole app in this
+ * Team ED / Team AE / Graham: each has its own copy of the whole app in this
  * browser (see lib/team.ts). Both are white with black text (black on hover);
  * the open team has a thick 4px border. Clicking the other
  * reloads the page as that team.
@@ -24,10 +24,10 @@ export function TeamToggle() {
           key={t}
           onClick={() => switchTeam(t)}
           aria-pressed={team === t}
-          title={team === t ? `You're working as Team ${t}` : `Switch to Team ${t}'s own copy of the app`}
+          title={team === t ? `You're working as ${teamLabel(t)}` : `Switch to ${teamLabel(t)}'s own copy of the app`}
           className={`h-10 ${team === t ? `${thick} cursor-default` : buttonOutline}`}
         >
-          Team {t}
+          {teamLabel(t)}
         </button>
       ))}
     </div>

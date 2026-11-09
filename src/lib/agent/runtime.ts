@@ -62,6 +62,7 @@ const MEDIA_NOUN: Record<RoomMedia['kind'], string> = {
   sound: 'sound',
   text: 'words on a screen',
   color: 'coloured light',
+  character: 'animated character that moves with your voice',
 };
 
 /** The room's media, for the prompts: what each action is, and whether it's showing now. */
@@ -93,6 +94,32 @@ function memoryLines(memory: RememberedItem[]): string {
 
 function transcript(history: ChatTurn[]): string {
   return history.map((t) => `${t.role === 'user' ? 'CALLER' : 'AGENT'}: ${t.text}`).join('\n');
+}
+
+/**
+ * Exits the caller can already take from here although they belong to a later stage: the stages this one
+ * leads to on its own once each goal is met (1 → 2 → 3 …), and their exits taken by the caller's words.
+ * Asking straight away for what a later stage offers ("let's look at an example", while still being
+ * greeted) goes there, instead of waiting until every stage before it has been finished. Numbered L1, L2…
+ */
+export function lookAheadExits(flow: AgentFlow, stage: Stage): Exit[] {
+  const own = new Set([...stage.exits, ...flow.globalExits].map((e) => `${e.to}|${e.when}`));
+  const seen = new Set([stage.code]);
+  const found: Exit[] = [];
+  let at: Stage | undefined = stage;
+  for (let hops = 0; at && hops < 6; hops++) {
+    const next: Exit | undefined = at.exits.find((e) => e.onComplete) ?? (at.exits.length === 1 ? at.exits[0] : undefined);
+    if (!next || next.to === END || seen.has(next.to)) break;
+    at = findStage(flow, next.to);
+    if (!at) break;
+    seen.add(at.code);
+    for (const e of at.exits) {
+      if (e.onComplete || !e.when.trim() || e.to === stage.code || own.has(`${e.to}|${e.when}`)) continue;
+      own.add(`${e.to}|${e.when}`);
+      found.push(e);
+    }
+  }
+  return found;
 }
 
 function exitLabel(flow: AgentFlow, exit: Exit): string {
@@ -127,8 +154,8 @@ export function parseAnalysis(text: string): Analysis {
     const line = raw.trim().replace(/^[-*•`\s]+/, '').replace(/[*`\s]+$/, '');
     const set = /^SET\s+([\w.-]+)\s*[=:]\s*(.+)$/i.exec(line);
     const save = /^SAVE\s+(.+?)\s*[=:]\s*(.+)$/i.exec(line);
-    const exit = /^EXIT\b[\s:=→-]*([SG]\d+)\b/i.exec(line);
-    const copiedExit = /^([SG]\d+)\b/i.exec(line);
+    const exit = /^EXIT\b[\s:=→-]*([SGL]\d+)\b/i.exec(line);
+    const copiedExit = /^([SGL]\d+)\b/i.exec(line);
     if (set) analysis.slots.push({ name: set[1], value: unquote(set[2]) });
     else if (save) analysis.saves.push({ label: unquote(save[1]).toLowerCase(), value: unquote(save[2]) });
     else if (exit) analysis.exit ??= { id: exit[1].toUpperCase() };
@@ -169,6 +196,8 @@ async function analyse(
   const exits = [
     ...stage.exits.map((e, i) => `S${i + 1}: → ${exitLabel(flow, e)} — ${e.onComplete ? 'once the goal is met' : `when ${e.when}`}`),
     ...flow.globalExits.map((e, i) => `G${i + 1}: → ${exitLabel(flow, e)} — when ${e.when}`),
+    // A later stage's own exits: the caller can ask for them now, skipping the stages in between.
+    ...lookAheadExits(flow, stage).map((e, i) => `L${i + 1}: → ${exitLabel(flow, e)} — when ${e.when}`),
   ].join('\n');
 
   const { text } = await generateText({
@@ -187,7 +216,8 @@ async function analyse(
       'is met" — those happen automatically). Write the word EXIT and just the id, e.g. EXIT S1; never copy the line ' +
       'from the list of exits.\n' +
       "GOAL MET               only if this stage's goal is now fully achieved (including anything the agent must " +
-      'confirm).\n' +
+      'confirm). A goal that waits for the caller to say or do something (greet, answer, arrive) is achieved as ' +
+      'soon as their message does it.\n' +
       "OFF TOPIC              if the message has nothing to do with this stage's goal and matches no exit (asking " +
       'to see or hear something the room can show — listed under IN THE ROOM — is never off topic).\n' +
       (flow.saveInfo?.trim()
@@ -364,8 +394,10 @@ class Turn {
 
     // An intent exit (including global ones like "emergency") wins over completion.
     if (analysis.exit) {
-      const match = /^([SG])(\d+)$/i.exec(analysis.exit.id.trim());
-      const list = match?.[1].toUpperCase() === 'G' ? this.flow.globalExits : stage.exits;
+      const match = /^([SGL])(\d+)$/i.exec(analysis.exit.id.trim());
+      const kind = match?.[1].toUpperCase();
+      const list =
+        kind === 'G' ? this.flow.globalExits : kind === 'L' ? lookAheadExits(this.flow, stage) : stage.exits;
       const exit = match ? list[Number(match[2]) - 1] : undefined;
       if (exit && !exit.onComplete) {
         // The exit's own condition says why ("caller wants to see a specialist").

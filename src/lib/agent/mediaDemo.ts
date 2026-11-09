@@ -5,19 +5,29 @@ import { run } from '@/lib/browserDb';
 import type { MediaAsset } from './media';
 import { clearVisuals } from './mediaShow';
 import { stopSounds } from './mediaPlayback';
-import { forgetMediaHistory, updateMediaLinks } from './mediaFolder';
+import {
+  forgetMediaHistory,
+  forgetSceneMedia,
+  mediaSceneKey,
+  setDemoMediaScene,
+  setSceneMedia,
+  updateMediaLinks,
+  type MediaFolder,
+} from './mediaFolder';
 
 /**
  * The Adding Immersive Media tour's sandbox. While it's on, the media panel
  * works on a demo scene — its own stages and row-8 actions, and a demo media
  * folder of three small files (a video, a picture, a sound) — so the tour can
  * connect, drag, duplicate and delete for real without touching the student's
- * work. The student's media folder and library are put aside first and come
- * back untouched; the demo's connections are removed when it ends.
+ * work. The demo scene has its own folder and library (every scene does — see
+ * mediaFolder.ts), so the student's are never touched; the demo's are removed
+ * when it ends, with its connections.
  */
 
 export const DEMO_SHEET_ID = 'onboarding-demo';
 export const DEMO_SCENE = { sheetId: DEMO_SHEET_ID, number: 'D', name: 'Demo · Nurse Visit' };
+const DEMO_KEY = mediaSceneKey(DEMO_SCENE);
 export const DEMO_STAGES = [
   { code: '1', name: 'Welcome' },
   { code: '2A', name: 'Check symptoms' },
@@ -46,9 +56,8 @@ let demo: MediaDemo | null = null;
 let revision = 0;
 /** The demo being set up (so a second call waits for the same one instead of starting another). */
 let starting: Promise<void> | null = null;
-type Backup = { folder: unknown; library: unknown };
-// The student's folder and library while the demo runs — also kept in the database (BACKUP_KEY),
-// so a page reloaded mid-tour still gets them back (see recover below).
+// From before every scene had its own folder: the student's single folder and library, put aside while
+// a demo ran. Only ever read now — to put them back (see `recovering`).
 const BACKUP_KEY = 'demo-backup';
 const listeners = new Set<() => void>();
 const changed = () => listeners.forEach((l) => l());
@@ -76,7 +85,7 @@ const put = (key: string, value: unknown) =>
     ? run('media', 'readwrite', (s) => s.delete(key))
     : run('media', 'readwrite', (s) => s.put(value, key));
 
-/** Puts the student's media folder and library aside and opens the demo (once; later calls do nothing). */
+/** Opens the demo, with its own media folder and library (once; later calls do nothing). */
 export function beginMediaDemo(): Promise<void> {
   if (demo) return Promise.resolve();
   starting ??= setUp().finally(() => {
@@ -87,13 +96,6 @@ export function beginMediaDemo(): Promise<void> {
 
 async function setUp() {
   await recovering;
-  // The student's own folder and library, kept safe first — never replaced by a later copy (which, if
-  // something went wrong, could already be the demo's).
-  if (!(await get(BACKUP_KEY))) {
-    const folder = (await get('folder')) as { name?: string } | undefined;
-    const backup: Backup = { folder, library: await get('library') };
-    if (folder?.name !== FOLDER_NAME) await put(BACKUP_KEY, backup);
-  }
   // The demo files, copied into this site's private storage (OPFS) — a real folder the app can read.
   const root = await navigator.storage.getDirectory();
   const folder = await root.getDirectoryHandle(FOLDER_NAME, { create: true });
@@ -104,37 +106,38 @@ async function setUp() {
     await writable.close();
   }
   const today = new Date().toLocaleDateString('en-CA');
-  await put('folder', folder);
-  await put('library', {
+  // An OPFS folder: the same kind of handle as a chosen one, as far as the app reads it.
+  await setSceneMedia(DEMO_KEY, folder as unknown as MediaFolder, {
     folderName: FOLDER_NAME,
     refreshedAt: Date.now(),
-    assets: FILES.map((f) => ({ ...f, path: f.name, status: 'present', added: today })),
+    assets: FILES.map((f) => ({ ...f, path: f.name, status: 'present' as const, added: today })),
   });
   demo = { actions: [...DEMO_ACTIONS] };
+  setDemoMediaScene(DEMO_KEY);
   revision++;
   changed();
 }
 
-/** Ends the demo: its connections, room media and sounds go, and the student's folder and library come back. */
+/** Ends the demo: its connections, room media, sounds, folder and library go; the open scene's media is back in use. */
 export async function endMediaDemo(): Promise<void> {
   // Closed while it was still being set up: let that finish, then undo it.
   if (starting) await starting.catch(() => undefined);
   if (!demo) return;
   clearVisuals();
   stopSounds();
-  // The student's folder and library go back into storage first; only then does the panel hear the demo
-  // is over and read them again (reading earlier would pick up the demo's).
   await putBack();
+  setDemoMediaScene(null);
   demo = null;
   revision++;
   changed();
 }
 
-/** Brings the student's folder and library back, and clears away everything of the demo's. */
+/** Clears away everything of the demo's (and puts back a single folder set aside by an older version). */
 async function putBack() {
   updateMediaLinks((all) => all.filter((l) => l.sheetId !== DEMO_SHEET_ID));
   forgetMediaHistory();
-  const backup = (await get(BACKUP_KEY).catch(() => undefined)) as Backup | undefined;
+  await forgetSceneMedia(DEMO_KEY).catch(() => undefined);
+  const backup = (await get(BACKUP_KEY).catch(() => undefined)) as { folder: unknown; library: unknown } | undefined;
   if (backup) {
     await put('folder', backup.folder);
     await put('library', backup.library);
@@ -152,7 +155,8 @@ const recovering: Promise<void> =
   typeof window === 'undefined'
     ? Promise.resolve()
     : (async () => {
-        if (await get(BACKUP_KEY).catch(() => undefined)) {
+        const left = (await get(BACKUP_KEY).catch(() => undefined)) || (await get(`library:${DEMO_KEY}`).catch(() => undefined));
+        if (left) {
           await putBack();
           revision++;
           changed();

@@ -1,9 +1,11 @@
 'use client';
 
 import { useSyncExternalStore } from 'react';
-import type { MediaAsset } from './media';
-import { loadLibrary } from './mediaFolder';
+import { isMade, type MediaAsset } from './media';
+import { loadLibrary, onMediaSceneChange } from './mediaFolder';
+import { areaUvMatrix } from './roomPlacement';
 import type { Shown } from './mediaShow';
+import { onVoiceReading } from './voiceLevel';
 
 /**
  * The live link to TouchDesigner for the room's media. The browser connects
@@ -176,14 +178,21 @@ export function onTDConnected(listener: () => void) {
   connectedListeners.add(listener);
 }
 
-/** On connecting: hello, the projectors, the media list, a clean room, then what's on now (pictures, video, levels). */
-async function greet() {
-  send({ type: 'hello' });
-  send({ type: 'projectors', action: 'status' });
-  send({ type: 'numbers', action: 'status' });
+/**
+ * The open scene's media folder's name: TouchDesigner finds a file in that folder inside its own Media
+ * Folder (the browser can't tell it where the folder is on disk — keep each scene's folder in one place).
+ */
+let folderName = '';
+const withFolder = <T extends Record<string, unknown>>(message: T) =>
+  folderName ? { ...message, folder: folderName } : message;
+
+/** The open scene's media list (each scene has its own folder): sent on connecting, and when another scene opens. */
+async function sendMediaList() {
   const library = await loadLibrary();
+  folderName = library?.folderName ?? '';
   send({
     type: 'medialist',
+    ...(folderName && { folder: folderName }),
     items: (library?.assets ?? []).map((a) => ({
       id: a.id,
       name: a.name,
@@ -192,6 +201,19 @@ async function greet() {
       status: a.status,
     })),
   });
+}
+if (typeof window !== 'undefined')
+  onMediaSceneChange(() => {
+    if (isOpen()) void sendMediaList();
+    else void loadLibrary().then((library) => (folderName = library?.folderName ?? ''));
+  });
+
+/** On connecting: hello, the projectors, the media list, a clean room, then what's on now (pictures, video, levels). */
+async function greet() {
+  send({ type: 'hello' });
+  send({ type: 'projectors', action: 'status' });
+  send({ type: 'numbers', action: 'status' });
+  await sendMediaList();
   send({ type: 'clear' });
   sent.clear();
   syncVisuals(current);
@@ -247,24 +269,62 @@ export const visualMessage = (
   area,
   id: asset.id,
   // A text or colour has no file: its words or hex colour travel instead.
-  ...(asset.kind === 'text' || asset.kind === 'color' ? { value: asset.value ?? '' } : { path: asset.path }),
+  ...(isMade(asset.kind) ? { value: asset.value ?? '' } : { path: asset.path }),
+  // An AI character: TouchDesigner shows this app's character page (a Web Render TOP).
+  ...(asset.kind === 'character' && { url: characterUrl(asset.value ?? '') }),
   kind: asset.kind,
   loop,
 });
 
+/**
+ * The page TouchDesigner shows for an AI character: the orb in its colour, which connects back to
+ * TouchDesigner's receiver to hear the voice (the voice plays here, in the Designer).
+ */
+function characterUrl(color: string): string {
+  if (typeof window === 'undefined') return '';
+  const q = new URLSearchParams({ td: tdSettings().address.trim() });
+  if (/^#[0-9a-f]{6}$/i.test(color)) q.set('color', color.slice(1));
+  return `${window.location.origin}/ai-character/show?${q}`;
+}
+
+/*
+ * The voice, for the characters in TouchDesigner's areas: while one is showing there, each reading of
+ * the chatbot's voice goes to TouchDesigner (~30 a second), which hands it to the character pages.
+ * Not logged or answered there — it's a stream, not a command.
+ */
+onVoiceReading((r) => {
+  if (!current.some((s) => s.kind === 'character')) return;
+  send({
+    type: 'voice',
+    action: 'level',
+    level: +r.level.toFixed(3),
+    low: +r.low.toFixed(3),
+    mid: +r.mid.toFixed(3),
+    high: +r.high.toFixed(3),
+  });
+});
+
 /** Mirrors the room diagram into TouchDesigner (called by mediaShow on every change). */
-export function syncVisuals(showing: Shown[]) {
+export function syncVisuals(showing: Shown[], quick = false) {
   current = showing;
   if (!isOpen()) return;
   const now = new Map(showing.map((s) => [s.area, s]));
   for (const [area, s] of now) {
     if (sent.get(area) === s) continue;
-    send(visualMessage(area, { id: s.assetId, path: s.path, kind: s.kind, value: s.value }, s.loop));
+    const message = {
+      ...visualMessage(area, { id: s.assetId, path: s.path, kind: s.kind, value: s.value }, s.loop),
+      // Its bar fades in: eased up from black.
+      ...(s.fadeIn && !quick && { fade: s.fadeIn }),
+    };
+    // Placed on the room drawing: the area shows its slice of the whole picture (see roomPlacement.ts).
+    send(withFolder(s.place ? { ...message, uv: areaUvMatrix(area, s.place) } : message));
     sent.set(area, s);
   }
   for (const area of [...sent.keys()]) {
     if (now.has(area)) continue;
-    send({ type: 'media', action: 'hide', area });
+    // Its bar fades out: eased down to black, then hidden.
+    const fade = !quick && sent.get(area)?.fadeOut;
+    send({ type: 'media', action: 'hide', area, ...(fade && { fade }) });
     sent.delete(area);
   }
 }
@@ -275,13 +335,43 @@ export function syncVisuals(showing: Shown[]) {
 export const soundsHere = () => tdSettings().sounds !== 'touchdesigner' || !isOpen();
 
 /** A sound starting or stopping — sent to TouchDesigner when it plays sounds. */
-export function tdSound(action: 'play' | 'stop', asset: MediaAsset, loop = false) {
+export function tdSound(
+  action: 'play' | 'stop',
+  asset: MediaAsset,
+  loop = false,
+  volume = 1,
+  /** How loud each of the room's speakers 1–4 plays it (Spatialized Audio). */
+  pan: number[] = [0.5, 0.5, 0.5, 0.5],
+  /** Eased in from silence (play) or out to it, then stopped (stop), over this many seconds. */
+  fade = 0,
+) {
   if (tdSettings().sounds === 'computer') return;
+  const fading = fade > 0 ? { fade } : {};
   send(
     action === 'play'
-      ? { type: 'sound', action, id: asset.id, path: asset.path, loop }
-      : { type: 'sound', action, id: asset.id },
+      ? withFolder({ type: 'sound', action, id: asset.id, path: asset.path, loop, volume, pan, ...fading })
+      : { type: 'sound', action, id: asset.id, ...fading },
   );
+}
+
+/** A video in the media folder was replaced (converted to H.264): TouchDesigner opens it again wherever it's up. */
+export function tdReloadFile(path: string) {
+  send(withFolder({ type: 'media', action: 'reload', path }));
+}
+
+/** A playing sound moved in the room (Spatialized Audio): how loud each speaker 1–4 plays it now. */
+export function tdSoundPan(id: string, pan: number[]) {
+  if (tdSettings().sounds !== 'computer') send({ type: 'sound', action: 'pan', id, pan });
+}
+
+/** A playing sound's looping (its bar's loop button) changed. */
+export function tdSoundLoop(id: string, loop: boolean) {
+  if (tdSettings().sounds !== 'computer') send({ type: 'sound', action: 'loop', id, loop });
+}
+
+/** A playing sound's own volume (0–4, its bar's slider) changed. */
+export function tdSoundVolume(id: string, volume: number) {
+  if (tdSettings().sounds !== 'computer') send({ type: 'sound', action: 'volume', id, volume });
 }
 
 let lastLevels: { gain: number } | null = null;

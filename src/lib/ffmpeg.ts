@@ -48,3 +48,16 @@ export async function ffmpegSource(): Promise<'app' | 'computer' | null> {
   }
   return null;
 }
+
+/** The ffmpeg the app would use (the first of FFMPEG_PLACES that runs), or null. */
+export async function findFfmpeg(): Promise<string | null> {
+  for (const place of FFMPEG_PLACES) {
+    const works = await new Promise<boolean>((resolve) => {
+      const run = spawn(place, ['-version']);
+      run.on('error', () => resolve(false));
+      run.on('close', (code) => resolve(code === 0));
+    });
+    if (works) return place;
+  }
+  return null;
+}

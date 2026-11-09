@@ -1,6 +1,6 @@
 'use client';
 
-import type { MediaAsset } from './media';
+import { isMade, type MediaAsset } from './media';
 import { barsOf, type MediaLink, type TimelineBar } from './mediaFolder';
 
 /**
@@ -20,7 +20,7 @@ export const SHOW_VERSION = 1;
 export const SHOW_FILE_NAME = 'show.json';
 export const REGION_COUNT = 11;
 
-export type ShowMemberKind = 'video' | 'sound' | 'image' | 'text' | 'color';
+export type ShowMemberKind = 'video' | 'sound' | 'image' | 'text' | 'color' | 'character';
 
 /** A cast member: a media file (by its path in the media folder), or a text or colour (by value). */
 export type ShowMember = {
@@ -107,7 +107,7 @@ export function buildShow(folderName: string, assets: MediaAsset[], links: Media
     name: a.name,
     kind: a.kind,
     // A file by its path; a text or colour by its value (Show Control's own convention).
-    ...(a.kind === 'text' || a.kind === 'color' ? { value: a.value ?? '' } : { path: a.path }),
+    ...(isMade(a.kind) ? { value: a.value ?? '' } : { path: a.path }),
     status: a.status,
   }));
   const byScene = new Map(scenes.map((s) => [sceneKey(s.sheetId, s.number), s]));

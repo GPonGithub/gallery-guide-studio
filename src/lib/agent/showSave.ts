@@ -4,7 +4,15 @@ import { useEffect, useSyncExternalStore } from 'react';
 import { sortStages } from './flow';
 import { listProjects } from './localProjects';
 import { mediaDemoOn } from './mediaDemo';
-import { loadLibrary, loadMediaLinks, type MediaFolder, type MediaLink, type StoredLibrary } from './mediaFolder';
+import {
+  currentMediaScene,
+  loadLibrary,
+  loadMediaLinks,
+  mediaSceneKey,
+  type MediaFolder,
+  type MediaLink,
+  type StoredLibrary,
+} from './mediaFolder';
 import { buildShow, SHOW_FILE_NAME, showText, type SceneInfo, type Show } from './showFile';
 
 /**
@@ -55,10 +63,17 @@ export async function sceneInfos(): Promise<SceneInfo[]> {
     }));
 }
 
-/** The show as it stands now. */
+/** The open scene's show as it stands now — each scene has its own media folder, and its show.json in it. */
 export async function currentShow(): Promise<Show> {
+  const key = currentMediaScene();
   const [library, links, scenes] = await Promise.all([loadLibrary(), loadMediaLinks(), sceneInfos()]);
-  return buildShow(library?.folderName ?? '', library?.assets ?? [], links, scenes);
+  const here = (s: { sheetId: string; number: string }) => key !== null && mediaSceneKey(s) === key;
+  return buildShow(
+    library?.folderName ?? '',
+    library?.assets ?? [],
+    links.filter((l) => here({ sheetId: l.sheetId, number: l.sceneNumber })),
+    scenes.filter(here),
+  );
 }
 
 /** Whether the app may write into the folder — asking if `ask` (only from a click). */

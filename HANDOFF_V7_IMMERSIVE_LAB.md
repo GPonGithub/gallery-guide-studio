@@ -6,6 +6,235 @@ feature, read `HANDOFF_V6_IMMERSIVE_MEDIA.md` (§7a–7t — the v7 work is writ
 
 ---
 
+## Latest — 2026-11-07, studio Mac (read this first)
+
+**Branch `v8`.** Last commit is still `36a6f4c` (2026-11-06). **Today's code changes are NOT committed yet**
+(see "Uncommitted" below). Dev server: `npm run dev` in `gallery-guide-studio`, running in the Code app's
+Terminal panel tab ("dev server"), at **http://localhost:3000/agent**. TouchDesigner unchanged since r1.40.
+
+### Built 2026-11-07
+
+1. **"Graham" button — a third copy of the whole app** (right of Team AE). It works exactly like Team ED / Team AE:
+   its own scenes, settings, keys, media connections and backup; nothing shared.
+   - `src/lib/team.ts`: `TEAMS = ['ED', 'AE', 'Graham']`; new `teamLabel(t)` ("Team ED", "Team AE", "Graham").
+     The storage script now prefixes every non-ED team's localStorage keys with `team-<name>:` (AE keeps
+     `team-AE:`, Graham gets `team-Graham:`); ED keeps unprefixed keys and ignores any `team-AE:`/`team-Graham:` ones.
+     Checked with a Node test against a fake Storage: each team sees only its own keys; an unknown saved team falls back to ED.
+   - `src/lib/browserDb.ts`: IndexedDB `goal-agent-studio` for ED, `goal-agent-studio-<team>` otherwise
+     (`goal-agent-studio-Graham`).
+   - `src/app/api/local-backup/route.ts`: accepts `team=Graham` → `.local-backup/team-Graham.json`.
+   - `TeamToggle.tsx`, `ProjectFileButtons.tsx`: use `teamLabel` (the button reads GRAHAM; CSS capitalises).
+   - Tested in the browser pane (backup folder locked with `chmod a-w` during the test): Graham opens empty,
+     with its own database. Team ED's backup was untouched.
+   - **The Graham copy starts with blank keys** — the user has since pasted the Anthropic and ElevenLabs keys into it.
+2. **API key fields can be pasted into but not copied, cut or dragged out**, in all three copies.
+   New `src/lib/noCopy.ts` (`onCopy`/`onCut`/`onDragStart` → `preventDefault`, `spellCheck: false`), spread onto
+   every `type="password"` input: `src/app/agent/page.tsx` (keys bar, 2 fields — import placed *after*
+   `import '@/lib/team'`, which must stay first), `src/components/ApiKeysModal.tsx` (3), `src/app/phone/page.tsx` (2).
+   Checked in the pane: copy/cut/drag blocked, paste allowed.
+3. **Scene 1 "Introduction" written into the Google Sheet** (column C of the "Chatbot Generator" tab,
+   https://docs.google.com/spreadsheets/d/1Lfn5p0QtZKlrQ2527x3i83Sntkkp8CYviAWrcGUpZ_k/edit). An introduction
+   to the Immersive Lab for visitors; Graham holds the microphone and asks Maya questions.
+   - Row 2 name "Introduction" (the user's). Row 3 Describe the Conversation: exact opening line ("Hello,
+     everyone… can I ask Graham to come forward and take the microphone?"), wait for Graham's greeting, answer
+     only from the knowledge base in short spoken replies, hand unknown questions back to Graham, never talk
+     about Susie/patients; plus a user-added line (suggest beginning by describing the space). Then the demo
+     stages: **#Transforming the Room** (jump straight to the first example when Graham says "Let's take a look
+     at how we can transform the environment" or asks for an example of an immersive scene),
+     **#Immersive Example 1: A Calm Escape**, **#Immersive Example 2: Inside the Hospital**,
+     **#Immersive Example 3: Abstract Worlds** ("next"/"show us another" moves on, loops 3→1),
+     **#Back to Questions**, **#End**.
+   - Row 4 knowledge base, `#` headings: About Maya, The Immersive Lab, This Semester's Project, The Patient
+     Advocate Chatbot, Ethics, How the Room Is Transformed (4 projectors, 11 projection areas, 4 speakers,
+     spatialized sound — user to confirm wording), Taking Part in the Experience, The Teams.
+   - Row 6 cannot-use: all patient information (the "All scenes" knowledge base about Susie is added to every
+     scene, including this one).
+   - Row 10 persona: the user pasted my "quiet host" persona (Maya says very little, one or two sentences,
+     never presents on her own, example reply lengths), plus one added line: "In the example stages she
+     introduces each one in a single sentence."
+   - The draft lives in `Scene 1 - Welcome to the Immersive Lab.md` in the repo root (untracked; it doesn't
+     include the user's later sheet edits — **the sheet is the source of truth**). Delete it or keep it out of
+     git; the user hasn't decided.
+   - How it was written: no Google Sheets connector was available, so the sheet was opened in the Code app's
+     browser pane (anonymous editing works on this sheet), the target cell selected via the Name box, and a
+     synthetic `paste` event with an HTML `<table>` (`<br>` for line breaks) dispatched at
+     `document.activeElement` (`.cell-input`). Every write was checked by re-downloading the CSV export and
+     comparing; before each write the cells were re-read to catch the user's own edits (they had edited row 3
+     and row 10; those edits were kept).
+
+### Later 2026-11-07 (after commit `f00674b`; uncommitted)
+
+4. **The chatbot's voice plays on all four speakers.** It was a plain `<audio>` element, which only reaches the
+   GIGAPORT's outputs 1–2. New `voiceToAllSpeakers(audio)` in `mediaPlayback.ts` sends it through the shared
+   AudioContext (mono, `VOICE_LEVEL` = 1/√2 on each of the 4 channels, straight to the destination, no limiter);
+   called in `speechQueue.ts` `play()` and in `page.tsx` where the single reply clip plays. Not yet heard in the room.
+5. **Autosave of the open scene.** `AutoSave` component in `page.tsx` (rendered beside the Save button): 1.2 s after
+   the last change that turns Save red, it calls `saveNow()` (now returns true/false). A failed save isn't retried
+   until something changes; `pagehide` saves what's waiting. A new scene that hasn't been named yet still needs
+   Scenes → name it (no id to save under). Tested in the pane (backup locked): field edit → Not Saved → Saved in
+   ~1.2 s, kept after reload.
+
+6. **Pause between spoken sentences, set per scene in Describe the Conversation** (uncommitted). New
+   `src/lib/agent/sentencePause.ts`: any sentence in the description naming a number of seconds and "between …
+   sentence(s)" (e.g. the user's "Always include a 1 second silence gap between each sentence.") sets the pause,
+   0–5 s, default 0.5 s. `SpeechQueue` takes `pauseMs()` (page passes `pauseRef`, updated from `saved.brief`) and
+   waits that long after each sentence ends before the next plays. `/api/agent/generate` strips that sentence
+   (`withoutPauseLine`) from the brief and the previous brief, so the stage designer never sees it. The text alone
+   can't make silence: the brief only goes to the stage generator, and ElevenLabs speaks whatever is written.
+
+Scene 1's stages now exist in the Graham copy (6 stages, seen in the backup at 14:35), so the open problem below is solved.
+
+### Open problem — Scene 1's stages haven't been built yet (pick up here)
+
+In the **Graham** copy every scene currently shows a single "NEW STAGE" (the scenes were re-imported from the
+sheet; none has been generated in that copy). Updating Scenes from Google Sheet only brings in the text; the
+stages come from **Update This Scene** (section 3) or **Refresh This Scene** (chat panel), which re-reads the
+sheet and then POSTs `/api/agent/generate`. The server log showed the sheet re-reads (`POST /api/sheets/scenes`)
+but **no `/api/agent/generate` call at all** — consistent with the Graham copy having had no Anthropic key
+(`generate()` in `DesignPanel.tsx` stops and opens the Keys bar when the key is blank). The user has now pasted
+both keys (seen in a read-only screenshot of their Chrome). **Next:** have the user click Refresh This Scene on
+Scene 1 and watch the dev-server tab for `POST /api/agent/generate` and the `[generate] … in …s` line. If it
+still doesn't run, check: a "This scene has been edited here…" confirm being cancelled (`refreshSceneFromSheet`
+returns 'cancelled'), an error line in section 3, or the browser console. Each other scene in the Graham copy
+also needs Update This Scene.
+
+After the stages exist: drag media onto the three example stages on the timeline (suggested, all in the media
+folder: Dolomites/mountain-flight video + "moment of peace" for A Calm Escape; nurses' station video + corridor
+walla / nurse station / machine beeps for Inside the Hospital, moved around the room in Spatialized Audio;
+neon / digital terrain video + "passage at the mythic veil" for Abstract Worlds), then test by voice in the room.
+
+Note: the app's built-in prompt (`runtime.ts`, REFERENCE INFORMATION block) tells the bot to "offer to have
+someone call back" when something isn't in the knowledge base — fine for phone scenes, wrong for this
+introduction. The Scene 1 persona counters it ("never offers a call back"). If Maya still offers call backs,
+that sentence may need to depend on the scene.
+
+### Uncommitted (commit when the user asks)
+
+`src/lib/team.ts`, `src/lib/browserDb.ts`, `src/app/api/local-backup/route.ts`,
+`src/components/agent/TeamToggle.tsx`, `src/components/agent/ProjectFileButtons.tsx`,
+`src/components/ApiKeysModal.tsx`, `src/app/phone/page.tsx`, `src/app/agent/page.tsx` (hand-edited — never
+run prettier on it), new `src/lib/noCopy.ts`. Typecheck and lint were clean. Don't commit
+`Scene 1 - Welcome to the Immersive Lab.md` unless asked (nor the usual never-commit files).
+
+### Reminders
+
+- Keep the app open in **one browser only** (the user's Chrome). If you must open it in the Code app's pane,
+  lock the backup folder first (`chmod a-w .local-backup`, unlock after) and close the tab when done.
+- The user's Chrome is for read-only screenshots (`app_screenshot` of Google Chrome works).
+- The dev server's log is in the Terminal panel tab "dev server" (read it with `read_terminal`).
+- When the user says "speaker N", check which numbering they mean: the room's labels differ from the GigaPort
+  output numbers (front left = 3 / output 1, back right = 1 / output 2, back left = 2 / output 3,
+  front right = 4 / output 4).
+
+---
+
+## Earlier — 2026-11-06 evening, studio Mac
+
+**Branch `v8`**, pushed to GitHub (`origin/v8`) at the end of 2026-11-06 with everything below. v6 is still the
+live site; v8 is only a preview. Dev server: `npm run dev` on :3000 (in the Code app: the `gallery-guide-studio`
+entry in `.claude/launch.json`). TouchDesigner file: **`F2026_StudioMap_r1.40.toe`** in
+`Fall 2026 Grahams Work/TouchDesigner_Graham_Fall_2026/` (saved with everything below).
+
+### Built 2026-11-06
+
+1. **Local backup on this computer** (finished). `/api/local-backup` (GET/PUT `?team=ED|AE` →
+   `.local-backup/team-ED.json`, atomic write, keeps `.previous.json`, localhost only) + `src/lib/localBackup.ts`
+   + `LocalBackupNote.tsx` (mounted under the header in `page.tsx`). Saves 4 s after any change. If the browser
+   has **no scenes** and a backup has some, it puts the backup back and shows a note; step 1 then names each
+   scene's media folder to choose again. A copy with no scenes is never saved (client and server both refuse).
+   **Caveat:** one backup per team per computer — the last browser to save wins. The Code app's browser pane
+   holds an older copy of the scenes; with the app open there it saved over the Chrome copy twice today (put
+   back from `.previous.json`). **Keep the app open in one browser only** (the user's Chrome); if a pane test is
+   needed, `chmod a-w .local-backup` first and restore it after.
+2. **Spatialized audio (step 6): the balance belongs to the sound.** Moving the dot sets `pan` on every bar of
+   that sound in the scene and remembers it (localStorage `sound-pans`, key `sheet#scene|assetId`), so a bar
+   added later starts there. The middle is stored explicitly. The Sound list shows each sound once.
+3. **Record Movement / Delete Movement Recording** (step 6). ● Record Movement plays the sound (if it isn't
+   already) and samples the dot every 40 ms against the file's time, until Stop Recording, the sound ending or
+   looping. Saved as `MediaLink.panPath [{t,x,y}]` on all the sound's bars + localStorage `sound-pan-paths`
+   (holds compressed to their ends). On playback the position follows the path (`panAt`, interpolated) in the
+   browser and is sent to TouchDesigner (`sound pan`, at most every 80 ms, only when it moved). While a sound has
+   a recording its dot can't be dragged by hand. Fixed: the dot only follows the pointer while the button is held.
+4. **Fades on timeline bars.** Bar ends are 16 px (were 8); bar contents are padded 20 px so thumbnails and ×
+   clear them. **Click an end** (not drag) to switch its fade in (left) / fade out (right); a white ramp shows
+   when on. **Fades are on by default** — `TimelineBar.fadeIn/fadeOut` are on unless `false`
+   (`fadesIn()/fadesOut()` in `mediaFolder.ts`); applies to existing bars too. `FADE_SECONDS = 1`.
+   - Pictures/video/colours: `Shown.fadeIn/fadeOut` → `media show/play` and `media hide` carry `"fade": 1`.
+     Clearing (restart, scene change) is immediate.
+   - Sounds: browser fades its own volume (`fadeTo` in `mediaPlayback.ts`); `sound play/stop` carry `fade`.
+   - **Marker moves are now per area** (`markerPlay.ts`): an area whose bar carries on into the next stage is
+     left alone even when the same file/colour ends or starts on another area (before, the whole file was
+     re-shown, so it faded again). `showVisual(..., only: true)` changes only the named areas.
+5. **TouchDesigner fades** (`build_immersive_lab.py` + `Claude/TouchDesigner/add_fades.py`, run and saved in
+   r1.40): a `levelTOP fadeN` between `placedN` and `areaN`; the receiver eases `brightness1` (or a sound slot's
+   volume) with an expression only while fading, then back to a constant. Test without the app: POST
+   `{"type":"media","action":"hide","area":11,"fade":4}` to :9980 → reply "fading out". `fade_check.py` /
+   `fade_measure.py` read it frame by frame.
+
+### Known problem: TouchDesigner slows down over hours
+After a restart it runs at 60 fps; after ~5 h it was down to ~20 fps (video jerky, fades visibly stepped). The
+GPU time at `MAPPER/projectorBlend/in1` grows while it runs — root cause **not found yet**. Restarting fixes it
+for a few hours: TouchDesigner ▸ Quit, `open .../F2026_StudioMap_r1.40.toe` (opens one copy), then POST
+`{"type":"projectors","action":"open"}` to :9980 to reopen the 4 projector windows. Check with `fade_measure.py`
+(every frame = 60 fps) or the FPS readout in TD's top bar. Finding the leak is the main open job.
+
+### Next steps
+- Find why TouchDesigner slows down over time (above).
+- Listen to recorded movements and fades in the room (sound fades in TD not yet heard by anyone).
+- Optional: share one movie player when a video is on several areas; convert the 25 fps nurses video to 30 fps.
+- The room drawing in the app doesn't show fades (only the projectors and speakers fade).
+
+---
+
+## Earlier — 2026-11-05/06 on the studio Mac
+
+**Branch `v8`**, studio Mac (`ixdstudio`): `70b1cb4` Spatialized audio · `9fe01bf` video converter groundwork ·
+`8298804` sounds volume/limiter, stage clicks, room numbering. (The local backup that was half built here was
+finished on 2026-11-06 — see above.)
+
+**Why the backup:** this Mac's Chrome is cloud-managed by the school with an **ephemeral profile**
+(`Local State` → `Profile 167`, `is_ephemeral: true`). Quitting Chrome wipes all of the app's browser storage:
+media lists (incl. made colours/text), folder handles and permission, connections, saved scenes, settings,
+API keys. Symptom: timeline bars come back from the scene but thumbnails are black. Long-term fix is IT
+turning off `ForceEphemeralProfiles` in the Google Admin console (user to ask). Don't tell the user to quit
+Chrome.
+
+**Built this round (committed):**
+- **Immersive Media step 6 · Spatialized audio** (`SpatialAudioPanel.tsx`, `spatialAudio.ts`): clicking a sound
+  bar opens it (`pickSpatialSound`, `CollapsiblePanel.openRequest`). Square with a speaker per corner and a
+  draggable dot; equal-power levels (corner = only that speaker, middle = all four at 0.5). Saved as
+  `MediaLink.pan {x,y}` (-1..1, y+ = front), with Undo. Labels shown are the **room's numbering**: front left 3,
+  front right 4, back left 2, back right 1 (`SPEAKERS[].label`); routing goes by **output number** `n` (output 1
+  front left, 2 back right, 3 back left, 4 front right). Changing labels must not change `n`.
+- **Browser playback to 4 speakers** (`mediaPlayback.ts`): every timeline sound goes through Web Audio → mono →
+  4 per-speaker gains → limiter (4 mono DynamicsCompressors, −3 dB, 20:1) → `AudioContext.setSinkId` to the
+  GIGAPORT eX (needs Chrome to name devices: mic permission; "Use the room's speakers" button asks). Chrome
+  shuffles channels on the GigaPort, found by ear: `BROWSER_CHANNEL_FOR_SPEAKER = [2, 0, 1, 3]` — re-check by ear
+  if the Mac's output or speaker setup changes (it was found with the GigaPort as macOS output; the Mac's output
+  is now Loopback Audio 3 again).
+- **Volume**: Music / Sounds panel has its own **Sounds volume** (straight, default 100%; was the music's squared
+  Volume, 25% at 5), Music volume, Dip (both). Bar slider 0–400% (`MAX_SOUND_VOLUME = 4`); TouchDesigner clamps
+  at 4 (no limiter there). macOS GigaPort channels are 100%, nothing muted.
+- **Stage clicks**: moving the marker by hand passes `ask: true` (Chrome may ask for folder permission) and a
+  sound that fails shows a red note at the top of the timeline (it used to fail silently).
+- **Short sound bars**: stretch handles pinned to the bar edges; volume control and thumbnail shrink first.
+- **TouchDesigner**: build script makes a 4-speaker network (`build_spatial`: per slot mono → `sp_pan{k}`
+  levels → 4 buses → `audio_out` on the GIGAPORT, outputs 1–4); receiver handles `sound pan` and `pan` on
+  `sound play`. Installed in the running StudioMap with `Claude/TouchDesigner/add_spatial_audio.py`
+  (no rebuild); **the .toe isn't saved** and nobody has listened to it yet. TD's audio_out must stay on the
+  GigaPort, not Loopback/default (or sound doubles).
+- **Video converter** (parked, groundwork only): `/api/media/convert` (ffmpeg → H.264 1080p or HAP Alpha),
+  TD `media reload`, Media Library skips `Originals before H.264/`. Still to do: codec check in the browser,
+  queue + progress on thumbnails, write the file back and move the original.
+
+**The room's audio (outside the repo):** 4 speakers on the GIGAPORT eX (8 outputs). macOS output = Loopback
+Audio 3 (Pass-Thru L → GigaPort 1+3, R → 2+4), set up by the speaker session; notes in its
+`gigaport-4-speaker-setup.md`. GigaPort's macOS speaker layout labels outputs 1–4 L/R/Ls/Rs
+(`Claude/TouchDesigner/gigaport_speaker_layout.swift`; `swift <file> restore` undoes) — without it Chrome folds
+4 channels to stereo.
+
+---
+
 ## 0. Where things stand
 
 - **Branch `v8`** (made 2026-10-20 from v7 `3e7e028`) is now the working branch — everything below, plus
@@ -148,7 +377,10 @@ must click Deploy themselves (publishing was blocked for the assistant).
 
 Paste this as the first message:
 
-> Continue developing the Immersive Lab Chatbot Designer on branch **v7** in this project. First read
-> `HANDOFF_V7_IMMERSIVE_LAB.md` in the project root in full, then `HANDOFF_V6_IMMERSIVE_MEDIA.md` §7t.
+> Continue developing the Immersive Lab Chatbot Designer on branch **v8** in this project. First read
+> `HANDOFF_V7_IMMERSIVE_LAB.md` in the project root in full, starting with "Latest — 2026-11-05/06".
 > Tell me briefly where things stand (including what's uncommitted) and ask what I'd like to work on next.
 > Don't change anything until I ask.
+
+Next up when continuing: finish the local backup (see "Uncommitted right now" at the top), then listen to
+TouchDesigner's 4-speaker output and save the StudioMap .toe if the user wants, then push v8 when asked.

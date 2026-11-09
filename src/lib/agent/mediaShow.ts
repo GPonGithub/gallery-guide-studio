@@ -16,7 +16,12 @@ import {
   loopOf,
   isConnected,
   isMarker,
+  mediaSceneKey,
   type MediaLink,
+  type Placement,
+  type TimelineBar,
+  fadeInSeconds,
+  fadeOutSeconds,
 } from './mediaFolder';
 import type { SceneRef } from './mediaPlayback';
 import { syncVisuals } from './touchDesigner';
@@ -37,19 +42,70 @@ export type Shown = {
   name: string;
   /** Its path inside the media folder (the Media tab's column C) — what TouchDesigner opens. */
   path: string;
-  kind: 'image' | 'video' | 'text' | 'color';
+  kind: 'image' | 'video' | 'text' | 'color' | 'character';
   /** The file itself (an object URL); empty for a text or colour, which have no file. */
   url: string;
-  /** A text's words or a colour's hex colour. */
+  /** A text's words, a colour's hex colour, or an AI character's colour (empty = spectrum). */
   value?: string;
   /** For video Chrome can't play (e.g. ProRes with alpha): its first frame, made by ffmpeg, if there is one. */
   still?: string;
   loop: boolean;
   action: string;
+  /** Where it was placed over the room drawing (roomPlacement.ts) — its area shows the part inside its outline. */
+  place?: Placement;
+  /** Its bar there fades in as it starts / out as it ends (TouchDesigner eases it from or to black). */
+  /** How long it fades in / out there, in seconds (0: no fade). */
+  fadeIn?: number;
+  fadeOut?: number;
 };
 
+/** The fades of a connection's bar on one area: the bars playing it now (`bars`), else any on that area. */
+const fadesOf = (link: MediaLink, area: number, bars?: TimelineBar[]) => {
+  const bar = (bars ?? barsOf(link)).find((b) => areaOfTrack(b.track) === area);
+  return { fadeIn: fadeInSeconds(bar), fadeOut: fadeOutSeconds(bar) };
+};
+
+/** The placement of a connection's picture on one area (its bar there), if it was placed. */
+export const placeOf = (link: MediaLink, area: number) =>
+  barsOf(link).find((b) => b.place && areaOfTrack(b.track) === area)?.place;
+
+/** Where a file is showing and how it's placed there — to tell whether a placement has changed. */
+export const placesShowing = (assetId: string) =>
+  JSON.stringify(
+    showing
+      .filter((s) => s.assetId === assetId)
+      .sort((a, b) => a.area - b.area)
+      .map((s) => [s.area, s.place ?? null]),
+  );
+
+/**
+ * After an undo or redo: takes down anything whose connection no longer puts it on that area (its bar
+ * there was undone, or the whole connection).
+ */
+export function dropUnbacked(links: MediaLink[]) {
+  const gone = showing.filter((s) => {
+    const mine = links.filter((l) => l.assetId === s.assetId);
+    if (mine.length === 0) return true;
+    const bars = mine.flatMap(barsOf);
+    return bars.length > 0 && !bars.some((b) => areaOfTrack(b.track) === s.area);
+  });
+  if (gone.length === 0) return;
+  gone.forEach(release);
+  showing = showing.filter((s) => !gone.includes(s));
+  changed();
+}
+
 /** A scene's connection to an image, video or sound file, with its timing and (for visuals) the areas it shows in. */
-export type PlannedMedia = { link: MediaLink; asset: MediaAsset; timing: ActionTiming; areas: number[] };
+export type PlannedMedia = {
+  link: MediaLink;
+  asset: MediaAsset;
+  timing: ActionTiming;
+  areas: number[];
+  /** The bars it shows for (the marker's), whose fades it takes; else its bar on each area. */
+  bars?: TimelineBar[];
+  /** Only these areas change: the file stays wherever else it's up (the marker's area-by-area changes). */
+  only?: boolean;
+};
 
 /** The areas a connection shows in: its bars' tracks (duplicated bars put it on several screens; area 1 until it has a bar). */
 export function areasOf(link: MediaLink): number[] {
@@ -71,7 +127,7 @@ export async function everyVisuals(scene: SceneRef | null, when: EveryWhen): Pro
 /** This scene's connections of the given kinds (as Claude read them, or as the student set), to files still in the folder. */
 export async function sceneMedia(scene: SceneRef | null, kinds: ActionKind[]): Promise<PlannedMedia[]> {
   if (!scene) return [];
-  const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary(), readingsReady()]);
+  const [links, library] = await Promise.all([loadMediaLinks(), loadLibrary(mediaSceneKey(scene)), readingsReady()]);
   const assets = new Map((library?.assets ?? []).map((a) => [a.id, a]));
   return links.flatMap((link) => {
     if (link.sheetId !== scene.sheetId || link.sceneNumber !== scene.number) return [];
@@ -86,8 +142,8 @@ export async function sceneMedia(scene: SceneRef | null, kinds: ActionKind[]): P
 
 let showing: Shown[] = [];
 const listeners = new Set<() => void>();
-const changed = () => {
-  syncVisuals(showing); // TouchDesigner shows the same (see touchDesigner.ts)
+const changed = (quick = false) => {
+  syncVisuals(showing, quick); // TouchDesigner shows the same (see touchDesigner.ts)
   listeners.forEach((listener) => listener());
 };
 const NONE: Shown[] = [];
@@ -105,6 +161,17 @@ export const useShowing = () =>
     () => NONE,
   );
 
+/** What's showing now (each area's entry), for code outside React. */
+export const currentShowing = () => showing;
+
+/** Hears every change to what's showing; returns how to stop listening. */
+export function onShowingChange(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
 /** The areas a file is showing in now (sorted), e.g. "1,5". */
 export const areasShowing = (assetId: string) =>
   showing
@@ -112,6 +179,9 @@ export const areasShowing = (assetId: string) =>
     .map((s) => s.area)
     .sort((a, b) => a - b)
     .join(',');
+
+/** What an area is showing now, if anything. */
+export const shownIn = (area: number) => showing.find((s) => s.area === area);
 
 /** Whether a file is showing in the room now. */
 export const isShowing = (assetId: string) => showing.some((s) => s.assetId === assetId);
@@ -130,7 +200,7 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
   const { asset, link, areas } = media;
   const kind = asset.kind;
   if (kind === 'sound') return;
-  if (kind === 'text' || kind === 'color') {
+  if (kind === 'text' || kind === 'color' || kind === 'character') {
     // Made in the app: nothing to open — its words or colour are drawn as they are.
     put(
       media,
@@ -144,6 +214,8 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
         value: asset.value ?? '',
         loop: false,
         action: link.action,
+        place: placeOf(link, area),
+        ...fadesOf(link, area, media.bars),
       })),
     );
     return;
@@ -166,13 +238,15 @@ export async function showVisual(media: PlannedMedia, ask = false): Promise<void
     ...(thumb && { still: URL.createObjectURL(thumb) }),
     loop: loopOf(link),
     action: link.action,
+    place: placeOf(link, area),
+    ...fadesOf(link, area, media.bars),
   }));
   put(media, next);
 }
 
 /** Puts these up in their areas, replacing whatever was there (and this item anywhere else). */
 function put(media: PlannedMedia, next: Shown[]) {
-  const replaced = (s: Shown) => media.areas.includes(s.area) || s.assetId === media.asset.id;
+  const replaced = (s: Shown) => media.areas.includes(s.area) || (!media.only && s.assetId === media.asset.id);
   showing.filter(replaced).forEach(release);
   showing = [...showing.filter((s) => !replaced(s)), ...next];
   changed();
@@ -196,10 +270,22 @@ export function hideVisualExcept(assetId: string, keep: number[]) {
   changed();
 }
 
+/**
+ * Takes down what's showing on an area, unless it's `keep` (a picture placed there on the room drawing
+ * replaces whatever was on that area — see roomPlacement.ts).
+ */
+export function hideArea(area: number, keep?: string) {
+  const gone = showing.filter((s) => s.area === area && s.assetId !== keep);
+  if (gone.length === 0) return;
+  gone.forEach(release);
+  showing = showing.filter((s) => !gone.includes(s));
+  changed();
+}
+
 /** Empties the room (the conversation started again, or another scene). */
 export function clearVisuals() {
   if (showing.length === 0) return;
   showing.forEach(release);
   showing = [];
-  changed();
+  changed(true); // Straight away: no fading out.
 }

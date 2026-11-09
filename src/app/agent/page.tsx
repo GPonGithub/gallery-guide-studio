@@ -2,11 +2,13 @@
 
 // First: splits this browser's storage by student team before anything reads it (see lib/team.ts).
 import '@/lib/team';
+import { noCopy } from '@/lib/noCopy';
 import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { DesignPanel, type SheetImportOutcome, type SheetSync } from '@/components/agent/DesignPanel';
 import { MasterEditor, StageEditor } from '@/components/agent/FlowEditor';
 import { OpenMic, type OpenMicStatus, type UtteranceTiming } from '@/components/agent/OpenMic';
 import { SpeechQueue } from '@/components/agent/speechQueue';
+import { sentencePauseMs } from '@/lib/agent/sentencePause';
 import { startStreamedClip, type StreamedClip } from '@/components/agent/streamedAudio';
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { MusicPanel } from '@/components/agent/MusicPanel';
@@ -14,12 +16,14 @@ import { OnboardingTour } from '@/components/agent/OnboardingTour';
 import { SceneButtons } from '@/components/agent/SceneButtons';
 import { TeamToggle } from '@/components/agent/TeamToggle';
 import { ProjectFileButtons } from '@/components/agent/ProjectFileButtons';
+import { LocalBackupNote } from '@/components/agent/LocalBackupNote';
 import { useHosting } from '@/lib/agent/hosting';
 import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
 import { LAYOUT_DEMO_ACTIONS } from '@/components/agent/layoutDemo';
 import { DEMO_SCENE, DEMO_STAGES, endMediaDemo, useMediaDemo } from '@/lib/agent/mediaDemo';
-import { forgetMarker, markerArrived } from '@/lib/agent/markerPlay';
+import { forgetMarker, markerArrived, replayMarker, setMarkerProblem } from '@/lib/agent/markerPlay';
+import { send as sendToTD } from '@/lib/agent/touchDesigner';
 import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -34,17 +38,23 @@ import {
   playSound,
   stopLoops,
   stopSounds,
+  clampSoundVolume,
   isSoundPlaying,
   anySoundPlaying,
   onSoundsChange,
   setSoundLevels,
+  voiceToAllSpeakers,
+  setVoiceVolume,
   type PlannedSound,
 } from '@/lib/agent/mediaPlayback';
-import { clearVisuals, everyVisuals, hideVisual, isShowing, sceneMedia, showVisual, type PlannedMedia } from '@/lib/agent/mediaShow';
+import { clearVisuals, dropUnbacked, everyVisuals, hideVisual, isShowing, sceneMedia, showVisual, type PlannedMedia } from '@/lib/agent/mediaShow';
 import {
   currentMediaLinks,
   followRewording,
   loopOf,
+  barOn,
+  fadeInSeconds,
+  fadeOutSeconds,
   mediaLinksLoaded,
   redoMediaLinks,
   restoreTimeline,
@@ -53,6 +63,8 @@ import {
   updateMediaLinks,
   useMediaLinks,
   type MediaLink,
+  mediaSceneKey,
+  setOpenMediaScene,
 } from '@/lib/agent/mediaFolder';
 
 /** A "once" media action an exchange triggered: show (or play) it, or remove (or stop) it. */
@@ -166,6 +178,8 @@ type Saved = {
   savedSnapshot: string;
   /** The scene's media timeline as last saved/opened (null/missing = not known yet). */
   savedTimeline?: string | null;
+  /** The agent's voice volume, 0–3 (1 = 100%, as ElevenLabs made it). Missing = 1. */
+  voiceVolume?: number;
   /** Open mic: seconds of quiet before what was said is sent. */
   pauseSeconds: number;
   /** Open mic: the caller can talk over the agent to interrupt it (the mic keeps listening while it speaks). */
@@ -178,8 +192,10 @@ type Saved = {
   voiceExpressive: boolean;
   /** Background music volume, 0–10. (The file itself lives in IndexedDB — see musicStore.) */
   musicVolume: number;
-  /** How far the music dips while the agent talks, 0–10 (10 = silent). */
+  /** How far the music dips while the agent talks, 0–10 (10 = silent). The timeline's sounds dip too. */
   musicDip: number;
+  /** The timeline's sounds' own volume, 0–10 (straight: 10 = the files at full, 5 = half). Default full. */
+  soundsVolume?: number;
   /** The open project's music (its file is in IndexedDB — see musicStore), or none. */
   musicTrack: { name: string; key: string } | null;
 };
@@ -320,6 +336,7 @@ function loadSaved(): Saved {
     voiceExpressive: false,
     musicVolume: 5,
     musicDip: 5,
+    soundsVolume: 10,
     musicTrack: null,
   };
   try {
@@ -353,6 +370,34 @@ function loadSaved(): Saved {
   } catch {
     return fallback;
   }
+}
+
+/**
+ * Saves the open scene by itself: AUTOSAVE_MS after the last change (anything that turns the Save
+ * button red), so there's nothing to remember to click. A save that fails (its message shows) isn't
+ * tried again until something changes; a change made while a save is running is saved after it.
+ * Leaving the page saves what's waiting, if it can. Renders nothing.
+ */
+const AUTOSAVE_MS = 1200;
+function AutoSave({ changeKey, saving, save }: { changeKey: string; saving: boolean; save: () => Promise<boolean> }) {
+  const saveRef = useRef(save);
+  const failedKey = useRef<string | null>(null);
+  useEffect(() => {
+    saveRef.current = save;
+  });
+  useEffect(() => {
+    if (!changeKey || saving || failedKey.current === changeKey) return;
+    const timer = setTimeout(async () => {
+      if (!(await saveRef.current())) failedKey.current = changeKey;
+    }, AUTOSAVE_MS);
+    const leaving = () => void saveRef.current();
+    window.addEventListener('pagehide', leaving);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('pagehide', leaving);
+    };
+  }, [changeKey, saving]);
+  return null;
 }
 
 export default function AgentStudioPage() {
@@ -502,6 +547,17 @@ export default function AgentStudioPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only a change to the voice should save it
   }, [sceneVoice]);
 
+  // The voice's volume (Voice panel), applied to the voice as it plays, live.
+  const voiceVolume = saved?.voiceVolume ?? 1;
+  useEffect(() => {
+    setVoiceVolume(voiceVolume);
+  }, [voiceVolume]);
+  // The pause between spoken sentences, from the open scene's Describe the Conversation (sentencePause.ts).
+  const pauseRef = useRef(sentencePauseMs(''));
+  const sceneBrief = saved?.brief;
+  useEffect(() => {
+    pauseRef.current = sentencePauseMs(sceneBrief);
+  }, [sceneBrief]);
   const voiceRef = useRef({ voiceId: '', apiKey: '', settings: DEFAULT_VOICE_SETTINGS });
   useEffect(() => {
     if (!saved) return;
@@ -577,9 +633,9 @@ export default function AgentStudioPage() {
   }, [musicKey]); // eslint-disable-line react-hooks/exhaustive-deps -- only a different file needs loading
   useEffect(() => {
     if (saved) musicRef.current?.setLevels(saved.musicVolume, saved.musicDip);
-    // The timeline's sounds follow the same Volume and Dip.
-    if (saved) setSoundLevels(saved.musicVolume, saved.musicDip);
-  }, [saved?.musicVolume, saved?.musicDip]); // eslint-disable-line react-hooks/exhaustive-deps -- only the two levels matter
+    // The timeline's sounds have their own volume, and dip under the voice as the music does.
+    if (saved) setSoundLevels(saved.soundsVolume ?? 10, saved.musicDip);
+  }, [saved?.musicVolume, saved?.musicDip, saved?.soundsVolume]); // eslint-disable-line react-hooks/exhaustive-deps -- only the levels matter
   // While "Try the dip" is running, the agent finishing speaking mustn't cut it short (and vice versa).
   const speakingRef = useRef(false);
   const tryingDipRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -604,6 +660,11 @@ export default function AgentStudioPage() {
       if (key === 'x' && !document.getSelection()?.isCollapsed) return;
       const done = key === 'z' && !e.shiftKey ? undoMediaLinks() : redoMediaLinks();
       if (done || key === 'z') e.preventDefault();
+      // The room follows: what's no longer on an area comes down, and the marker's stage goes back up.
+      if (done) {
+        dropUnbacked(currentMediaLinks());
+        void replayMarker();
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
@@ -700,6 +761,13 @@ export default function AgentStudioPage() {
   // The number buttons in "Describe the conversation in each scene": one per scene of the
   // sheet in use, in scene-number order. Re-read whenever scenes may have
   // changed (a scene opened or saved, the Scenes dialog closed, an import).
+  // Each scene has its own media folder and library (see mediaFolder.ts): the open one's are in use.
+  const mediaSheetId = saved?.sceneSheet?.sheetId ?? null;
+  const mediaNumber = saved?.sceneSheet?.number ?? null;
+  useEffect(() => {
+    setOpenMediaScene(mediaSheetId && mediaNumber ? mediaSceneKey({ sheetId: mediaSheetId, number: mediaNumber }) : null);
+  }, [mediaSheetId, mediaNumber]);
+
   const activeSheetId = saved?.activeSheetId ?? null;
   const openSceneId = saved?.projectId ?? null;
   useEffect(() => {
@@ -834,6 +902,18 @@ export default function AgentStudioPage() {
     setSelected(stage.id);
   };
 
+  // Stops everything the scene is playing: the voice, background music, every sound and loop, the
+  // pictures and video in the room, and (if it's connected) TouchDesigner's video and sound.
+  const stopSceneMedia = () => {
+    stopAudio();
+    musicRef.current?.stop();
+    stopLoops();
+    stopSounds();
+    clearVisuals();
+    forgetMarker();
+    sendToTD({ type: 'clear' });
+  };
+
   const stopAudio = () => {
     audioRef.current?.pause();
     audioRef.current = null;
@@ -954,6 +1034,8 @@ export default function AgentStudioPage() {
     // The mics go off: the scene is starting again, and shouldn't pick anything up meanwhile.
     setOpenMicOn(false);
     if (listening) recognitionRef.current?.stop();
+    // Everything playing stops at once, here and in TouchDesigner, not only once the update is done.
+    stopSceneMedia();
     if (saved.sceneSheet || saved.brief.trim()) setUpdateRequest((n) => n + 1);
     else restart();
     const sceneId = saved.projectId ?? 'unsaved';
@@ -1009,11 +1091,7 @@ export default function AgentStudioPage() {
 
   // "Refresh this scene": just the open scene's conversation starts again.
   const restart = (code = startAt) => {
-    stopAudio();
-    musicRef.current?.stop();
-    stopLoops();
-    clearVisuals();
-    forgetMarker();
+    stopSceneMedia();
     setCueLog([]);
     setSoundLog([]);
     setSession(initialState(flow, code || undefined));
@@ -1028,11 +1106,7 @@ export default function AgentStudioPage() {
     setFlow(next);
     setSelected(select ?? 'design');
     setStartAt('');
-    stopAudio();
-    musicRef.current?.stop();
-    stopLoops();
-    clearVisuals();
-    forgetMarker();
+    stopSceneMedia();
     setCueLog([]);
     setSoundLog([]);
     setSession(initialState(next));
@@ -1067,18 +1141,24 @@ export default function AgentStudioPage() {
       return stored && stored.key === key ? stored.blob : null;
     },
   };
-  // The Save button: saves the open scene as it is, timeline and all.
-  const saveNow = async () => {
-    if (!saved.projectId || saving) return;
+  // The Save button (and the autosave below): saves the open scene as it is, timeline and all.
+  // Resolves false if it couldn't.
+  const saveNow = async (): Promise<boolean> => {
+    if (!saved.projectId || saving) return false;
     setSaving(true);
     try {
       markSaved(await saveProjectRequest(current, saved.projectName, false));
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Couldn’t save this scene.');
+      return false;
     } finally {
       setSaving(false);
     }
   };
+  // What the autosave watches: the open scene's content and timeline, while they differ from the save.
+  const autosaveKey =
+    saved.projectId && dirty ? `${saved.projectId}|${snapshotOf(contentOf(saved))}|${timelineSnapshotOf(timeline)}` : '';
   const okToLeave = () =>
     !dirty || window.confirm(`"${saved.projectName}" has unsaved changes. Continue without saving them?`);
 
@@ -1377,6 +1457,7 @@ export default function AgentStudioPage() {
       );
       stopAudio();
       const audio = new Audio(clip.src);
+      voiceToAllSpeakers(audio);
       audioRef.current = audio;
       audioExpressiveRef.current = expressive;
       // The expressive models have no speed setting, so apply the Speed
@@ -1602,6 +1683,7 @@ export default function AgentStudioPage() {
       expressive,
       beforeFirst: hooks.beforeFirst,
       playbackRate: () => voiceRef.current.settings.speed,
+      pauseMs: () => pauseRef.current,
       onSpeakingChange: (speakingNow) => {
         setSpeaking(speakingNow);
         if (!speakingNow) hooks.onQuiet?.();
@@ -1711,7 +1793,10 @@ export default function AgentStudioPage() {
     noteMedia(media, afterMessage, 'shown');
     if (media.asset.kind === 'sound') {
       // "Loop, when user instructs": it loops until removed (or the call ends).
-      (loopOf(media.link) ? startLoop(media.asset) : playSound(media.asset)).catch(fail);
+      const volume = clampSoundVolume(media.link.volume);
+      // Its bar fades in: eased up from silence.
+      const fade = fadeInSeconds(barOn(media.link));
+      (loopOf(media.link) ? startLoop(media.asset, volume, false, fade) : playSound(media.asset, false, volume, fade)).catch(fail);
       return;
     }
     mediaStarting.current.add(id);
@@ -1721,7 +1806,8 @@ export default function AgentStudioPage() {
   };
   const endMedia = (media: PlannedMedia, afterMessage: number) => {
     noteMedia(media, afterMessage, 'removed');
-    if (media.asset.kind === 'sound') stopSounds(media.asset.id);
+    // Its bar fades out: eased down to silence (pictures and video: their area's bar says, in mediaShow).
+    if (media.asset.kind === 'sound') stopSounds(media.asset.id, fadeOutSeconds(barOn(media.link)));
     else hideVisual(media.asset.id);
   };
 
@@ -1910,7 +1996,11 @@ export default function AgentStudioPage() {
       void sceneSounds(mediaScene, 'throughout').then((list) =>
         list.forEach((s) => {
           noteSound(s, 0);
-          startLoop(s.asset).catch((err: unknown) =>
+          // Its bar's loop button off: it plays once as the call begins.
+          (s.link.loop === false
+            ? playSound(s.asset, false, clampSoundVolume(s.link.volume), fadeInSeconds(barOn(s.link)))
+            : startLoop(s.asset, clampSoundVolume(s.link.volume), false, fadeInSeconds(barOn(s.link)))
+          ).catch((err: unknown) =>
             noteSound(s, 0, err instanceof Error ? err.message : 'It couldn’t be played.'),
           );
         }),
@@ -1920,7 +2010,10 @@ export default function AgentStudioPage() {
       clearVisuals();
       // "On marker arrival": whatever has a bar on the stage the call starts at.
       forgetMarker();
-      void markerArrived(mediaScene, sortStages(flow.stages), session.stageCode);
+      setMarkerProblem(null);
+      // The click that started the call lets the browser ask for the media folder again (it forgets after
+      // a reload); a sound that still can't play says why on the timeline.
+      void markerArrived(mediaScene, sortStages(flow.stages), session.stageCode, { ask: true });
       void sceneMedia(mediaScene, ['throughout', 'start']).then((list) =>
         list.filter((m) => m.asset.kind !== 'sound').forEach((m) => startMedia(m, 0)),
       );
@@ -2251,8 +2344,11 @@ export default function AgentStudioPage() {
             {dirty ? 'Not Saved' : 'Saved'}
           </button>
           <ProjectFileButtons />
+          <AutoSave changeKey={autosaveKey} saving={saving} save={saveNow} />
         </div>
       </header>
+      {/* This computer's copy of the browser's work, and a note when it was just put back (see localBackup.ts). */}
+      <LocalBackupNote />
 
       {keysOpen && (
         <div className="flex flex-wrap items-end gap-3 border-b-2 border-ink bg-muted px-5 py-3" data-tour="keys-panel">
@@ -2260,6 +2356,7 @@ export default function AgentStudioPage() {
             Anthropic API key
             <input
               type="password"
+              {...noCopy}
               autoComplete="off"
               value={saved.anthropicApiKey}
               onChange={(e) => setSaved({ ...saved, anthropicApiKey: e.target.value })}
@@ -2271,6 +2368,7 @@ export default function AgentStudioPage() {
             ElevenLabs API key (for spoken replies)
             <input
               type="password"
+              {...noCopy}
               autoComplete="off"
               value={saved.elevenLabsApiKey}
               onChange={(e) => setSaved({ ...saved, elevenLabsApiKey: e.target.value })}
@@ -2460,6 +2558,7 @@ export default function AgentStudioPage() {
                   soundsPlaying={soundsPlaying}
                   volume={saved.musicVolume}
                   dip={saved.musicDip}
+                  soundsVolume={saved.soundsVolume ?? 10}
                   onFile={async (file) => {
                     const key = crypto.randomUUID();
                     const kept = await saveTrack({ name: file.name, key, blob: file });
@@ -2489,6 +2588,7 @@ export default function AgentStudioPage() {
                   }}
                   onVolumeChange={(musicVolume) => setSaved({ ...saved, musicVolume })}
                   onDipChange={(musicDip) => setSaved({ ...saved, musicDip })}
+                  onSoundsVolumeChange={(soundsVolume) => setSaved({ ...saved, soundsVolume })}
                 />
                 <VoicePanel
                   settings={saved.voiceSettings ?? DEFAULT_VOICE_SETTINGS}
@@ -2505,6 +2605,8 @@ export default function AgentStudioPage() {
                   }}
                   spokenReplies={voiceOn}
                   onSpokenRepliesChange={setVoiceOn}
+                  voiceVolume={saved.voiceVolume ?? 1}
+                  onVoiceVolumeChange={(voiceVolume) => setSaved({ ...saved, voiceVolume })}
                   pauseSeconds={saved.pauseSeconds}
                   onPauseSecondsChange={(pauseSeconds) => setSaved({ ...saved, pauseSeconds })}
                   interruptByVoice={saved.interruptByVoice}

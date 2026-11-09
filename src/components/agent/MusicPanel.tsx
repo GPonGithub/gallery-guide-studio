@@ -24,12 +24,14 @@ export function MusicPanel({
   soundsPlaying = false,
   volume,
   dip,
+  soundsVolume,
   onFile,
   onRemove,
   onPreview,
   onTryDip,
   onVolumeChange,
   onDipChange,
+  onSoundsVolumeChange,
 }: {
   /** The music file's name, or null if there isn't one. */
   trackName: string | null;
@@ -40,6 +42,8 @@ export function MusicPanel({
   volume: number;
   /** 0–10: how far the music dips while the agent talks (10 = silent). */
   dip: number;
+  /** 0–10, straight: the timeline's sounds' own volume (10 = the files at full). */
+  soundsVolume: number;
   /** A file was dropped or chosen; resolves with an error message, or null if it was kept. */
   onFile: (file: File) => Promise<string | null>;
   onRemove: () => void;
@@ -49,6 +53,7 @@ export function MusicPanel({
   onTryDip: () => void;
   onVolumeChange: (volume: number) => void;
   onDipChange: (dip: number) => void;
+  onSoundsVolumeChange: (volume: number) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -154,15 +159,19 @@ export function MusicPanel({
           </section>
 
           <section className="flex flex-col gap-3 border-t-2 border-ink pt-3">
-            <p className="font-body text-[11px] leading-snug text-muted-ink">
-              These set the music above and every sound the timeline plays (the scene’s media actions).
-            </p>
             <Slider
-              label="Volume"
+              label="Music volume"
               value={volume}
               readout={volume.toFixed(1)}
               onChange={onVolumeChange}
-              hint="0 is silent, 10 is the file at full volume."
+              hint="The music above. 0 is silent, 10 is the file at full volume."
+            />
+            <Slider
+              label="Sounds volume"
+              value={soundsVolume}
+              readout={`${Math.round(soundsVolume * 10)}%`}
+              onChange={onSoundsVolumeChange}
+              hint="Every sound the timeline plays (the scene’s media actions), here and in TouchDesigner: 10 is the files at full, 5 is half. Each sound’s bar has its own slider on top of this (up to 400%)."
             />
             <Slider
               label="Dip while the agent talks"

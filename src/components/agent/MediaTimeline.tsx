@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { buttonIcon } from '@/lib/styles';
 import { DropdownArrow } from './DropdownArrow';
-import { markerArrived, markerIsAt } from '@/lib/agent/markerPlay';
+import { markerArrived, markerIsAt, setMarkerProblem, useMarkerProblem } from '@/lib/agent/markerPlay';
+import { samePlace, setPlacing, usePlacing } from '@/lib/agent/roomPlacement';
 import {
   ACTION_KINDS,
   isStill,
@@ -19,13 +20,23 @@ import {
   type VoiceWait,
 } from '@/lib/agent/media';
 import { useMediaFolderRevision } from '@/lib/agent/mediaDemo';
-import { stopSounds } from '@/lib/agent/mediaPlayback';
+import { clampSoundVolume, MAX_SOUND_VOLUME, setSoundLoop, setSoundVolume, stopSounds } from '@/lib/agent/mediaPlayback';
 import { hideVisualExcept } from '@/lib/agent/mediaShow';
+import { pickSpatialSound } from '@/lib/agent/spatialAudio';
+import { audible, checkVideoSound, useVideoSoundResults } from '@/lib/agent/videoSound';
 import {
   areaOfTrack,
   barsOf,
+  FADE_SECONDS,
+  MAX_FADE_SECONDS,
+  fadeInSeconds,
+  fadeOutSeconds,
+  fadeValue,
+  fadesIn,
+  fadesOut,
   loadLibrary,
   loadThumbnail,
+  mediaSceneKey,
   loopOf,
   openMediaFile,
   savedMediaFolder,
@@ -183,6 +194,10 @@ export function MediaTimeline({
   const index = found >= 0 ? found : 0;
   // Moved by hand (◀ ▶, the ruler, arrow keys): "on marker arrival" media plays for where it lands.
   const movedByHand = useRef(false);
+  const [localProblem, setSoundProblem] = useState<string | null>(null);
+  // A marker sound that couldn't play — from a click here, or from a call starting / moving on.
+  const sharedProblem = useMarkerProblem();
+  const soundProblem = localProblem ?? sharedProblem;
   const moveTo = (to: number | ((i: number) => number)) => {
     if (count === 0) return;
     movedByHand.current = true;
@@ -204,10 +219,22 @@ export function MediaTimeline({
 
   const headCode = stages[index]?.code;
   useEffect(() => markerIsAt(scene, stages, headCode), [scene, stages, headCode]);
+  // A scene opening (or its stages arriving): its pictures, video and colours on the marker's stage go up
+  // in the room straight away, not only once the marker is moved (no sounds — they wait for the call).
+  const stagesKey = stages.map((s) => s.code).join(' ');
+  useEffect(() => {
+    if (headCode) void markerArrived(scene, stages, headCode, { visualsOnly: true });
+    // Only when another scene (or a different set of stages) is open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sceneKey, stagesKey]);
   useEffect(() => {
     if (!movedByHand.current) return;
     movedByHand.current = false;
-    void markerArrived(scene, stages, headCode);
+    setSoundProblem(null);
+    setMarkerProblem(null);
+    // A click moved it: the browser may ask to read the media folder (it forgets after a reload), and a
+    // sound that can't play says why.
+    void markerArrived(scene, stages, headCode, { ask: true, onProblem: setSoundProblem });
     // Only the marker landing somewhere new matters (stages and scene go with headCode).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [headCode]);
@@ -232,14 +259,21 @@ export function MediaTimeline({
   const barItems = mine.map((l) => l.assetId).join('|');
   const [folder, setFolder] = useState<MediaFolder | null>(null);
   const [assets, setAssets] = useState<Map<string, MediaAsset>>(() => new Map());
+  // This scene's own folder and library (every scene has its own — see mediaFolder.ts).
+  const mediaKey = scene ? mediaSceneKey(scene) : null;
   useEffect(() => {
     let gone = false;
-    void savedMediaFolder().then((f) => !gone && setFolder(f));
-    void loadLibrary().then((lib) => !gone && setAssets(new Map((lib?.assets ?? []).map((a) => [a.id, a]))));
+    void savedMediaFolder(mediaKey).then((f) => !gone && setFolder(f));
+    void loadLibrary(mediaKey).then((lib) => !gone && setAssets(new Map((lib?.assets ?? []).map((a) => [a.id, a]))));
     return () => {
       gone = true;
     };
-  }, [folderRevision, barItems]);
+  }, [folderRevision, barItems, mediaKey]);
+  // Videos with a sound track get a volume slider and open Spatialized Audio, as sounds do: find out which.
+  useVideoSoundResults();
+  useEffect(() => {
+    for (const a of assets.values()) if (a.kind === 'video' && a.status === 'present') checkVideoSound(a, folder);
+  }, [assets, folder]);
 
   // The sound tracks: one ♪ row, which its arrow opens into all MAX_SOUND_TRACKS (remembered). Closed,
   // every sound shows on the one row. They're tinted light blue, for audio.
@@ -361,6 +395,10 @@ export function MediaTimeline({
 
   // A bar being dragged: where it would land (shown as it moves, saved on letting go).
   const tracksBox = useRef<HTMLDivElement>(null);
+  // A fade grip being dragged (a bar's end slid in by notches: one second each).
+  const [fadeDrag, setFadeDrag] = useState<{ key: string; end: 'from' | 'to'; x: number; start: number; now: number } | null>(
+    null,
+  );
   const [drag, setDrag] = useState<{
     key: string;
     /** Which of its connection's bars. */
@@ -416,15 +454,47 @@ export function MediaTimeline({
     if (!drag || drag.key !== barKey(l, i)) return;
     const { now, start, copy } = drag;
     setDrag(null);
-    const placed: Bar = { track: now.track, from: stages[now.from].code, to: stages[now.to].code };
+    const original = barsOf(l)[i];
+    // A bar keeps everything it carries (a picture's placement on the room drawing above all) — only
+    // its track and stages change.
+    const placed: Bar = { ...original, track: now.track, from: stages[now.from].code, to: stages[now.to].code };
     // Let go where it started: nothing changed (and a duplicate dropped there isn't one).
     const moved = now.track !== start.track || now.from !== start.from || now.to !== start.to;
+    // A sound's bar clicked (not moved): Spatialized Audio opens on it.
+    // (A video with a sound track too: its sound is placed in the room the same way.)
+    if (!moved && drag.mode === 'move' && !copy && audible(l)) pickSpatialSound(l);
+    // An end clicked (not dragged): its fade in (left) or fade out (right) turns on or off.
+    if (!moved && drag.mode !== 'move' && original) {
+      const which = drag.mode === 'from' ? 'fadeIn' : 'fadeOut';
+      const on = !(which === 'fadeIn' ? fadesIn(original) : fadesOut(original));
+      updateMediaLinks(
+        (all) => all.map((x) => (sameLink(x, l) ? withBar(x, i, { ...original, [which]: on }) : x)),
+        `${on ? 'Add' : 'Remove'} fade ${drag.mode === 'from' ? 'in' : 'out'}`,
+      );
+      return;
+    }
     if (!moved) return;
+    // A picture placed on the room drawing is one picture on several areas: moving it to other stages
+    // (or stretching it) takes all its bars along, so it stays one picture. Moved to another track, just
+    // that bar goes (still placed: that area shows its own slice).
+    const group =
+      !copy && original?.place && now.track === start.track
+        ? barsOf(l).filter(
+            (b) => b.place && b.from === original.from && b.to === original.to && JSON.stringify(b.place) === JSON.stringify(original.place),
+          )
+        : [];
     updateMediaLinks(
       (all) =>
         all.map((x) => {
           if (!sameLink(x, l)) return x;
-          return copy ? { ...x, copies: [...(x.copies ?? []), placed] } : withBar(x, i, placed);
+          if (copy) return { ...x, copies: [...(x.copies ?? []), placed] };
+          if (group.length > 1) {
+            const [bar, ...copies] = barsOf(x).map((b) =>
+              group.includes(b) ? { ...b, from: placed.from, to: placed.to } : b,
+            );
+            return { ...x, bar, copies };
+          }
+          return withBar(x, i, placed);
         }),
       copy ? 'Duplicate bar' : drag.mode === 'move' ? 'Move bar' : 'Stretch bar',
     );
@@ -472,7 +542,7 @@ export function MediaTimeline({
     if (here?.stage !== dropHere?.stage || here?.track !== dropHere?.track || ok !== dropHere?.ok)
       setDropHere(here ? { ...here, ok } : null);
   };
-  /** A dropped item: a bar at that stage and row, not yet connected to an action (its ▼ picks one). */
+  /** A dropped item: a bar at that stage and row (a picture, video, colour or character plays on marker arrival; a sound waits for its ▼). */
   const drop = (e: React.DragEvent) => {
     const here = dropAt(e);
     setDropHere(null);
@@ -488,8 +558,13 @@ export function MediaTimeline({
     if ((item.kind === 'sound') !== isSoundTrack(here.track)) return;
     const bar: Bar = { track: here.track, from: stages[here.stage].code, to: stages[here.stage].code };
     const ours = (l: MediaLink) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number;
+    // A picture, video, colour or character dropped on an area's row plays on marker arrival straight away
+    // (as when it's dropped on the room drawing), so it shows in the room the moment it lands on the
+    // marker's stage; its ▼ can still connect it to one of the scene's actions instead. A sound waits
+    // to be connected, as before.
+    const action = item.kind === 'sound' ? '' : MARKER_ACTION;
     updateMediaLinks((all) => {
-      const unplaced = all.find((l) => ours(l) && l.assetId === item.id && !isConnected(l));
+      const unplaced = all.find((l) => ours(l) && l.assetId === item.id && l.action === action);
       if (unplaced)
         return all.map((l) =>
           l === unplaced ? (l.bar ? { ...l, copies: [...(l.copies ?? []), bar] } : { ...l, bar }) : l,
@@ -499,7 +574,7 @@ export function MediaTimeline({
         sheetId: scene.sheetId,
         sceneNumber: scene.number,
         sceneName: sceneTitle.replace(/^Scene\s+\S+\s+·\s+/, ''),
-        action: '',
+        action,
         assetName: item.name,
         assetKind: item.kind,
         bar,
@@ -529,24 +604,35 @@ export function MediaTimeline({
       document.removeEventListener('keydown', esc);
     };
   }, [picking]);
+  const placing = usePlacing();
   const connectBar = (l: MediaLink, i: number, action: string) => {
     setPicking(null);
     if (action === l.action) return;
     const bar = barsOf(l)[i];
     if (!bar) return;
+    // A picture placed on the room drawing is one picture on several areas: all its bars (those
+    // stages, the same placement) connect together, so it stays one picture. Other copies stay.
+    const moving = barsOf(l).filter((b) =>
+      bar.place ? b.place && b.from === bar.from && b.to === bar.to && samePlace(b.place, bar.place) : b === bar,
+    );
     updateMediaLinks((all) => {
       const next = all.flatMap((x) => {
         if (!sameLink(x, l)) return [x];
-        const left = withBar(x, i, null);
-        return barsOf(left).length ? [left] : [];
+        const left = barsOf(x).filter((b) => !moving.includes(b));
+        if (!left.length) return [];
+        const [first, ...copies] = left;
+        return [{ ...x, bar: first, copies }];
       });
       const target = next.find(
         (x) => x.assetId === l.assetId && x.action === action && x.sheetId === l.sheetId && x.sceneNumber === l.sceneNumber,
       );
       if (target)
-        return next.map((x) =>
-          x === target ? (x.bar ? { ...x, copies: [...(x.copies ?? []), bar] } : { ...x, bar }) : x,
-        );
+        return next.map((x) => {
+          if (x !== target) return x;
+          const [first, ...copies] = [...barsOf(x), ...moving];
+          return { ...x, bar: first, copies };
+        });
+      const [first, ...copies] = moving;
       const made: MediaLink = {
         assetId: l.assetId,
         sheetId: l.sheetId,
@@ -555,10 +641,22 @@ export function MediaTimeline({
         action,
         assetName: l.assetName,
         assetKind: l.assetKind,
-        bar,
+        bar: first,
+        ...(copies.length && { copies }),
       };
       return [...next, { ...made, barsKind: timingOf(made).kind }];
     }, 'Connect bar');
+    // Still placing that picture on the room drawing: it's the same picture, now with its action.
+    if (
+      placing &&
+      bar.place &&
+      placing.assetId === l.assetId &&
+      placing.action === l.action &&
+      placing.from === bar.from &&
+      placing.to === bar.to &&
+      (placing.area === undefined || moving.some((b) => areaOfTrack(b.track) === placing.area))
+    )
+      setPlacing({ ...placing, action });
   };
 
   // Option (Alt) held: the bars show they'll be duplicated when dragged.
@@ -599,6 +697,19 @@ export function MediaTimeline({
         </p>
         {current && (
           <div className="flex min-w-0 shrink items-center gap-1">
+            {soundProblem && (
+              <button
+                role="alert"
+                onClick={() => {
+                  setSoundProblem(null);
+                  setMarkerProblem(null);
+                }}
+                title={`${soundProblem} (click to hide)`}
+                className="mr-2 max-w-[320px] truncate border-l-4 border-[#b91c1c] bg-paper px-2 py-1 text-left font-body text-xs text-ink"
+              >
+                {soundProblem}
+              </button>
+            )}
             {historyNote && noteShown === historyNote.at && (
               <span
                 role="status"
@@ -884,22 +995,129 @@ export function MediaTimeline({
                     <span className="truncate font-body text-[11px] leading-none opacity-80">{what}</span>
                   </span>
                 );
-                const handle = (end: 'from' | 'to') => (
-                  <span
-                    data-bar-end={end}
-                    onPointerDown={(e) => grab(e, l, i, end)}
-                    onPointerMove={(e) => {
-                      e.stopPropagation();
-                      follow(e, l, i);
-                    }}
-                    onPointerUp={(e) => {
-                      e.stopPropagation();
-                      letGo(l, i);
-                    }}
-                    className={`h-full w-2 shrink-0 cursor-ew-resize bg-ink/20 ${end === 'from' ? 'border-r' : 'border-l'} border-paper/50`}
-                    aria-hidden="true"
-                  />
-                );
+                // Its ends: drag to stretch it; click to turn its fade in (left) or fade out (right) on or off.
+                // Just inside each end, a grip slides in by notches (a second each, up to MAX_FADE_SECONDS):
+                // how long that fade lasts. The ramp shows it.
+                const NOTCH = 12;                                     // px per second
+                const END = 16;                                       // the end handle's width
+                const handle = (end: 'from' | 'to') => {
+                  const saved = end === 'from' ? fadeInSeconds(bar) : fadeOutSeconds(bar);
+                  const sliding = fadeDrag && fadeDrag.key === key && fadeDrag.end === end ? fadeDrag : null;
+                  const secs = sliding ? sliding.now : saved;
+                  const what = end === 'from' ? 'fade in' : 'fade out';
+                  const side = end === 'from' ? 'left' : 'right';
+                  const rampW = secs > 0 ? END + secs * NOTCH : 0;
+                  const commit = (to: number) => {
+                    if (to === saved) return;
+                    const which = end === 'from' ? 'fadeIn' : 'fadeOut';
+                    updateMediaLinks(
+                      (all) => all.map((x) => (sameLink(x, l) ? withBar(x, i, { ...bar, [which]: fadeValue(to) }) : x)),
+                      to === 0 ? `Remove ${what}` : `${what[0].toUpperCase()}${what.slice(1)} ${to} s`,
+                    );
+                  };
+                  return (
+                    <>
+                      <span
+                        data-bar-end={end}
+                        data-fade={saved > 0 ? saved : undefined}
+                        title={`Click: ${saved > 0 ? `no ${what}` : `${what} over ${FADE_SECONDS} s`} · drag: stretch · drag the grip inside it: ${what} up to ${MAX_FADE_SECONDS} s`}
+                        onPointerDown={(e) => grab(e, l, i, end)}
+                        onPointerMove={(e) => {
+                          e.stopPropagation();
+                          follow(e, l, i);
+                        }}
+                        onPointerUp={(e) => {
+                          e.stopPropagation();
+                          letGo(l, i);
+                        }}
+                        // Pinned to the bar's edges, so they're there to grab however short the bar is.
+                        className={`absolute inset-y-0 z-20 w-4 cursor-ew-resize bg-ink/20 ${end === 'from' ? 'left-0 border-r' : 'right-0 border-l'} border-paper/50`}
+                        aria-hidden="true"
+                      />
+                      {rampW > 0 && (
+                        // The ramp: rising from the bottom over the fade in, falling to it over the fade out.
+                        <svg
+                          className="pointer-events-none absolute inset-y-0 z-10 h-full"
+                          style={{ [side]: 0, width: rampW }}
+                          viewBox={`0 0 ${rampW} 32`}
+                          preserveAspectRatio="none"
+                          aria-hidden="true"
+                        >
+                          <polygon
+                            points={end === 'from' ? `0,32 ${rampW},0 ${rampW},32` : `0,0 ${rampW},32 0,32`}
+                            fill="rgba(255,255,255,0.3)"
+                          />
+                          <line
+                            x1="0"
+                            y1={end === 'from' ? 32 : 0}
+                            x2={rampW}
+                            y2={end === 'from' ? 0 : 32}
+                            stroke="#fff"
+                            strokeWidth="2"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </svg>
+                      )}
+                      {sliding &&
+                        // While sliding: a tick at each notch, and how long it is now.
+                        Array.from({ length: MAX_FADE_SECONDS }, (_, n) => (
+                          <span
+                            key={n}
+                            className="pointer-events-none absolute bottom-0 z-30 h-1.5 w-px bg-paper"
+                            style={{ [side]: END + (n + 1) * NOTCH }}
+                            aria-hidden="true"
+                          />
+                        ))}
+                      {sliding && (
+                        <span
+                          className="pointer-events-none absolute top-0 z-30 bg-ink px-0.5 font-label text-[9px] leading-tight text-paper"
+                          style={{ [side]: END + secs * NOTCH + 4 }}
+                        >
+                          {secs} s
+                        </span>
+                      )}
+                      <span
+                        data-fade-grip={end}
+                        role="slider"
+                        aria-label={`${what[0].toUpperCase()}${what.slice(1)} length`}
+                        aria-valuemin={0}
+                        aria-valuemax={MAX_FADE_SECONDS}
+                        aria-valuenow={secs}
+                        aria-valuetext={`${secs} seconds`}
+                        tabIndex={-1}
+                        title={`${what[0].toUpperCase()}${what.slice(1)}: ${secs} s — slide in up to ${MAX_FADE_SECONDS} notches (a second each)`}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          if (e.button !== 0) return;
+                          try {
+                            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                          } catch {
+                            // not a real pointer
+                          }
+                          setFadeDrag({ key, end, x: e.clientX, start: saved, now: saved });
+                        }}
+                        onPointerMove={(e) => {
+                          e.stopPropagation();
+                          if (!sliding) return;
+                          const inward = (e.clientX - sliding.x) * (end === 'from' ? 1 : -1);
+                          const now = Math.max(0, Math.min(MAX_FADE_SECONDS, Math.round(sliding.start + inward / NOTCH)));
+                          if (now !== sliding.now) setFadeDrag({ ...sliding, now });
+                        }}
+                        onPointerUp={(e) => {
+                          e.stopPropagation();
+                          if (!sliding) return;
+                          setFadeDrag(null);
+                          commit(sliding.now);
+                        }}
+                        onPointerCancel={() => setFadeDrag(null)}
+                        className="absolute inset-y-0 z-30 w-2 cursor-col-resize"
+                        style={{ [side]: END + secs * NOTCH - 3 }}
+                      >
+                        <span className="absolute inset-y-1 left-1/2 w-0.5 -translate-x-1/2 rounded bg-paper/80" />
+                      </span>
+                    </>
+                  );
+                };
                 return [
                   <div
                     key={key}
@@ -911,7 +1129,7 @@ export function MediaTimeline({
                     onPointerUp={() => letGo(l, i)}
                     onPointerCancel={() => setDrag(null)}
                     title={`${l.action || 'Not connected to an action yet'}\n${l.assetId}${l.assetName ? ` ${l.assetName}` : ''} · ${stagesText(place)} — drag to move, drag an end to stretch, Option-drag to duplicate, ▼ to connect it to an action`}
-                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border border-[#3c5eac] text-paper shadow-sm ${
+                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border border-[#3c5eac] px-5 text-paper shadow-sm ${
                       isConnected(l) ? 'bg-[#3c5eac]' : 'border-dashed border-paper/80 bg-[#3c5eac]/60'
                     } ${
                       optionHeld ? 'cursor-copy' : 'cursor-grab active:cursor-grabbing'
@@ -933,6 +1151,7 @@ export function MediaTimeline({
                     {handle('from')}
                     <BarThumb link={l} asset={asset} folder={folder} />
                     {label}
+                    {audible(l) && <BarVolume link={l} />}
                     <button
                       // Not a drag: pressing it mustn't pick the bar up.
                       onPointerDown={(e) => e.stopPropagation()}
@@ -962,7 +1181,7 @@ export function MediaTimeline({
                           ? 'Delete this bar'
                           : 'Delete this bar — its file is disconnected from the action (connect it again in the Media Library)'
                       }
-                      className="mr-[5px] flex h-full w-6 shrink-0 cursor-pointer items-center justify-center font-body text-xl leading-none text-paper/80 hover:bg-ink/30 hover:text-paper"
+                      className="flex h-full w-6 shrink-0 cursor-pointer items-center justify-center font-body text-xl leading-none text-paper/80 hover:bg-ink/30 hover:text-paper"
                     >
                       ×
                     </button>
@@ -1067,6 +1286,103 @@ function OpenArrow({ open }: { open: boolean }) {
  * when it fires, and for "every time" which moment and what the voice does; for "on marker arrival",
  * whether a video or sound loops. Each change is one undo step, and the bars follow it.
  */
+/**
+ * A sound bar's volume: a slider from silent to MAX_SOUND_VOLUME (×4, 400%). The sound follows it as it
+ * moves (here and in TouchDesigner); letting go saves it on the bar's connection, as one Undo step.
+ */
+function BarVolume({ link }: { link: MediaLink }) {
+  const saved = clampSoundVolume(link.volume);
+  const [moving, setMoving] = useState<number | null>(null);
+  const value = moving ?? saved;
+  const save = () => {
+    if (moving === null) return;
+    const v = moving;
+    setMoving(null);
+    if (v === saved) return;
+    updateMediaLinks(
+      (all) => all.map((x) => (sameLink(x, link) ? { ...x, volume: v === 1 ? undefined : v } : x)),
+      `Change the volume of ${link.assetId}`,
+    );
+  };
+  const percent = Math.round(value * 100);
+  return (
+    <span
+      // Not a drag: moving the slider mustn't pick the bar up.
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      data-bar-volume
+      // Gives way first on a short bar, so its ▼ and × stay in reach.
+      className="flex h-full min-w-0 shrink items-center gap-1 overflow-hidden px-1"
+      title={`Volume ${percent}% — from silent to 400% (100% is the file as it is; above that a limiter keeps it from distorting)`}
+    >
+      <span className="font-body text-[11px] leading-none" aria-hidden="true">
+        {value === 0 ? '🔇' : '🔊'}
+      </span>
+      <input
+        type="range"
+        min={0}
+        max={MAX_SOUND_VOLUME}
+        step={0.05}
+        value={value}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          setMoving(v);
+          setSoundVolume(link.assetId, v);
+        }}
+        onPointerUp={save}
+        onKeyUp={save}
+        onBlur={save}
+        aria-label={`Volume of ${link.assetName ?? link.assetId}`}
+        aria-valuetext={`${percent}%`}
+        className="h-1 w-20 min-w-[28px] shrink cursor-pointer accent-paper"
+      />
+      <span className="w-8 text-right font-body text-[11px] tabular-nums leading-none">{percent}%</span>
+      <BarLoop link={link} />
+    </span>
+  );
+}
+
+/**
+ * A sound bar's loop button: on, the sound plays over and over (until its bar ends, the marker leaves,
+ * or the call ends); off, it plays once. "Every time" sounds play once at each of their events.
+ */
+function BarLoop({ link }: { link: MediaLink }) {
+  const every = timingOf(link).kind === 'every';
+  const on = !every && loopOf(link);
+  return (
+    <button
+      type="button"
+      data-bar-loop
+      onClick={(e) => {
+        e.stopPropagation();
+        if (every) return;
+        const loop = !on;
+        updateMediaLinks(
+          (all) => all.map((x) => (sameLink(x, link) ? { ...x, loop } : x)),
+          `${loop ? 'Loop' : "Don't loop"} ${link.assetId}`,
+        );
+        setSoundLoop(link.assetId, loop);
+      }}
+      disabled={every}
+      aria-pressed={on}
+      aria-label={`Loop ${link.assetName ?? link.assetId}`}
+      title={
+        every
+          ? 'Plays once each time its moment comes round (“every time”) — change “When it plays” to loop it'
+          : on
+            ? 'Looping — click to play it once'
+            : 'Plays once — click to loop it'
+      }
+      className={`ml-0.5 flex h-5 w-6 shrink-0 cursor-pointer items-center justify-center border font-body text-[13px] leading-none disabled:cursor-not-allowed disabled:opacity-40 ${
+        on ? 'border-paper bg-paper text-[#3c5eac]' : 'border-paper/60 text-paper hover:bg-ink/30'
+      }`}
+    >
+      ∞
+    </button>
+  );
+}
+
 function BarPlays({ link }: { link: MediaLink }) {
   const timing = timingOf(link);
   const still = isStill(link.assetKind);
@@ -1201,7 +1517,7 @@ function BarThumb({ link, asset, folder }: { link: MediaLink; asset?: MediaAsset
     };
   }, [folder, path, kind, link.assetId]);
 
-  const frame = 'pointer-events-none h-full shrink-0 overflow-hidden border-r border-paper/50';
+  const frame = 'pointer-events-none h-full min-w-0 shrink overflow-hidden border-r border-paper/50';
   if (kind === 'sound') {
     return (
       <span className={`${frame} flex items-center whitespace-nowrap bg-paper px-1.5 font-label text-[10px] uppercase tracking-wide text-ink`}>
@@ -1211,6 +1527,14 @@ function BarThumb({ link, asset, folder }: { link: MediaLink; asset?: MediaAsset
   }
   if (kind === 'color') {
     return <span className={`${frame} aspect-video`} style={{ background: asset?.value || '#000' }} aria-hidden="true" />;
+  }
+  if (kind === 'character') {
+    // A still glowing dot in its colour (the live character is in the library and the room).
+    const c = asset?.value || '#36d6ff';
+    const glow = asset?.value
+      ? `radial-gradient(circle at 50% 50%, #fff 0 8%, ${c} 22%, transparent 42%)`
+      : 'radial-gradient(circle at 45% 45%, #fff 0 8%, #36d6ff 20%, #b44dff 32%, #ff3fa4 38%, transparent 44%)';
+    return <span className={`${frame} aspect-video bg-black`} style={{ backgroundImage: glow }} aria-hidden="true" />;
   }
   if (kind === 'text') {
     return (

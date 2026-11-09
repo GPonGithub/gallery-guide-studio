@@ -7,6 +7,8 @@ type MediaRequest = {
   scriptUrl?: string;
   spreadsheetId?: string;
   action?: 'read' | 'write';
+  /** The scene whose rows a write replaces (each scene has its own media — see mediaFolder.ts). */
+  scene?: string;
   rows?: MediaRow[];
 };
 
@@ -27,14 +29,23 @@ export async function POST(req: Request) {
     path: String(r.path ?? ''),
     status: String(r.status ?? ''),
     added: String(r.added ?? ''),
+    scene: String(r.scene ?? body.scene ?? ''),
   }));
+  const scene = String(body.scene ?? '').trim();
+  if (writing && !scene) return Response.json({ ok: false, error: 'Which scene’s media is this? (No scene number.)' }, { status: 400 });
   let res: Response;
   try {
     res = await fetch(scriptUrl, {
       method: 'POST',
       // Plain text: Apps Script reads the body the same way, and Google's redirect keeps working.
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({ action: writing ? 'writeMedia' : 'readMedia', spreadsheetId: body.spreadsheetId, ...(writing && { rows }) }),
+      // A scene's own rows: "writeSceneMedia" — a script from before scenes had their own media doesn't know it,
+      // and refuses (rather than replacing every scene's rows), so it's asked to be updated below.
+      body: JSON.stringify({
+        action: writing ? 'writeSceneMedia' : 'readMedia',
+        spreadsheetId: body.spreadsheetId,
+        ...(writing && { scene, rows }),
+      }),
       redirect: 'follow',
       cache: 'no-store',
       signal: AbortSignal.timeout(25_000),

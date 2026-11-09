@@ -69,6 +69,8 @@ export function VoicePanel({
   onExpressiveChange,
   spokenReplies,
   onSpokenRepliesChange,
+  voiceVolume,
+  onVoiceVolumeChange,
   pauseSeconds,
   onPauseSecondsChange,
   interruptByVoice,
@@ -90,6 +92,9 @@ export function VoicePanel({
   /** "Spoken replies": whether the agent's replies are voiced at all. */
   spokenReplies: boolean;
   onSpokenRepliesChange: (on: boolean) => void;
+  /** How loud the agent's voice plays: 1 = 100%, up to 3 (300%). */
+  voiceVolume: number;
+  onVoiceVolumeChange: (volume: number) => void;
   /** Open mic: seconds of quiet before what was said is sent. */
   pauseSeconds: number;
   onPauseSecondsChange: (seconds: number) => void;
@@ -284,6 +289,26 @@ export function VoicePanel({
               />
               Spoken replies
               <span className="normal-case tracking-normal text-muted-ink">— the agent says its replies out loud</span>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="flex items-baseline justify-between font-label text-[11px] uppercase tracking-widest text-ink">
+                Voice volume
+                <span className="tabular-nums normal-case">{Math.round(voiceVolume * 100)}%</span>
+              </span>
+              <input
+                type="range"
+                min={0}
+                max={3}
+                step={0.05}
+                value={voiceVolume}
+                onChange={(e) => onVoiceVolumeChange(Number(e.target.value))}
+                onDoubleClick={() => onVoiceVolumeChange(1)}
+                className="w-full cursor-pointer accent-[#18a0fb]"
+              />
+              <span className="font-body text-xs leading-snug text-muted-ink">
+                How loud the agent speaks, up to 300%; changes while it talks. Past 100% its loudest moments are
+                held back so it doesn&rsquo;t distort. Double-click for 100%.
+              </span>
             </label>
             <label className="flex flex-col gap-1" data-tour="voice-pause">
               <span className="flex items-baseline justify-between font-label text-[11px] uppercase tracking-widest text-ink">

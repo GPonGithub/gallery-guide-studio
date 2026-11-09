@@ -20,7 +20,51 @@ import {
  * remembers it; on a later visit it asks permission again before reading.
  * Nothing is uploaded: the app only lists the files, and opens one when the
  * test window shows it.
+ *
+ * Every scene has its own folder and its own library (kept under
+ * `folder:<scene>` and `library:<scene>`) — even two scenes that chose the
+ * same folder keep separate lists. A scene starts with none until one is chosen.
  */
+
+/** A scene's key for its media: its sheet and number, as in "1Lfn…#4". */
+export const mediaSceneKey = (scene: { sheetId: string; number: string }) => `${scene.sheetId}#${scene.number}`;
+
+// The scene whose media is in use: the open one — or, while the media tour runs, its demo scene.
+let openScene: string | null = null;
+let demoScene: string | null = null;
+const sceneListeners = new Set<() => void>();
+/** The media scene in use now (null: the open scene isn't from a sheet, so has no media). */
+export const currentMediaScene = () => demoScene ?? openScene;
+/** Set by the page whenever another scene is opened. */
+export function setOpenMediaScene(key: string | null) {
+  if (key === openScene) return;
+  openScene = key;
+  sceneListeners.forEach((l) => l());
+}
+/** Set by the media tour (mediaDemo.ts) while its demo scene is in use. */
+export function setDemoMediaScene(key: string | null) {
+  if (key === demoScene) return;
+  demoScene = key;
+  sceneListeners.forEach((l) => l());
+}
+/** Calls `listener` whenever the media scene in use changes (another scene opened, the tour's demo). */
+export function onMediaSceneChange(listener: () => void) {
+  sceneListeners.add(listener);
+}
+export const useMediaScene = () =>
+  useSyncExternalStore(
+    (l) => {
+      sceneListeners.add(l);
+      return () => {
+        sceneListeners.delete(l);
+      };
+    },
+    currentMediaScene,
+    () => null,
+  );
+
+const folderKey = (scene: string) => `folder:${scene}`;
+const libraryKey = (scene: string) => `library:${scene}`;
 
 // The parts of the File System Access API this uses (not all in TypeScript's own types yet).
 type Permission = 'granted' | 'denied' | 'prompt';
@@ -39,13 +83,14 @@ export type MediaFolder = DirectoryHandle;
 export const canPickFolder = () =>
   typeof window !== 'undefined' && typeof (window as PickerWindow).showDirectoryPicker === 'function';
 
-/** Asks which folder holds the media, and remembers it. Null if the person cancels. */
-export async function pickMediaFolder(): Promise<MediaFolder | null> {
+/** Asks which folder holds a scene's media, and remembers it for that scene. Null if the person cancels. */
+export async function pickMediaFolder(scene = currentMediaScene()): Promise<MediaFolder | null> {
+  if (!scene) throw new Error('Open a scene from your Google Sheet first — each scene has its own media folder.');
   const picker = (window as PickerWindow).showDirectoryPicker;
   if (!picker) throw new Error('This browser can’t open a folder — use Chrome or Edge.');
   try {
     const folder = await picker.call(window, { id: 'chatbot-designer-media', mode: 'read' });
-    await run('media', 'readwrite', (s) => s.put(folder, 'folder'));
+    await run('media', 'readwrite', (s) => s.put(folder, folderKey(scene)));
     return folder;
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') return null;
@@ -53,10 +98,11 @@ export async function pickMediaFolder(): Promise<MediaFolder | null> {
   }
 }
 
-/** The folder chosen before, if any (its permission may need asking for again — see `allowed`). */
-export async function savedMediaFolder(): Promise<MediaFolder | null> {
+/** A scene's folder, if one was chosen (its permission may need asking for again — see `allowed`). */
+export async function savedMediaFolder(scene = currentMediaScene()): Promise<MediaFolder | null> {
+  if (!scene) return null;
   try {
-    return (await run<MediaFolder | undefined>('media', 'readonly', (s) => s.get('folder'))) ?? null;
+    return (await run<MediaFolder | undefined>('media', 'readonly', (s) => s.get(folderKey(scene)))) ?? null;
   } catch {
     return null;
   }
@@ -68,12 +114,16 @@ export async function allowed(folder: MediaFolder, ask: boolean): Promise<boolea
   return ask && (await folder.requestPermission({ mode: 'read' })) === 'granted';
 }
 
-/** Every image, video and sound file in the folder and its subfolders (hidden files skipped). */
+/** Where a converted video's original is kept (see videoConvert.ts) — not part of the library. */
+export const ORIGINALS_FOLDER = 'Originals before H.264';
+
+/** Every image, video and sound file in the folder and its subfolders (hidden files, and the originals of converted videos, skipped). */
 export async function scanMediaFolder(folder: MediaFolder): Promise<FoundFile[]> {
   const found: FoundFile[] = [];
   const walk = async (dir: DirectoryHandle, prefix: string, depth: number) => {
     for await (const entry of dir.values()) {
       if (entry.name.startsWith('.')) continue;
+      if (entry.kind === 'directory' && depth === 0 && entry.name === ORIGINALS_FOLDER) continue;
       if (entry.kind === 'directory') {
         if (depth < 8) await walk(entry as DirectoryHandle, `${prefix}${entry.name}/`, depth + 1);
       } else {
@@ -97,7 +147,26 @@ export async function openMediaFile(folder: MediaFolder, path: string): Promise<
 /** The media list as last refreshed, kept in this browser (for when the sheet can't be reached). */
 export type StoredLibrary = { folderName: string; assets: MediaAsset[]; refreshedAt: number };
 
-export async function loadLibrary(): Promise<StoredLibrary | null> {
+/** A scene's media list. */
+export async function loadLibrary(scene = currentMediaScene()): Promise<StoredLibrary | null> {
+  if (!scene) return null;
+  try {
+    return (await run<StoredLibrary | undefined>('media', 'readonly', (s) => s.get(libraryKey(scene)))) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveLibrary(library: StoredLibrary, scene = currentMediaScene()): Promise<void> {
+  if (!scene) return;
+  await run('media', 'readwrite', (s) => s.put(library, libraryKey(scene)));
+}
+
+/**
+ * The single library from before each scene had its own (kept, never changed): a scene choosing the
+ * same folder starts from it, so the IDs — and the connections made with them — stay the same.
+ */
+export async function legacyLibrary(): Promise<StoredLibrary | null> {
   try {
     return (await run<StoredLibrary | undefined>('media', 'readonly', (s) => s.get('library'))) ?? null;
   } catch {
@@ -105,8 +174,16 @@ export async function loadLibrary(): Promise<StoredLibrary | null> {
   }
 }
 
-export async function saveLibrary(library: StoredLibrary): Promise<void> {
-  await run('media', 'readwrite', (s) => s.put(library, 'library'));
+/** Forgets a scene's folder and library (the tour's demo scene, when it ends). */
+export async function forgetSceneMedia(scene: string): Promise<void> {
+  await run('media', 'readwrite', (s) => s.delete(folderKey(scene)));
+  await run('media', 'readwrite', (s) => s.delete(libraryKey(scene)));
+}
+
+/** Puts a folder and library in place for a scene (the tour's demo scene). */
+export async function setSceneMedia(scene: string, folder: MediaFolder, library: StoredLibrary): Promise<void> {
+  await run('media', 'readwrite', (s) => s.put(folder, folderKey(scene)));
+  await saveLibrary(library, scene);
 }
 
 /**
@@ -126,6 +203,15 @@ export type MediaLink = {
   timing?: Partial<Pick<ActionTiming, 'kind' | 'when' | 'voice' | 'delay'>>;
   /** A video loops for as long as it's on screen (the default), or plays once and holds its last frame (false). */
   loop?: boolean;
+  /** A sound's own volume, from its bar's slider: 0 (silent) to 4 (four times the file's level, held below distortion by the limiter). Default 1. */
+  volume?: number;
+  /** A sound's place in the room (Spatialized Audio): x left -1 … right 1, y back -1 … front 1. Default the middle. */
+  pan?: { x: number; y: number };
+  /**
+   * A recorded movement round the room (Spatialized Audio's Record Movement): where the sound is at each
+   * moment, `t` in seconds into the file. While it has one, the sound follows it instead of `pan`.
+   */
+  panPath?: { t: number; x: number; y: number }[];
   /** The file's name and kind when it was connected (for its bar on the timeline). */
   assetName?: string;
   assetKind?: MediaKind;
@@ -157,6 +243,55 @@ export type TimelineBar = {
   track: number | `${number}-${number}` | 'sound' | `sound-${number}`;
   from: string;
   to: string;
+  /**
+   * Where the picture sits over the room drawing (see roomPlacement.ts): its area shows the part of it
+   * inside the area's outline. None: it fills the area, as before.
+   */
+  place?: Placement;
+  /**
+   * Fades in (from black, or silence) as the bar starts: seconds, 0 to MAX_FADE_SECONDS. Unset or true:
+   * FADE_SECONDS (on by default); false: no fade. Clicking the bar's left end on the timeline turns it off
+   * (and on again); dragging the grip just inside that end sets how long. Read it with fadeInSeconds().
+   */
+  fadeIn?: boolean | number;
+  /** Fades out (to black, or silence) as the bar ends — the same, for its right end. Read with fadeOutSeconds(). */
+  fadeOut?: boolean | number;
+};
+
+/** A bar's fade in or fade out, unless set otherwise. */
+export const FADE_SECONDS = 1;
+/** The longest a fade can be (each notch on the timeline is a second). */
+export const MAX_FADE_SECONDS = 3;
+
+const fadeLength = (f: boolean | number | undefined) =>
+  f === false ? 0 : typeof f === 'number' ? Math.max(0, Math.min(MAX_FADE_SECONDS, Math.round(f))) : FADE_SECONDS;
+/** How long a bar fades in / out, in seconds (0 = no fade; a connection with no bar yet fades the usual second). */
+export const fadeInSeconds = (bar: TimelineBar | undefined) => fadeLength(bar?.fadeIn);
+export const fadeOutSeconds = (bar: TimelineBar | undefined) => fadeLength(bar?.fadeOut);
+/** Whether a bar fades in / out at all. */
+export const fadesIn = (bar: TimelineBar | undefined) => fadeInSeconds(bar) > 0;
+export const fadesOut = (bar: TimelineBar | undefined) => fadeOutSeconds(bar) > 0;
+/** How a fade length is stored on a bar: the usual second as nothing, none as false, others as seconds. */
+export const fadeValue = (seconds: number): boolean | number | undefined =>
+  seconds <= 0 ? false : seconds === FADE_SECONDS ? undefined : Math.min(MAX_FADE_SECONDS, Math.round(seconds));
+
+/** The bar of a connection on an area (a picture or video), or its first bar (a sound). */
+export const barOn = (link: MediaLink, area?: number) =>
+  barsOf(link).find((b) => area === undefined || areaOfTrack(b.track) === area);
+
+/** A picture or video placed over the room drawing, in the drawing's units: its centre, size and turn. */
+export type Placement = {
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
+  rot: number;
+  /**
+   * Corner pin: where its four corners are in its own frame (0-1 across and down; top-left, top-right,
+   * bottom-right, bottom-left) once moved on their own — the picture is drawn in perspective between them.
+   * None: a plain rectangle.
+   */
+  pin?: [number, number][];
 };
 
 /** The projection area a track shows on (5 for 5 and '5-3'), or null for a sound track. */
@@ -224,7 +359,8 @@ let loading = false;
 const sharedListeners = new Set<() => void>();
 const tellAll = () => sharedListeners.forEach((listener) => listener());
 
-function subscribeMediaLinks(listener: () => void) {
+/** Hears every change to the connections (the timeline's bars included); returns how to stop. */
+export function subscribeMediaLinks(listener: () => void) {
   sharedListeners.add(listener);
   if (!shared && !loading) {
     loading = true;
@@ -437,6 +573,8 @@ export async function readActions(actions: string[], anthropicApiKey: string): P
 }
 
 export async function loadMediaLinks(): Promise<MediaLink[]> {
+  // Once read, the copy in memory is the latest (saving it to the database follows a moment later).
+  if (shared) return shared;
   try {
     return (await run<MediaLink[] | undefined>('media', 'readonly', (s) => s.get('links'))) ?? [];
   } catch {
@@ -485,7 +623,9 @@ export function followRewording(
   const here = (l: MediaLink) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number;
   const lost = [
     ...new Set(
-      links.filter((l) => here(l) && isConnected(l) && !isMarker(l) && !actions.includes(l.action)).map((l) => l.action),
+      links
+        .filter((l) => here(l) && isConnected(l) && !isMarker(l) && !actions.includes(l.action))
+        .map((l) => l.action),
     ),
   ];
   if (lost.length === 0) return null;

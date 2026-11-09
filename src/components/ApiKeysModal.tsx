@@ -1,5 +1,6 @@
 'use client';
 
+import { noCopy } from '@/lib/noCopy';
 import { buttonGhost, buttonPrimary, fieldInput, fieldLabel } from '@/lib/styles';
 
 type Props = {
@@ -53,6 +54,7 @@ export function ApiKeysModal({
           Anthropic API key
           <input
             type="password"
+            {...noCopy}
             autoComplete="off"
             value={anthropicApiKey}
             onChange={(e) => onChangeAnthropicApiKey(e.target.value)}
@@ -65,6 +67,7 @@ export function ApiKeysModal({
           ElevenLabs API key
           <input
             type="password"
+            {...noCopy}
             autoComplete="off"
             value={elevenLabsApiKey}
             onChange={(e) => onChangeElevenLabsApiKey(e.target.value)}
@@ -77,6 +80,7 @@ export function ApiKeysModal({
           Figma personal access token
           <input
             type="password"
+            {...noCopy}
             autoComplete="off"
             value={figmaApiKey}
             onChange={(e) => onChangeFigmaApiKey(e.target.value)}

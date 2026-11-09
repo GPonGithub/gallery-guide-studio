@@ -10,6 +10,9 @@
 #                      same JSON work too (handy for testing with curl).
 #   area1 ... area11     the 11 projection outputs (Null TOPs, also out1 ... out11 as the
 #                      component's TOP outputs). Each shows a picture or video, or black.
+#   placed1 ... placed11 a GLSL TOP before each area: a picture placed on the app's room drawing
+#                      arrives with a "uv" matrix, and the area shows its slice of the whole
+#                      picture (raw1 ... raw11, unfitted); without one, the area is as before.
 #   preview            all 11 areas in one grid, each numbered, for checking
 #                      (open it with the component's Open Preview button).
 #   sound1 ... sound8    audio slots (Audio File In CHOPs) - sounds are separate from pictures
@@ -25,7 +28,8 @@
 # swaps which part of the picture each projector gets. It can also open Kantan Mapper's editor.
 #
 # The component's Media Folder parameter is where the files are; a message's path (the
-# Media tab's column C) is found inside it.
+# Media tab's column C) is found inside it. Each scene has its own media folder in the app: a message
+# names it ("folder"), and it's looked for inside the Media Folder (keep the scenes' folders there).
 
 import os
 
@@ -50,7 +54,8 @@ def setp(o, name, value):
         warn('%s has no parameter "%s"' % (o.path, name))
         return
     try:
-        if p.isMenu and isinstance(value, str) and value not in p.menuNames:
+        # A menu that also takes any text (a rename's To, say) offers suggestions only: those take what's given.
+        if p.isMenu and not p.isString and isinstance(value, str) and value not in p.menuNames:
             warn('%s.%s: no option "%s" (options: %s)' % (o.path, name, value, ', '.join(p.menuNames)))
             return
         p.val = value
@@ -67,6 +72,7 @@ CALLBACKS = r'''# The Immersive Lab receiver: what each message from the Chatbot
 # (Made by build_immersive_lab.py - run that again rather than editing here.)
 
 import json
+import math
 import os
 import time
 
@@ -84,7 +90,8 @@ def media_root():
 
 
 def full_path(msg):
-    """The file on disk: the message's path inside the media folder (or its ID looked up in media_list)."""
+    """The file on disk: the message's path inside its scene's folder (the message's "folder", inside the
+    Media Folder - or the Media Folder itself), or its ID looked up in media_list."""
     path = msg.get('path') or ''
     if not path and msg.get('id'):
         ml = table('media_list')
@@ -92,7 +99,15 @@ def full_path(msg):
             path = ml[msg['id'], 'Path'].val
     if not path:
         return ''
-    return path if os.path.isabs(path) else os.path.join(media_root(), path)
+    if os.path.isabs(path):
+        return path
+    root = media_root()
+    folder = msg.get('folder') or ''
+    if folder:
+        inside = os.path.join(root, folder, path)
+        if os.path.isfile(inside):
+            return inside
+    return os.path.join(root, path)
 
 
 def log(msg, where, result):
@@ -139,6 +154,196 @@ def set_loop_audio(ch, loop):
 
 # --- pictures and video -------------------------------------------------------
 
+def vec_par(g, i, comp):
+    """The GLSL TOP's uniform value parameter (its name differs between TouchDesigner versions)."""
+    for name in ('vec%dvalue%s' % (i, comp), 'value%d%s' % (i, comp)):
+        p = getattr(g.par, name, None)
+        if p is not None:
+            return p
+    return None
+
+
+# --- AI characters ---------------------------------------------------------------
+# An AI character is a page of the app (the orb that moves with the chatbot's voice), shown in an
+# area by a Web Render TOP, characterN - made the first time that area shows one, as switch and raw
+# input 4. The page connects back to this receiver and says "listen"; the app sends the voice's
+# readings ("voice level", ~30 a second) and they're passed straight on to the listening pages
+# (not logged or answered - see onWebSocketReceiveText).
+
+CHARACTER_INPUT = 4
+LISTENERS = set()
+
+
+def set_par(o, name, value):
+    p = getattr(o.par, name, None)
+    if p is None:
+        return False
+    try:
+        p.val = value
+        return True
+    except Exception:
+        return False
+
+
+def character_top(area):
+    """The area's Web Render TOP for AI characters (made now if it's the first)."""
+    w = lab.op('character%d' % area)
+    if w is not None:
+        return w
+    sw, raw = lab.op('switch%d' % area), lab.op('raw%d' % area)
+    # Inputs 0-3 (black, media, colour, words) come first; a character is always input 4.
+    if len(sw.inputs) != CHARACTER_INPUT or len(raw.inputs) != CHARACTER_INPUT:
+        raise Exception('switch%d / raw%d have %d / %d inputs, expected %d'
+                        % (area, area, len(sw.inputs), len(raw.inputs), CHARACTER_INPUT))
+    w = lab.create(webrenderTOP, 'character%d' % area)
+    w.nodeX, w.nodeY = sw.nodeX - 200, sw.nodeY - 150
+    set_par(w, 'outputresolution', 'custom')
+    for name, expr in (('resolutionw', 'parent().par.Width'), ('resolutionh', 'parent().par.Height')):
+        p = getattr(w.par, name, None)
+        if p is not None:
+            p.expr = expr
+    sw.inputConnectors[CHARACTER_INPUT].connect(w)
+    raw.inputConnectors[CHARACTER_INPUT].connect(w)
+    return w
+
+
+def character_off(area):
+    """Stops an area's character page rendering (it isn't showing)."""
+    w = lab.op('character%d' % area)
+    if w is not None:
+        set_par(w, 'active', False)
+
+
+def show_character(area, msg):
+    url = msg.get('url') or ''
+    if not url.startswith('http'):
+        return 'no page address'
+    w = character_top(area)
+    waking = not w.par.active.eval()
+    if str(w.par.url.eval()) != url:
+        w.par.url = url
+    set_par(w, 'active', True)
+    # Switched off and on again, the Web Render TOP stays blank until its page is loaded again.
+    if waking and getattr(w.par, 'reloadsrc', None) is not None:
+        w.par.reloadsrc.pulse()
+    return ''
+
+
+def route(area, index, msg):
+    """Shows switch input `index` on an area; a placed picture (msg "uv": 9 numbers, row by row) shows
+    its slice of the whole, unfitted picture instead of the fitted one."""
+    if index != CHARACTER_INPUT:
+        character_off(area)
+    lab.op('switch%d' % area).par.index = index
+    lab.op('raw%d' % area).par.index = index
+    g = lab.op('placed%d' % area)
+    uv = msg.get('uv')
+    placed = isinstance(uv, list) and len(uv) == 9 and index > 0
+    if placed:
+        for row in range(3):
+            for k, comp in enumerate('xyz'):
+                p = vec_par(g, row, comp)
+                if p is not None:
+                    p.val = float(uv[row * 3 + k])
+    p = vec_par(g, 3, 'x')
+    if p is not None:
+        p.val = 1 if placed else 0
+
+
+# --- fades -----------------------------------------------------------------------
+# A bar with a fade in / fade out on the app's timeline: its picture or video eases up from black (or
+# down to black, then hides), and its sound eases up from silence (or down, then stops), over "fade"
+# seconds. While fading, the area's fadeN levelTOP (or the sound's volume) follows an expression;
+# otherwise it's a plain value, so nothing cooks for it.
+
+FADE_EXPR = "op('receiver_callbacks').module.fade_level(%r, absTime.seconds)"
+
+
+def fades():
+    f = lab.fetch('fades', None)
+    if f is None:
+        f = {}
+        lab.store('fades', f)
+    return f
+
+
+def fade_level(key, t=None):
+    """How far up a fading area or sound is now (0-1); 1 when it isn't fading."""
+    f = fades().get(key)
+    if not f:
+        return 1.0
+    t0, a, b, dur = f[0], f[1], f[2], f[3]
+    t = absTime.seconds if t is None else t
+    u = 1.0 if dur <= 0 else max(0.0, min(1.0, (t - t0) / dur))
+    u = (1 - math.cos(math.pi * u)) / 2
+    return a + (b - a) * u
+
+
+def fade_par(key):
+    """The parameter a fade moves: the area's fadeN brightness, or the sound slot's volume."""
+    if isinstance(key, int):
+        lv = lab.op('fade%d' % key)
+        return lv.par.brightness1 if lv is not None else None
+    ch = lab.op('sound%d' % int(key[1:]))
+    return ch.par.volume if ch is not None and hasattr(ch.par, 'volume') else None
+
+
+def fade_target(key):
+    # A sound's own volume (its bar's slider), which its fade eases up to.
+    return float(lab.fetch('slot_volume', {}).get(key, 1.0)) if isinstance(key, str) else 1.0
+
+
+def start_fade(key, a, b, seconds, then=None):
+    """Eases an area (int) or sound slot ('sK') from a to b over `seconds`; `then` ('hide' / 'stop') after."""
+    tok = lab.fetch('fade_token', 0) + 1
+    lab.store('fade_token', tok)
+    f = fades()
+    p = fade_par(key)
+    if seconds <= 0 or p is None:
+        f.pop(key, None)
+        if p is not None:
+            p.mode = ParMode.CONSTANT
+            p.val = b * fade_target(key)
+        return
+    f[key] = (absTime.seconds, a, b, seconds, tok)
+    lab.store('fades', f)
+    p.expr = (FADE_EXPR % key) + (' * %r' % fade_target(key) if isinstance(key, str) else '')
+    p.mode = ParMode.EXPRESSION
+    run("op(%r).module.end_fade(%r, %r, %r)" % (lab.op('receiver_callbacks').path, key, tok, then), delayMilliSeconds=int(seconds * 1000) + 30)
+
+
+def end_fade(key, tok, then):
+    f = fades()
+    if f.get(key, (0, 0, 0, 0, None))[4] != tok:
+        return  # Something newer came for this area or sound: it's in charge now.
+    b = f.pop(key)[2]
+    p = fade_par(key)
+    if p is not None:
+        p.mode = ParMode.CONSTANT
+        p.val = b * fade_target(key)
+    if then == 'hide':
+        hide_area(key)
+    elif then == 'stop':
+        stop_slot(int(key[1:]))
+
+
+def stop_fade(key):
+    """No fade for this area or sound any more (shown or hidden straight away): full up again."""
+    fades().pop(key, None)
+    p = fade_par(key)
+    if p is not None:
+        p.mode = ParMode.CONSTANT
+        p.val = fade_target(key)
+
+
+def fade_in(key, msg):
+    secs = float(msg.get('fade') or 0)
+    if secs > 0:
+        start_fade(key, 0.0, 1.0, secs)
+    else:
+        stop_fade(key)
+
+
 def show(msg):
     area = int(msg.get('area', 0))
     if not 1 <= area <= AREAS:
@@ -155,16 +360,28 @@ def show(msg):
         col = lab.op('color%d' % area)
         col.par.colorr, col.par.colorg, col.par.colorb = r, g, b
         lab.op('movie%d' % area).par.play = 0
-        lab.op('switch%d' % area).par.index = 2
+        route(area, 2, msg)
+        fade_in(area, msg)
         now(where, dict(msg, path=msg.get('value')))
         return where, 'colour shown'
     if kind == 'text':
         # Words on the area: its text layer (switch input 3).
         lab.op('words%d' % area).par.text = msg.get('value') or ''
         lab.op('movie%d' % area).par.play = 0
-        lab.op('switch%d' % area).par.index = 3
+        route(area, 3, msg)
+        fade_in(area, msg)
         now(where, dict(msg, path=(msg.get('value') or '')[:60]))
         return where, 'text shown'
+    if kind == 'character':
+        # An AI character: the app's character page (input 4), moving with the chatbot's voice.
+        problem = show_character(area, msg)
+        if problem:
+            return where, problem
+        lab.op('movie%d' % area).par.play = 0
+        route(area, CHARACTER_INPUT, msg)
+        fade_in(area, msg)
+        now(where, dict(msg, path='AI character ' + (msg.get('value') or 'spectrum')))
+        return where, 'character shown'
     path = full_path(msg)
     if not path or not os.path.isfile(path):
         return where, 'file missing'
@@ -173,13 +390,25 @@ def show(msg):
     movie.par.textendright = 'cycle' if msg.get('loop') else 'hold'
     movie.par.play = 1
     movie.par.cuepulse.pulse()
-    lab.op('switch%d' % area).par.index = 1
+    route(area, 1, msg)
+    fade_in(area, msg)
     now(where, msg)
     return where, 'shown' if msg.get('kind') == 'image' else 'playing'
 
 
+def reload_file(msg):
+    # The app replaced this file (converted it to H.264): every area playing it opens it again.
+    fp = os.path.normpath(full_path(msg))
+    areas = [a for a in range(1, AREAS + 1)
+             if fp and os.path.normpath(str(lab.op('movie%d' % a).par.file.eval())) == fp]
+    for a in areas:
+        lab.op('movie%d' % a).par.reloadpulse.pulse()
+    return ', '.join('area %d' % a for a in areas) or 'media', 'reloaded' if areas else 'not showing'
+
+
 def hide_area(area):
-    lab.op('switch%d' % area).par.index = 0
+    stop_fade(area)
+    route(area, 0, {})
     lab.op('movie%d' % area).par.play = 0
     now('area %d' % area)
 
@@ -188,6 +417,10 @@ def hide(msg):
     area = int(msg.get('area', 0))
     if not 1 <= area <= AREAS:
         return 'area %s?' % msg.get('area'), 'no such area'
+    secs = float(msg.get('fade') or 0)
+    if secs > 0:
+        start_fade(area, fade_level(area), 0.0, secs, 'hide')
+        return 'area %d' % area, 'fading out'
     hide_area(area)
     return 'area %d' % area, 'hidden'
 
@@ -211,6 +444,7 @@ def free_slot():
 
 
 def stop_slot(k):
+    fades().pop('s%d' % k, None)
     lab.op('sound%d' % k).par.play = 0
     now('sound %d' % k)
 
@@ -223,18 +457,83 @@ def play_sound(msg):
     ch = lab.op('sound%d' % k)
     ch.par.file = path
     set_loop_audio(ch, bool(msg.get('loop')))
+    set_volume(ch, msg, k)
+    fade_in('s%d' % k, msg)
+    set_pan(k, msg)
     ch.par.play = 1
     ch.par.cuepulse.pulse()
     now('sound %d' % k, msg)
     return 'slot %d' % k, 'playing'
 
 
+def set_volume(ch, msg, k):
+    # The sound's own volume from its bar's slider: 0 (silent) to 4 (four times the file; the app limits it, TouchDesigner does not).
+    v = max(0.0, min(4.0, float(msg.get('volume', 1))))
+    vols = lab.fetch('slot_volume', {})
+    vols['s%d' % k] = v
+    lab.store('slot_volume', vols)
+    if not hasattr(ch.par, 'volume'):
+        return
+    f = fades().get('s%d' % k)
+    if f:
+        # Fading: it eases to (or from) the new volume instead.
+        ch.par.volume.expr = (FADE_EXPR % ('s%d' % k)) + ' * %r' % v
+    else:
+        ch.par.volume.mode = ParMode.CONSTANT
+        ch.par.volume = v
+
+
+def sound_volume(msg):
+    sid = msg.get('id')
+    slots = [k for k, rid, _, _ in slot_rows() if rid and rid == sid]
+    for k in slots:
+        set_volume(lab.op('sound%d' % k), msg, k)
+    vol = round(max(0.0, min(4.0, float(msg.get('volume', 1)))) * 100)
+    return ', '.join('slot %d' % k for k in slots) or 'sound', 'volume %d%%' % vol if slots else 'not playing'
+
+
+def set_pan(k, msg):
+    # Where the sound is heard in the room (the app's Spatialized Audio): how loud speakers 1-4 play it.
+    c = lab.op('sp_pan%d' % k)
+    if c is None:
+        return
+    gains = msg.get('pan') or [0.5, 0.5, 0.5, 0.5]
+    for n in range(4):
+        g = float(gains[n]) if n < len(gains) else 0.0
+        getattr(c.par, 'value%d' % n).val = max(0.0, min(1.0, g))
+
+
+def sound_pan(msg):
+    sid = msg.get('id')
+    slots = [k for k, rid, _, _ in slot_rows() if rid and rid == sid]
+    for k in slots:
+        set_pan(k, msg)
+    g = msg.get('pan') or []
+    text = ' '.join('%d:%d%%' % (n + 1, round(float(v) * 100)) for n, v in enumerate(g[:4]))
+    return ', '.join('slot %d' % k for k in slots) or 'sound', ('speakers ' + text) if slots else 'not playing'
+
+
+def sound_loop(msg):
+    sid = msg.get('id')
+    slots = [k for k, rid, _, _ in slot_rows() if rid and rid == sid]
+    on = bool(msg.get('loop'))
+    for k in slots:
+        set_loop_audio(lab.op('sound%d' % k), on)
+        table('now_playing')['sound %d' % k, 'Loop'] = 'yes' if on else 'no'
+    return ', '.join('slot %d' % k for k in slots) or 'sound', ('looping' if on else 'not looping') if slots else 'not playing'
+
+
 def stop_sound(msg):
     sid = msg.get('id')
     stopped = [k for k, rid, _, _ in slot_rows() if rid and (not sid or rid == sid)]
+    secs = float(msg.get('fade') or 0)
     for k in stopped:
-        stop_slot(k)
-    return ', '.join('slot %d' % k for k in stopped) or 'sound', 'stopped' if stopped else 'not playing'
+        if secs > 0:
+            start_fade('s%d' % k, fade_level('s%d' % k), 0.0, secs, 'stop')
+        else:
+            stop_slot(k)
+    done = 'fading out' if secs > 0 else 'stopped'
+    return ', '.join('slot %d' % k for k in stopped) or 'sound', done if stopped else 'not playing'
 
 
 def levels(msg):
@@ -392,8 +691,12 @@ HANDLERS = {
     ('media', 'show'): show,
     ('media', 'play'): show,
     ('media', 'hide'): hide,
+    ('media', 'reload'): reload_file,
     ('sound', 'play'): play_sound,
     ('sound', 'stop'): stop_sound,
+    ('sound', 'volume'): sound_volume,
+    ('sound', 'loop'): sound_loop,
+    ('sound', 'pan'): sound_pan,
     ('levels', ''): levels,
     ('clear', ''): clear,
     ('medialist', ''): media_list,
@@ -446,7 +749,24 @@ def handle(text):
 
 # --- Web Server DAT callbacks -------------------------------------------------
 
+def voice(webServerDAT, client, data):
+    """The voice stream for AI characters: True if `data` was one of its messages (handled here)."""
+    if not data.startswith('{"type":"voice"'):
+        return False
+    if '"action":"listen"' in data:
+        LISTENERS.add(client)
+        return True
+    for c in list(LISTENERS):
+        try:
+            webServerDAT.webSocketSendText(c, data)
+        except Exception:
+            LISTENERS.discard(c)
+    return True
+
+
 def onWebSocketReceiveText(webServerDAT, client, data):
+    if voice(webServerDAT, client, data):
+        return
     webServerDAT.webSocketSendText(client, json.dumps(handle(data)))
 
 
@@ -471,7 +791,7 @@ def onWebSocketOpen(webServerDAT, client, uri):
 
 
 def onWebSocketClose(webServerDAT, client):
-    return
+    LISTENERS.discard(client)
 
 
 def onWebSocketReceiveBinary(webServerDAT, client, data):
@@ -502,11 +822,31 @@ GUIDE = [
      '{"type":"media","action":"show","area":4,"id":"M-020","kind":"color","value":"#0b1d36"}'],
     ['media show (text)', 'Shows words in an area (white on black, centred), no file',
      '{"type":"media","action":"show","area":5,"id":"M-021","kind":"text","value":"Welcome to the clinic"}'],
+    ['media show (AI character)', 'Shows an AI character (the app page at url, in a Web Render TOP) that moves with the chatbot\'s voice',
+     '{"type":"media","action":"show","area":3,"id":"M-030","kind":"character","value":"#ff2a2a","url":"http://localhost:3000/ai-character/show?td=ws://localhost:9980&color=ff2a2a"}'],
+    ['voice listen', 'From a character page: send it the voice from now on (not logged, no reply)',
+     '{"type":"voice","action":"listen"}'],
+    ['voice level', 'From the app, ~30 a second while a character shows: passed on to the listening pages (not logged, no reply)',
+     '{"type":"voice","action":"level","level":0.6,"low":0.4,"mid":0.7,"high":0.2}'],
     ['media play', 'Plays a video in an area; loop true = loops, false = plays once and holds the last frame',
      '{"type":"media","action":"play","area":5,"id":"M-007","path":"monitor.mov","kind":"video","loop":true}'],
     ['media hide', 'Clears an area to black', '{"type":"media","action":"hide","area":5}'],
-    ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped',
-     '{"type":"sound","action":"play","id":"M-014","path":"ding.mp3","loop":false}'],
+    ['(fade)', 'On media show / play / hide and sound play / stop: eases it in from black or silence (or out, '
+     'then hides or stops it) over this many seconds - a bar\'s fade on the app\'s timeline',
+     '{"type":"media","action":"hide","area":5,"fade":1}'],
+    ['(uv)', 'On media show / play: placed on the app\'s room drawing - the area shows its slice of the whole '
+     'picture (output u,v -> picture u,v, a 3x3 matrix row by row; divide by the third)',
+     '{"type":"media","action":"show","area":5,"path":"forest.jpg","kind":"image","uv":[1,0,0,0,1,0,0,0,1]}'],
+    ['(folder)', 'On media and sound messages: the scene\'s media folder, looked for inside the Media Folder',
+     '{"type":"media","action":"show","area":2,"folder":"Scene 3 media","path":"forest.jpg","kind":"image"}'],
+    ['sound play', 'Plays a sound on a free audio slot (1-8); loop true = until stopped; volume 0-4 (its bar\'s slider); pan = speakers 1-4',
+     '{"type":"sound","action":"play","id":"M-014","path":"ding.mp3","loop":false,"volume":1,"pan":[0.5,0.5,0.5,0.5]}'],
+    ['media reload', 'A file the app replaced (converted to H.264): areas showing it open it again',
+     '{"type":"media","action":"reload","folder":"Scene 3 media","path":"forest.mov"}'],
+    ['sound pan', 'Where a playing sound is heard: how loud speakers 1-4 play it (0-1 each; 1 front left, 2 back right, 3 back left, 4 front right)',
+     '{"type":"sound","action":"pan","id":"M-014","pan":[1,0,0,0]}'],
+    ['sound volume', 'Sets a playing sound\'s own volume, 0 (silent) to 4', '{"type":"sound","action":"volume","id":"M-014","volume":0.8}'],
+    ['sound loop', 'Turns a playing sound\'s looping on or off', '{"type":"sound","action":"loop","id":"M-014","loop":true}'],
     ['sound stop', 'Stops that sound (no id = every sound)', '{"type":"sound","action":"stop","id":"M-014"}'],
     ['levels', 'Sets the sounds\' volume (0-1), easing over ms - the Music / Sounds volume and the dip under the voice',
      '{"type":"levels","gain":0.4,"ms":400}'],
@@ -529,6 +869,89 @@ GUIDE = [
     ['(cue)', 'A stage cue from the app\'s server (the flow\'s TouchDesigner address) - logged only',
      '{"cue":"...","trigger":"...","stage":"2","sessionId":"...","slots":{}}'],
 ]
+
+
+# Input 0: the area's fitted picture (as before). Input 1: the same, unfitted. Placed (uPlaced.x = 1),
+# each output point is taken through the uv matrix to the picture; outside it, black.
+PLACED_SHADER = '''uniform vec4 uRow0;
+uniform vec4 uRow1;
+uniform vec4 uRow2;
+uniform vec4 uPlaced;
+out vec4 fragColor;
+void main()
+{
+    vec2 uv = vUV.st;
+    if (uPlaced.x < 0.5) {
+        fragColor = TDOutputSwizzle(texture(sTD2DInputs[0], uv));
+        return;
+    }
+    vec3 o = vec3(uv, 1.0);
+    vec3 p = vec3(dot(uRow0.xyz, o), dot(uRow1.xyz, o), dot(uRow2.xyz, o));
+    vec4 c = vec4(0.0, 0.0, 0.0, 1.0);
+    if (p.z > 0.0) {
+        vec2 q = p.xy / p.z;
+        if (q.x >= 0.0 && q.x <= 1.0 && q.y >= 0.0 && q.y <= 1.0)
+            c = vec4(texture(sTD2DInputs[1], q).rgb, 1.0);
+    }
+    fragColor = TDOutputSwizzle(c);
+}
+'''
+
+
+SPEAKERS = 4
+
+
+def build_spatial(lab):
+    """Spatialized audio: each sound slot, made mono, is played by the room's four speakers (the
+    GIGAPORT eX's outputs 1-4) as loud as its sp_panN levels say - the app sets them from where the
+    sound's dot is. Safe to run again: it replaces its own nodes (named sp_...) and leaves the rest."""
+    for o in list(lab.findChildren(name='sp_*', depth=1)):
+        o.destroy()
+    buses = []
+    for n in range(1, SPEAKERS + 1):
+        bus = place(lab.create(mathCHOP, 'sp_bus%d' % n), 1000, -1100 - (n - 1) * 160)
+        setp(bus, 'chopop', 'add')
+        buses.append(bus)
+    for k in range(1, SOUND_SLOTS + 1):
+        y = -1100 - (k - 1) * 130
+        mono = place(lab.create(mathCHOP, 'sp_mono%d' % k), 0, y)
+        mono.inputConnectors[0].connect(lab.op('sound%d' % k))
+        setp(mono, 'chanop', 'avg')
+        name = place(lab.create(renameCHOP, 'sp_name%d' % k), 150, y)
+        name.inputConnectors[0].connect(mono)
+        setp(name, 'renamefrom', '*')
+        setp(name, 'renameto', 'm')
+        pan = place(lab.create(constantCHOP, 'sp_pan%d' % k), 300, y - 60)
+        for n in range(SPEAKERS):
+            setp(pan, 'name%d' % n, 's%d' % (n + 1))
+            setp(pan, 'value%d' % n, 0.5)
+        for n in range(1, SPEAKERS + 1):
+            g = place(lab.create(mathCHOP, 'sp_%d_%d' % (k, n)), 450 + (n - 1) * 120, y)
+            g.inputConnectors[0].connect(name)
+            g.par.gain.expr = "op('sp_pan%d')['s%d']" % (k, n)
+            buses[n - 1].inputConnectors[k - 1].connect(g)
+    quad = place(lab.create(mergeCHOP, 'sp_quad'), 1300, -1300)
+    for n, bus in enumerate(buses, 1):
+        out = place(lab.create(renameCHOP, 'sp_out%d' % n), 1150, -1100 - (n - 1) * 160)
+        out.inputConnectors[0].connect(bus)
+        setp(out, 'renamefrom', '*')
+        setp(out, 'renameto', 'speaker%d' % n)
+        quad.inputConnectors[n - 1].connect(out)
+    level = place(lab.create(mathCHOP, 'sp_level'), 1450, -1300)
+    level.inputConnectors[0].connect(quad)
+    level.par.gain.expr = "op('level_lag')['gain']"
+    dev = lab.op('audio_out')
+    dev.inputConnectors[0].connect(level)
+    dev.nodeX, dev.nodeY = 1600, -1300
+    # The room's speakers: the GIGAPORT eX, if this computer has it.
+    p = getattr(dev.par, 'device', None)
+    if p is not None and p.isMenu:
+        giga = [(v, l) for v, l in zip(p.menuNames, p.menuLabels) if 'gigaport' in (v + l).lower()]
+        if giga:
+            p.val = giga[0][0]
+            print('Sound goes to %s (speakers 1-4 on its outputs 1-4).' % giga[0][1])
+        else:
+            warn('No GIGAPORT found for audio_out - sound goes to %s.' % (p.menuLabels[p.menuIndex] if p.menuLabels else '?'))
 
 
 def build():
@@ -598,6 +1021,10 @@ def build():
         setp(black, c, 0)
     setp(black, 'alpha', 1)
 
+    # The placed-picture shader, shared by placed1 ... placed11.
+    shader = place(lab.create(textDAT, 'placed_shader'), -400, 400)
+    shader.text = PLACED_SHADER
+
     preview = place(lab.create(layoutTOP, 'preview'), 900, 600)
     for a in range(1, AREAS + 1):
         y = 600 - (a - 1) * 160
@@ -632,8 +1059,33 @@ def build():
         sw.inputConnectors[2].connect(col)
         sw.inputConnectors[3].connect(words)
         setp(sw, 'index', 0)
+        # The same sources unfitted, for a picture placed on the room drawing (see route()).
+        raw = place(lab.create(switchTOP, 'raw%d' % a), 200, y - 60)
+        raw.inputConnectors[0].connect(black)
+        raw.inputConnectors[1].connect(movie)
+        raw.inputConnectors[2].connect(col)
+        raw.inputConnectors[3].connect(words)
+        setp(raw, 'index', 0)
+        g = place(lab.create(glslTOP, 'placed%d' % a), 300, y)
+        g.inputConnectors[0].connect(sw)
+        g.inputConnectors[1].connect(raw)
+        setp(g, 'pixeldat', shader.path)
+        setp(g, 'outputresolution', 'custom')
+        g.par.resolutionw.expr = 'parent().par.Width'
+        g.par.resolutionh.expr = 'parent().par.Height'
+        for i, name in enumerate(('uRow0', 'uRow1', 'uRow2', 'uPlaced')):
+            for pname in ('vec%dname' % i, 'uniname%d' % i):
+                if getattr(g.par, pname, None) is not None:
+                    setp(g, pname, name)
+                    break
+            else:
+                problems.append('%s: no uniform name parameter for %s' % (g.path, name))
+        # Fades in and out (a bar's fade on the app's timeline): brightness, 1 unless fading.
+        fade = place(lab.create(levelTOP, 'fade%d' % a), 350, y)
+        fade.inputConnectors[0].connect(g)
+        setp(fade, 'brightness1', 1)
         area = place(lab.create(nullTOP, 'area%d' % a), 400, y)
-        area.inputConnectors[0].connect(sw)
+        area.inputConnectors[0].connect(fade)
         out = place(lab.create(outTOP, 'out%d' % a), 600, y)
         out.inputConnectors[0].connect(area)
         # The preview only: the area's number in its corner, so even black areas can be told apart.
@@ -674,6 +1126,7 @@ def build():
     dev.inputConnectors[0].connect(mix)
     aout = place(lab.create(outCHOP, 'out_audio'), 400, -1450)
     aout.inputConnectors[0].connect(mix)
+    build_spatial(lab)
 
     # The Open Preview button: a window with all 11 areas.
     pe = place(lab.create(parameterexecuteDAT, 'open_preview'), -600, 600)
