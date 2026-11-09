@@ -20,8 +20,8 @@ import {
   type MediaLink,
   type Placement,
   type TimelineBar,
-  fadesIn,
-  fadesOut,
+  fadeInSeconds,
+  fadeOutSeconds,
 } from './mediaFolder';
 import type { SceneRef } from './mediaPlayback';
 import { syncVisuals } from './touchDesigner';
@@ -54,14 +54,15 @@ export type Shown = {
   /** Where it was placed over the room drawing (roomPlacement.ts) — its area shows the part inside its outline. */
   place?: Placement;
   /** Its bar there fades in as it starts / out as it ends (TouchDesigner eases it from or to black). */
-  fadeIn?: boolean;
-  fadeOut?: boolean;
+  /** How long it fades in / out there, in seconds (0: no fade). */
+  fadeIn?: number;
+  fadeOut?: number;
 };
 
 /** The fades of a connection's bar on one area: the bars playing it now (`bars`), else any on that area. */
 const fadesOf = (link: MediaLink, area: number, bars?: TimelineBar[]) => {
   const bar = (bars ?? barsOf(link)).find((b) => areaOfTrack(b.track) === area);
-  return { fadeIn: fadesIn(bar), fadeOut: fadesOut(bar) };
+  return { fadeIn: fadeInSeconds(bar), fadeOut: fadeOutSeconds(bar) };
 };
 
 /** The placement of a connection's picture on one area (its bar there), if it was placed. */

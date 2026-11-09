@@ -4,9 +4,8 @@ import { useSyncExternalStore } from 'react';
 import {
   areaOfTrack,
   barsOf,
-  FADE_SECONDS,
-  fadesIn,
-  fadesOut,
+  fadeInSeconds,
+  fadeOutSeconds,
   isMarker,
   loadLibrary,
   loadMediaLinks,
@@ -80,6 +79,26 @@ if (typeof window !== 'undefined') {
   });
 }
 
+// Why a marker sound couldn't play, wherever the marker arrived from (a call starting, the conversation
+// moving on, or a click): the timeline shows it, so a sound never fails silently.
+let problem: string | null = null;
+const problemListeners = new Set<() => void>();
+export function setMarkerProblem(text: string | null) {
+  problem = text;
+  problemListeners.forEach((l) => l());
+}
+export const useMarkerProblem = () =>
+  useSyncExternalStore(
+    (l) => {
+      problemListeners.add(l);
+      return () => {
+        problemListeners.delete(l);
+      };
+    },
+    () => problem,
+    () => null,
+  );
+
 export async function markerArrived(
   scene: SceneRef | null,
   stages: { code: string }[],
@@ -90,12 +109,16 @@ export async function markerArrived(
     onProblem,
   }: {
     visualsOnly?: boolean;
-    /** From a click (moving the marker by hand): the browser may ask for permission to read the media folder. */
+    /**
+     * From a click (moving the marker by hand, or the click that starts a call): the browser may ask for
+     * permission to read the media folder (it forgets after a reload).
+     */
     ask?: boolean;
-    /** Hears why a sound couldn't play (no folder, no permission, a file that won't open). */
+    /** Hears why a sound couldn't play (no folder, no permission, a file that won't open). Default: the timeline shows it. */
     onProblem?: (text: string) => void;
   } = {},
 ) {
+  onProblem = onProblem ?? setMarkerProblem;
   if (!scene || !code) return;
   const at = stages.findIndex((s) => s.code === code);
   if (at < 0) return;
@@ -132,7 +155,7 @@ export async function markerArrived(
       if (covering.length > 0 && !isSoundPlaying(asset.id)) {
         const volume = clampSoundVolume(link.volume);
         // Its bar fades in: eased up from silence.
-        const fade = covering.some(fadesIn) ? FADE_SECONDS : 0;
+        const fade = Math.max(0, ...covering.map(fadeInSeconds));
         void (loopOf(link) ? startLoop(asset, volume, ask, fade) : playSound(asset, ask, volume, fade)).catch(
           (err: unknown) =>
             onProblem?.(
@@ -142,7 +165,7 @@ export async function markerArrived(
       } else if (covering.length === 0 && isSoundPlaying(asset.id)) {
         // The bar it played for (on the stage the marker left) fades out: eased down, then stopped.
         const ended = before === null ? [] : barsOf(link).filter((b) => covers(b, before));
-        stopSounds(asset.id, ended.some(fadesOut) ? FADE_SECONDS : 0);
+        stopSounds(asset.id, Math.max(0, ...ended.map(fadeOutSeconds)));
       }
       continue;
     }

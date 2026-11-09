@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { isMade, type MediaAsset } from './media';
-import { FADE_SECONDS, loadLibrary, onMediaSceneChange } from './mediaFolder';
+import { loadLibrary, onMediaSceneChange } from './mediaFolder';
 import { areaUvMatrix } from './roomPlacement';
 import type { Shown } from './mediaShow';
 import { onVoiceReading } from './voiceLevel';
@@ -314,7 +314,7 @@ export function syncVisuals(showing: Shown[], quick = false) {
     const message = {
       ...visualMessage(area, { id: s.assetId, path: s.path, kind: s.kind, value: s.value }, s.loop),
       // Its bar fades in: eased up from black.
-      ...(s.fadeIn && !quick && { fade: FADE_SECONDS }),
+      ...(s.fadeIn && !quick && { fade: s.fadeIn }),
     };
     // Placed on the room drawing: the area shows its slice of the whole picture (see roomPlacement.ts).
     send(withFolder(s.place ? { ...message, uv: areaUvMatrix(area, s.place) } : message));
@@ -324,7 +324,7 @@ export function syncVisuals(showing: Shown[], quick = false) {
     if (now.has(area)) continue;
     // Its bar fades out: eased down to black, then hidden.
     const fade = !quick && sent.get(area)?.fadeOut;
-    send({ type: 'media', action: 'hide', area, ...(fade && { fade: FADE_SECONDS }) });
+    send({ type: 'media', action: 'hide', area, ...(fade && { fade }) });
     sent.delete(area);
   }
 }

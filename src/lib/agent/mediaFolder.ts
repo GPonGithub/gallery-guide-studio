@@ -249,20 +249,31 @@ export type TimelineBar = {
    */
   place?: Placement;
   /**
-   * Fades in (from black, or silence) over FADE_SECONDS as the bar starts. On unless false: clicking the
-   * bar's left end on the timeline turns it off (and on again). Read it with fadesIn().
+   * Fades in (from black, or silence) as the bar starts: seconds, 0 to MAX_FADE_SECONDS. Unset or true:
+   * FADE_SECONDS (on by default); false: no fade. Clicking the bar's left end on the timeline turns it off
+   * (and on again); dragging the grip just inside that end sets how long. Read it with fadeInSeconds().
    */
-  fadeIn?: boolean;
-  /** Fades out (to black, or silence) as the bar ends: on unless false — its right end. Read with fadesOut(). */
-  fadeOut?: boolean;
+  fadeIn?: boolean | number;
+  /** Fades out (to black, or silence) as the bar ends — the same, for its right end. Read with fadeOutSeconds(). */
+  fadeOut?: boolean | number;
 };
 
-/** Whether a bar fades in / out: yes unless it was switched off (and a connection with no bar yet fades too). */
-export const fadesIn = (bar: TimelineBar | undefined) => bar?.fadeIn !== false;
-export const fadesOut = (bar: TimelineBar | undefined) => bar?.fadeOut !== false;
-
-/** How long a bar's fade in or fade out takes. */
+/** A bar's fade in or fade out, unless set otherwise. */
 export const FADE_SECONDS = 1;
+/** The longest a fade can be (each notch on the timeline is a second). */
+export const MAX_FADE_SECONDS = 3;
+
+const fadeLength = (f: boolean | number | undefined) =>
+  f === false ? 0 : typeof f === 'number' ? Math.max(0, Math.min(MAX_FADE_SECONDS, Math.round(f))) : FADE_SECONDS;
+/** How long a bar fades in / out, in seconds (0 = no fade; a connection with no bar yet fades the usual second). */
+export const fadeInSeconds = (bar: TimelineBar | undefined) => fadeLength(bar?.fadeIn);
+export const fadeOutSeconds = (bar: TimelineBar | undefined) => fadeLength(bar?.fadeOut);
+/** Whether a bar fades in / out at all. */
+export const fadesIn = (bar: TimelineBar | undefined) => fadeInSeconds(bar) > 0;
+export const fadesOut = (bar: TimelineBar | undefined) => fadeOutSeconds(bar) > 0;
+/** How a fade length is stored on a bar: the usual second as nothing, none as false, others as seconds. */
+export const fadeValue = (seconds: number): boolean | number | undefined =>
+  seconds <= 0 ? false : seconds === FADE_SECONDS ? undefined : Math.min(MAX_FADE_SECONDS, Math.round(seconds));
 
 /** The bar of a connection on an area (a picture or video), or its first bar (a sound). */
 export const barOn = (link: MediaLink, area?: number) =>

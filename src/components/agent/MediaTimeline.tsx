@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { buttonIcon } from '@/lib/styles';
 import { DropdownArrow } from './DropdownArrow';
-import { markerArrived, markerIsAt } from '@/lib/agent/markerPlay';
+import { markerArrived, markerIsAt, setMarkerProblem, useMarkerProblem } from '@/lib/agent/markerPlay';
 import { samePlace, setPlacing, usePlacing } from '@/lib/agent/roomPlacement';
 import {
   ACTION_KINDS,
@@ -28,6 +28,10 @@ import {
   areaOfTrack,
   barsOf,
   FADE_SECONDS,
+  MAX_FADE_SECONDS,
+  fadeInSeconds,
+  fadeOutSeconds,
+  fadeValue,
   fadesIn,
   fadesOut,
   loadLibrary,
@@ -190,7 +194,10 @@ export function MediaTimeline({
   const index = found >= 0 ? found : 0;
   // Moved by hand (◀ ▶, the ruler, arrow keys): "on marker arrival" media plays for where it lands.
   const movedByHand = useRef(false);
-  const [soundProblem, setSoundProblem] = useState<string | null>(null);
+  const [localProblem, setSoundProblem] = useState<string | null>(null);
+  // A marker sound that couldn't play — from a click here, or from a call starting / moving on.
+  const sharedProblem = useMarkerProblem();
+  const soundProblem = localProblem ?? sharedProblem;
   const moveTo = (to: number | ((i: number) => number)) => {
     if (count === 0) return;
     movedByHand.current = true;
@@ -224,6 +231,7 @@ export function MediaTimeline({
     if (!movedByHand.current) return;
     movedByHand.current = false;
     setSoundProblem(null);
+    setMarkerProblem(null);
     // A click moved it: the browser may ask to read the media folder (it forgets after a reload), and a
     // sound that can't play says why.
     void markerArrived(scene, stages, headCode, { ask: true, onProblem: setSoundProblem });
@@ -387,6 +395,10 @@ export function MediaTimeline({
 
   // A bar being dragged: where it would land (shown as it moves, saved on letting go).
   const tracksBox = useRef<HTMLDivElement>(null);
+  // A fade grip being dragged (a bar's end slid in by notches: one second each).
+  const [fadeDrag, setFadeDrag] = useState<{ key: string; end: 'from' | 'to'; x: number; start: number; now: number } | null>(
+    null,
+  );
   const [drag, setDrag] = useState<{
     key: string;
     /** Which of its connection's bars. */
@@ -688,7 +700,10 @@ export function MediaTimeline({
             {soundProblem && (
               <button
                 role="alert"
-                onClick={() => setSoundProblem(null)}
+                onClick={() => {
+                  setSoundProblem(null);
+                  setMarkerProblem(null);
+                }}
                 title={`${soundProblem} (click to hide)`}
                 className="mr-2 max-w-[320px] truncate border-l-4 border-[#b91c1c] bg-paper px-2 py-1 text-left font-body text-xs text-ink"
               >
@@ -981,42 +996,61 @@ export function MediaTimeline({
                   </span>
                 );
                 // Its ends: drag to stretch it; click to turn its fade in (left) or fade out (right) on or off.
+                // Just inside each end, a grip slides in by notches (a second each, up to MAX_FADE_SECONDS):
+                // how long that fade lasts. The ramp shows it.
+                const NOTCH = 12;                                     // px per second
+                const END = 16;                                       // the end handle's width
                 const handle = (end: 'from' | 'to') => {
-                  const fades = end === 'from' ? fadesIn(bar) : fadesOut(bar);
+                  const saved = end === 'from' ? fadeInSeconds(bar) : fadeOutSeconds(bar);
+                  const sliding = fadeDrag && fadeDrag.key === key && fadeDrag.end === end ? fadeDrag : null;
+                  const secs = sliding ? sliding.now : saved;
                   const what = end === 'from' ? 'fade in' : 'fade out';
+                  const side = end === 'from' ? 'left' : 'right';
+                  const rampW = secs > 0 ? END + secs * NOTCH : 0;
+                  const commit = (to: number) => {
+                    if (to === saved) return;
+                    const which = end === 'from' ? 'fadeIn' : 'fadeOut';
+                    updateMediaLinks(
+                      (all) => all.map((x) => (sameLink(x, l) ? withBar(x, i, { ...bar, [which]: fadeValue(to) }) : x)),
+                      to === 0 ? `Remove ${what}` : `${what[0].toUpperCase()}${what.slice(1)} ${to} s`,
+                    );
+                  };
                   return (
-                    <span
-                      data-bar-end={end}
-                      data-fade={fades ? 'on' : undefined}
-                      title={`Click: ${fades ? `no ${what}` : `${what} over ${FADE_SECONDS} s`} · drag: stretch`}
-                      onPointerDown={(e) => grab(e, l, i, end)}
-                      onPointerMove={(e) => {
-                        e.stopPropagation();
-                        follow(e, l, i);
-                      }}
-                      onPointerUp={(e) => {
-                        e.stopPropagation();
-                        letGo(l, i);
-                      }}
-                      // Pinned to the bar's edges, so they're there to grab however short the bar is.
-                      className={`absolute inset-y-0 z-20 w-4 cursor-ew-resize bg-ink/20 ${end === 'from' ? 'left-0 border-r' : 'right-0 border-l'} border-paper/50`}
-                      aria-hidden="true"
-                    >
-                      {fades && (
-                        // A ramp: rising from the bottom for a fade in, falling to it for a fade out.
+                    <>
+                      <span
+                        data-bar-end={end}
+                        data-fade={saved > 0 ? saved : undefined}
+                        title={`Click: ${saved > 0 ? `no ${what}` : `${what} over ${FADE_SECONDS} s`} · drag: stretch · drag the grip inside it: ${what} up to ${MAX_FADE_SECONDS} s`}
+                        onPointerDown={(e) => grab(e, l, i, end)}
+                        onPointerMove={(e) => {
+                          e.stopPropagation();
+                          follow(e, l, i);
+                        }}
+                        onPointerUp={(e) => {
+                          e.stopPropagation();
+                          letGo(l, i);
+                        }}
+                        // Pinned to the bar's edges, so they're there to grab however short the bar is.
+                        className={`absolute inset-y-0 z-20 w-4 cursor-ew-resize bg-ink/20 ${end === 'from' ? 'left-0 border-r' : 'right-0 border-l'} border-paper/50`}
+                        aria-hidden="true"
+                      />
+                      {rampW > 0 && (
+                        // The ramp: rising from the bottom over the fade in, falling to it over the fade out.
                         <svg
-                          className="pointer-events-none absolute inset-0 h-full w-full"
-                          viewBox="0 0 16 32"
+                          className="pointer-events-none absolute inset-y-0 z-10 h-full"
+                          style={{ [side]: 0, width: rampW }}
+                          viewBox={`0 0 ${rampW} 32`}
                           preserveAspectRatio="none"
+                          aria-hidden="true"
                         >
                           <polygon
-                            points={end === 'from' ? '0,32 16,0 16,32' : '0,0 16,32 0,32'}
+                            points={end === 'from' ? `0,32 ${rampW},0 ${rampW},32` : `0,0 ${rampW},32 0,32`}
                             fill="rgba(255,255,255,0.3)"
                           />
                           <line
                             x1="0"
                             y1={end === 'from' ? 32 : 0}
-                            x2="16"
+                            x2={rampW}
                             y2={end === 'from' ? 0 : 32}
                             stroke="#fff"
                             strokeWidth="2"
@@ -1024,7 +1058,64 @@ export function MediaTimeline({
                           />
                         </svg>
                       )}
-                    </span>
+                      {sliding &&
+                        // While sliding: a tick at each notch, and how long it is now.
+                        Array.from({ length: MAX_FADE_SECONDS }, (_, n) => (
+                          <span
+                            key={n}
+                            className="pointer-events-none absolute bottom-0 z-30 h-1.5 w-px bg-paper"
+                            style={{ [side]: END + (n + 1) * NOTCH }}
+                            aria-hidden="true"
+                          />
+                        ))}
+                      {sliding && (
+                        <span
+                          className="pointer-events-none absolute top-0 z-30 bg-ink px-0.5 font-label text-[9px] leading-tight text-paper"
+                          style={{ [side]: END + secs * NOTCH + 4 }}
+                        >
+                          {secs} s
+                        </span>
+                      )}
+                      <span
+                        data-fade-grip={end}
+                        role="slider"
+                        aria-label={`${what[0].toUpperCase()}${what.slice(1)} length`}
+                        aria-valuemin={0}
+                        aria-valuemax={MAX_FADE_SECONDS}
+                        aria-valuenow={secs}
+                        aria-valuetext={`${secs} seconds`}
+                        tabIndex={-1}
+                        title={`${what[0].toUpperCase()}${what.slice(1)}: ${secs} s — slide in up to ${MAX_FADE_SECONDS} notches (a second each)`}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          if (e.button !== 0) return;
+                          try {
+                            (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                          } catch {
+                            // not a real pointer
+                          }
+                          setFadeDrag({ key, end, x: e.clientX, start: saved, now: saved });
+                        }}
+                        onPointerMove={(e) => {
+                          e.stopPropagation();
+                          if (!sliding) return;
+                          const inward = (e.clientX - sliding.x) * (end === 'from' ? 1 : -1);
+                          const now = Math.max(0, Math.min(MAX_FADE_SECONDS, Math.round(sliding.start + inward / NOTCH)));
+                          if (now !== sliding.now) setFadeDrag({ ...sliding, now });
+                        }}
+                        onPointerUp={(e) => {
+                          e.stopPropagation();
+                          if (!sliding) return;
+                          setFadeDrag(null);
+                          commit(sliding.now);
+                        }}
+                        onPointerCancel={() => setFadeDrag(null)}
+                        className="absolute inset-y-0 z-30 w-2 cursor-col-resize"
+                        style={{ [side]: END + secs * NOTCH - 3 }}
+                      >
+                        <span className="absolute inset-y-1 left-1/2 w-0.5 -translate-x-1/2 rounded bg-paper/80" />
+                      </span>
+                    </>
                   );
                 };
                 return [

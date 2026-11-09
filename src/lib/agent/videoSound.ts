@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { kindOf, type MediaAsset } from './media';
-import { allowed, FADE_SECONDS, openMediaFile, savedMediaFolder, type MediaFolder, type MediaLink } from './mediaFolder';
+import { allowed, openMediaFile, savedMediaFolder, type MediaFolder, type MediaLink } from './mediaFolder';
 import { isSoundPlaying, playSound, soundVolumeOf, startLoop, stopSounds } from './mediaPlayback';
 import { currentShowing, onShowingChange, type Shown } from './mediaShow';
 
@@ -150,7 +150,7 @@ async function start(assetId: string) {
   const s = now[0];
   const asset: MediaAsset = { id: assetId, path: s.path, name: s.name, kind: 'video', status: 'present', added: '' };
   const volume = soundVolumeOf(assetId);
-  const fade = s.fadeIn ? FADE_SECONDS : 0;
+  const fade = s.fadeIn ?? 0;
   const play = s.loop ? startLoop(asset, volume, false, fade) : playSound(asset, false, volume, fade);
   play.catch(() => {
     if (sounding.get(assetId) === now) sounding.delete(assetId);
@@ -164,7 +164,7 @@ function update() {
     if (!now) {
       // Down everywhere: its sound stops too (fading out as the picture does).
       sounding.delete(assetId);
-      stopSounds(assetId, before.some((s) => s.fadeOut) ? FADE_SECONDS : 0);
+      stopSounds(assetId, Math.max(0, ...before.map((s) => s.fadeOut ?? 0)));
     } else if (!now.some((s) => before.includes(s))) {
       // Put up again from the start (every area new): its sound starts again with it.
       sounding.delete(assetId);

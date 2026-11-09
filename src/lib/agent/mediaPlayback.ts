@@ -19,8 +19,7 @@ import {
 import {
   allowed,
   barOn,
-  FADE_SECONDS,
-  fadesIn,
+  fadeInSeconds,
   currentMediaLinks,
   isConnected,
   isMarker,
@@ -701,7 +700,7 @@ export async function playEvent(
   await Promise.all(
     sounds.map((sound) => {
       onPlayed(sound);
-      const fade = fadesIn(barOn(sound.link)) ? FADE_SECONDS : 0;
+      const fade = fadeInSeconds(barOn(sound.link));
       const playing = playSound(sound.asset, ask, clampSoundVolume(sound.link.volume), fade).catch((err: unknown) =>
         onPlayed(sound, err instanceof Error ? err.message : 'It couldn’t be played.'),
       );

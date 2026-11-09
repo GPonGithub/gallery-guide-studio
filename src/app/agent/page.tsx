@@ -22,7 +22,7 @@ import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
 import { LAYOUT_DEMO_ACTIONS } from '@/components/agent/layoutDemo';
 import { DEMO_SCENE, DEMO_STAGES, endMediaDemo, useMediaDemo } from '@/lib/agent/mediaDemo';
-import { forgetMarker, markerArrived, replayMarker } from '@/lib/agent/markerPlay';
+import { forgetMarker, markerArrived, replayMarker, setMarkerProblem } from '@/lib/agent/markerPlay';
 import { send as sendToTD } from '@/lib/agent/touchDesigner';
 import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
@@ -53,9 +53,8 @@ import {
   followRewording,
   loopOf,
   barOn,
-  FADE_SECONDS,
-  fadesIn,
-  fadesOut,
+  fadeInSeconds,
+  fadeOutSeconds,
   mediaLinksLoaded,
   redoMediaLinks,
   restoreTimeline,
@@ -1796,7 +1795,7 @@ export default function AgentStudioPage() {
       // "Loop, when user instructs": it loops until removed (or the call ends).
       const volume = clampSoundVolume(media.link.volume);
       // Its bar fades in: eased up from silence.
-      const fade = fadesIn(barOn(media.link)) ? FADE_SECONDS : 0;
+      const fade = fadeInSeconds(barOn(media.link));
       (loopOf(media.link) ? startLoop(media.asset, volume, false, fade) : playSound(media.asset, false, volume, fade)).catch(fail);
       return;
     }
@@ -1808,7 +1807,7 @@ export default function AgentStudioPage() {
   const endMedia = (media: PlannedMedia, afterMessage: number) => {
     noteMedia(media, afterMessage, 'removed');
     // Its bar fades out: eased down to silence (pictures and video: their area's bar says, in mediaShow).
-    if (media.asset.kind === 'sound') stopSounds(media.asset.id, fadesOut(barOn(media.link)) ? FADE_SECONDS : 0);
+    if (media.asset.kind === 'sound') stopSounds(media.asset.id, fadeOutSeconds(barOn(media.link)));
     else hideVisual(media.asset.id);
   };
 
@@ -1999,8 +1998,8 @@ export default function AgentStudioPage() {
           noteSound(s, 0);
           // Its bar's loop button off: it plays once as the call begins.
           (s.link.loop === false
-            ? playSound(s.asset, false, clampSoundVolume(s.link.volume), fadesIn(barOn(s.link)) ? FADE_SECONDS : 0)
-            : startLoop(s.asset, clampSoundVolume(s.link.volume), false, fadesIn(barOn(s.link)) ? FADE_SECONDS : 0)
+            ? playSound(s.asset, false, clampSoundVolume(s.link.volume), fadeInSeconds(barOn(s.link)))
+            : startLoop(s.asset, clampSoundVolume(s.link.volume), false, fadeInSeconds(barOn(s.link)))
           ).catch((err: unknown) =>
             noteSound(s, 0, err instanceof Error ? err.message : 'It couldn’t be played.'),
           );
@@ -2011,7 +2010,10 @@ export default function AgentStudioPage() {
       clearVisuals();
       // "On marker arrival": whatever has a bar on the stage the call starts at.
       forgetMarker();
-      void markerArrived(mediaScene, sortStages(flow.stages), session.stageCode);
+      setMarkerProblem(null);
+      // The click that started the call lets the browser ask for the media folder again (it forgets after
+      // a reload); a sound that still can't play says why on the timeline.
+      void markerArrived(mediaScene, sortStages(flow.stages), session.stageCode, { ask: true });
       void sceneMedia(mediaScene, ['throughout', 'start']).then((list) =>
         list.filter((m) => m.asset.kind !== 'sound').forEach((m) => startMedia(m, 0)),
       );
