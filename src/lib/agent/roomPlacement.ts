@@ -12,7 +12,7 @@ import {
   type Placement,
   type TimelineBar,
 } from './mediaFolder';
-import { PROJECTION_SHAPES, type ProjectionShape } from './projectionLayout';
+import { areaName, PROJECTION_SHAPES, type ProjectionShape } from './projectionLayout';
 
 /**
  * Placing pictures and video on the room drawing. A picture dropped on an area fills it; it can then
@@ -206,7 +206,7 @@ export function dropOnArea(
       bar,
     };
     return [...cleared, { ...link, barsKind: timingOf(link).kind }];
-  }, `Place ${item.id} on area ${area}`);
+  }, `Place ${item.id} on ${areaName(area)}`);
   setPlacing(p);
   return p;
 }
@@ -254,7 +254,7 @@ export function toggleArea(p: Placing, area: number, order: string[]) {
       );
       return withBars(l, [...kept, { track: area, from: p.from, to: p.to, place }]) ?? l;
     });
-  }, `Area ${area}`);
+  }, areaName(area));
   if (after !== undefined) setPlacing(after);
 }
 
@@ -291,6 +291,8 @@ export function placingAt(links: MediaLink[], scene: { sheetId: string; number: 
  */
 function cornersOf(area: number): [number, number][] {
   const s = SHAPES.get(area)!;
+  // A wall drawn around a panel (zone 3's left wall): its own four corners.
+  if (s.corners) return s.corners;
   const b = boxOfShape(s);
   if (s.points.length !== 4)
     return [

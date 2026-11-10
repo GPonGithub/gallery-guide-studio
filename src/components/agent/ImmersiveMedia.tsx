@@ -56,6 +56,7 @@ import {
   makeThumbnail,
   followRewording,
   readActions,
+  controlsText,
   loopOf,
   readingNow,
   timingOf,
@@ -1014,8 +1015,11 @@ function loadOpen(): Set<string> {
 function playsText(l: MediaLink, asset: MediaAsset): string {
   if (isMarker(l)) return !isStill(asset.kind) && loopOf(l) ? `${MARKER_LABEL} · loops` : MARKER_LABEL;
   const t = timingOf(l);
-  if (t.kind === 'once' && !isStill(asset.kind) && loopOf(l)) return LOOP_WHEN_BADGE;
-  return t.kind === 'every' ? `${KIND_BADGE.every} · ${WHEN_LABEL[t.when]}` : KIND_BADGE[t.kind];
+  // What it does to the media already on, first ("fades out other sounds").
+  const controls = t.kind === 'once' ? controlsText(l.action) : '';
+  const also = controls ? ` · ${controls}` : '';
+  if (t.kind === 'once' && !isStill(asset.kind) && loopOf(l)) return LOOP_WHEN_BADGE + also;
+  return t.kind === 'every' ? `${KIND_BADGE.every} · ${WHEN_LABEL[t.when]}` : KIND_BADGE[t.kind] + also;
 }
 
 /**

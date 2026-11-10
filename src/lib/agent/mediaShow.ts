@@ -23,6 +23,7 @@ import {
   fadeInSeconds,
   fadeOutSeconds,
 } from './mediaFolder';
+import { areaNumber, zoneOfArea } from './projectionLayout';
 import type { SceneRef } from './mediaPlayback';
 import { syncVisuals } from './touchDesigner';
 
@@ -115,8 +116,14 @@ export function areasOf(link: MediaLink): number[] {
 
 /** "area 2" or "areas 2, 5 and 8". */
 export function areasText(areas: number[]): string {
-  if (areas.length === 1) return `area ${areas[0]}`;
-  return `areas ${areas.slice(0, -1).join(', ')} and ${areas.at(-1)}`;
+  // Areas outside zone 2 say their zone ("zone 1 area 2"); zone 2's are just their numbers, as before.
+  const zones = [...new Set(areas.map((a) => zoneOfArea(a).id))];
+  const list = (numbers: number[]) =>
+    numbers.length === 1 ? `area ${numbers[0]}` : `areas ${numbers.slice(0, -1).join(', ')} and ${numbers.at(-1)}`;
+  if (zones.length === 1 && zones[0] === 2) return list(areas);
+  return zones
+    .map((z) => `zone ${z} ${list(areas.filter((a) => zoneOfArea(a).id === z).map(areaNumber))}`)
+    .join(', ');
 }
 
 /** This scene's "every time" pictures and video for one event (before each reply, as it starts, after it, when the caller speaks). */
@@ -258,6 +265,15 @@ export function hideVisual(assetId: string) {
   if (gone.length === 0) return;
   gone.forEach(release);
   showing = showing.filter((s) => s.assetId !== assetId);
+  changed();
+}
+
+/** An action's control ("…and remove all the pictures"): takes everything out of the room except one file. */
+export function hideOtherVisuals(exceptAssetId?: string) {
+  const gone = showing.filter((s) => s.assetId !== exceptAssetId);
+  if (gone.length === 0) return;
+  gone.forEach(release);
+  showing = showing.filter((s) => s.assetId === exceptAssetId);
   changed();
 }
 

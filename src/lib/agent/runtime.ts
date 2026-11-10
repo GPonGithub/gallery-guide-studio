@@ -524,6 +524,12 @@ function responderSystem(
         'what to get done, not how to phrase it: put them in your own words, in character, except a line they give you ' +
         'to say exactly. Never carry on in a different style because earlier replies had one. All of this changes only ' +
         'how you talk: still do every step, and keep every fact and rule exactly right.',
+    // After the persona, so its "when she doesn't know…" line never wins over what the room is doing.
+    media.some((m) => m.change === 'appearing') &&
+      `THE ROOM IS DOING THIS RIGHT NOW, because of what the caller just said:\n${mediaLines(media.filter((m) => m.change === 'appearing'))}\n` +
+        'So this is not a question you don\'t know the answer to, and it is not off topic: never say you don\'t have it, ' +
+        'can\'t do it or don\'t understand. Go along with it in one short line, in character — and if the scene or the ' +
+        'character gives a line to say when this is asked for, say that line.',
     'EVERYTHING YOU WRITE IS SPOKEN ALOUD, exactly as written. Never write stage directions, actions or sound ' +
       'effects — nothing like *chuckles*, *rubs hands together*, *a door creaks* or (laughs) — and never use ' +
       'asterisks or emoji. Put the character into the words themselves: "Ah, Graham — a delightfully haunting name!"' +

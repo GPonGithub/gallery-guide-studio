@@ -36,7 +36,9 @@ import os
 MEDIA_FOLDER = '/Users/grahamplumb/Documents/2. Post Snibbe/0. CCA Teaching/2026 Fall/1. Connected Hospital Project/1. Conversation App Media Folder'
 PORT = 9980
 WIDTH, HEIGHT = 1920, 1080
-AREAS = 11
+# 1-11: zone 2 (projectors 1-4, the walls' Kantan Mapper). 12-14: zone 1's faces 1-3 (projector 5).
+# 15-17: zone 3's faces 1-3 (projector 6). Zones 1 and 3 are on kantanMapper_P56 (add_zone_areas.py).
+AREAS = 17
 SOUND_SLOTS = 8
 
 problems = []
@@ -77,6 +79,7 @@ import os
 import time
 
 lab = parent()
+# Areas 1-11 are zone 2; 12-14 zone 1's faces 1-3; 15-17 zone 3's faces 1-3 (the app's projectionLayout.ts).
 AREAS = int(lab.par.Areas.eval())
 SLOTS = int(lab.par.Soundslots.eval())
 
@@ -862,7 +865,7 @@ def onServerStop(webServerDAT):
 
 GUIDE = [
     ['Message', 'What TouchDesigner does', 'Example'],
-    ['media show', 'Shows a picture in an area (1-11)',
+    ['media show', 'Shows a picture in an area (1-17: zone 2 is 1-11, zone 1 is 12-14, zone 3 is 15-17)',
      '{"type":"media","action":"show","area":3,"id":"M-001","path":"Maya.jpg","kind":"image"}'],
     ['media show (colour)', 'Fills an area with a colour (hex), no file',
      '{"type":"media","action":"show","area":4,"id":"M-020","kind":"color","value":"#0b1d36"}'],

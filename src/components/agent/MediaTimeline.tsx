@@ -22,6 +22,8 @@ import {
 import { useMediaFolderRevision } from '@/lib/agent/mediaDemo';
 import { clampSoundVolume, MAX_SOUND_VOLUME, setSoundLoop, setSoundVolume, stopSounds } from '@/lib/agent/mediaPlayback';
 import { hideVisualExcept } from '@/lib/agent/mediaShow';
+import { ALL_AREAS, areaName, areaNumber, ZONES, zoneById, zoneOfArea, type ZoneId } from '@/lib/agent/projectionLayout';
+import { toggleZoneOpen, useZonesOpen } from '@/lib/agent/zones';
 import { pickSpatialSound } from '@/lib/agent/spatialAudio';
 import { audible, checkVideoSound, useVideoSoundResults } from '@/lib/agent/videoSound';
 import {
@@ -77,7 +79,7 @@ import {
  * Its × deletes it (the last bar of a connection disconnects the file).
  */
 
-export const TRACKS = 11;
+export const TRACKS = ALL_AREAS.length;
 /**
  * Sound tracks: the ♪ row opens (its arrow) into up to this many, so sounds
  * that overlap in time each get a row. (Chrome could play far more at once —
@@ -86,21 +88,52 @@ export const TRACKS = 11;
 export const MAX_SOUND_TRACKS = 5;
 /** Each projection area's number opens (its arrow) into this many tracks — several media for one screen. */
 export const MAX_AREA_TRACKS = 5;
-/** The tracks, top to bottom: the 11 projection areas (each perhaps opened into more), then the sound tracks. */
+/**
+ * The tracks, top to bottom: each zone's heading (Z1, Z2, Z3 — its arrow folds the zone's areas open and
+ * closed), under it that zone's projection areas (each perhaps opened into more), then that zone's sound
+ * tracks (one ♪ row, which opens into MAX_SOUND_TRACKS).
+ */
 type Track = TimelineBar['track'];
-const PROJECTION_ROWS: Track[] = Array.from({ length: TRACKS }, (_, i) => i + 1);
+/** A row of the timeline: a track, or a zone's heading. */
+type Row = Track | `zone-${ZoneId}`;
+const zoneRow = (zone: ZoneId): Row => `zone-${zone}`;
+const zoneOfRow = (r: Row): ZoneId | null => (typeof r === 'string' && r.startsWith('zone-') ? (Number(r.slice(5)) as ZoneId) : null);
+const isTrack = (r: Row): r is Track => zoneOfRow(r) === null;
 const areaTrack = (area: number, k: number): Track => (k <= 1 ? area : `${area}-${k}`);
 /** An area's extra tracks (5-2 … 5-5). */
 const extraTracks = (area: number): Track[] =>
   Array.from({ length: MAX_AREA_TRACKS - 1 }, (_, i) => areaTrack(area, i + 2));
-const soundTrack = (n: number): Track => (n <= 1 ? 'sound' : `sound-${n}`);
-const isSoundTrack = (t: Track) => typeof t === 'string' && t.startsWith('sound');
+/**
+ * A zone's nth sound track. Zone 2's are 'sound', 'sound-2' … 'sound-5', as they were before zones;
+ * zone 1's are 'sound-11' … 'sound-15' and zone 3's 'sound-31' … 'sound-35' (the zone, then the track).
+ * Every sound plays on the same room speakers whichever zone's track it's on.
+ */
+const soundTrack = (n: number, zone: ZoneId = 2): Track =>
+  zone === 2 ? (n <= 1 ? 'sound' : `sound-${n}`) : `sound-${zone * 10 + n}`;
+const isSoundTrack = (t: Row) => typeof t === 'string' && t.startsWith('sound');
+const soundNumber = (t: Row) => (t === 'sound' ? 1 : Number(/(\d+)$/.exec(String(t))?.[1] ?? 1) || 1);
+/** The zone a sound track belongs to. */
+const zoneOfSound = (t: Row): ZoneId => {
+  const zone = Math.floor(soundNumber(t) / 10);
+  return zone === 1 || zone === 3 ? zone : 2;
+};
+const zoneSounds = (zone: ZoneId): Track[] => Array.from({ length: MAX_SOUND_TRACKS }, (_, i) => soundTrack(i + 1, zone));
 /** A track's number within its group: an area's 1–5, or a sound track's 1–5. */
-const laneOf = (t: Track) => (typeof t === 'number' || t === 'sound' ? 1 : Number(/(\d+)$/.exec(t)?.[1] ?? 1) || 1);
-const SOUND_TRACKS: Track[] = Array.from({ length: MAX_SOUND_TRACKS }, (_, i) => soundTrack(i + 1));
-/** Where new pictures and video go: the 11 areas' own tracks first, then their extra ones. */
-const PLACE_TRACKS: Track[] = [...PROJECTION_ROWS, ...PROJECTION_ROWS.flatMap((a) => extraTracks(a as number))];
+const laneOf = (t: Track) =>
+  typeof t === 'number' || t === 'sound'
+    ? 1
+    : isSoundTrack(t)
+      ? soundNumber(t) % 10 || 1
+      : Number(/(\d+)$/.exec(t)?.[1] ?? 1) || 1;
+/** Where new sounds go: zone 2's sound tracks (drag one to another zone's to keep it with that zone). */
+const SOUND_TRACKS: Track[] = zoneSounds(2);
+/** Where new pictures and video go: the areas' own tracks first (zone 2's, then zones 1 and 3), then their extra ones. */
+const PLACE_AREAS = [...zoneById(2).areas, ...ALL_AREAS.filter((a) => zoneOfArea(a).id !== 2)];
+const PLACE_TRACKS: Track[] = [...PLACE_AREAS, ...PLACE_AREAS.flatMap((a) => extraTracks(a))];
+/** A timeline row's height (px): fixed, so folding zones open and closed never fattens or thins the bars. */
+const ROW_HEIGHT = 52;
 const SOUNDS_OPEN_KEY = 'timeline-sounds-open';
+const ZONE_SOUNDS_OPEN_KEY = 'timeline-zone-sounds-open';
 const AREAS_OPEN_KEY = 'timeline-areas-open';
 type Bar = TimelineBar;
 
@@ -275,25 +308,34 @@ export function MediaTimeline({
     for (const a of assets.values()) if (a.kind === 'video' && a.status === 'present') checkVideoSound(a, folder);
   }, [assets, folder]);
 
-  // The sound tracks: one ♪ row, which its arrow opens into all MAX_SOUND_TRACKS (remembered). Closed,
-  // every sound shows on the one row. They're tinted light blue, for audio.
-  const [soundsOpen, setSoundsOpen] = useState(false);
+  // The sound tracks: each zone has one ♪ row, which its arrow opens into all MAX_SOUND_TRACKS
+  // (remembered, zone by zone). Closed, the zone's sounds all show on the one row. They're tinted light
+  // blue, for audio.
+  const [soundsOpen, setSoundsOpen] = useState<ZoneId[]>([]);
   useEffect(() => {
     try {
+      const kept = JSON.parse(window.localStorage.getItem(ZONE_SOUNDS_OPEN_KEY) ?? 'null') as unknown;
+      // Before zones there was one ♪ row (now zone 2's): open if it was left open.
+      const open = Array.isArray(kept)
+        ? kept.filter((z): z is ZoneId => ZONES.some((zone) => zone.id === z))
+        : window.localStorage.getItem(SOUNDS_OPEN_KEY) === 'true'
+          ? [2 as ZoneId]
+          : [];
       // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only: localStorage doesn't exist during SSR
-      setSoundsOpen(window.localStorage.getItem(SOUNDS_OPEN_KEY) === 'true');
+      setSoundsOpen(open);
     } catch {
       // Storage blocked: closed.
     }
   }, []);
-  const toggleSounds = () => {
+  const toggleSounds = (zone: ZoneId) => {
     setSoundsOpen((open) => {
+      const next = open.includes(zone) ? open.filter((z) => z !== zone) : [...open, zone];
       try {
-        window.localStorage.setItem(SOUNDS_OPEN_KEY, String(!open));
+        window.localStorage.setItem(ZONE_SOUNDS_OPEN_KEY, JSON.stringify(next));
       } catch {
         // Not remembered.
       }
-      return !open;
+      return next;
     });
   };
   // Each projection area's number opens (its arrow) into MAX_AREA_TRACKS tracks — remembered.
@@ -317,17 +359,39 @@ export function MediaTimeline({
       }
       return next;
     });
-  const lanes = soundsOpen ? MAX_SOUND_TRACKS : 1;
-  const projectionRows: Track[] = PROJECTION_ROWS.flatMap((a) =>
-    areasOpen.includes(a as number) ? [a, ...extraTracks(a as number)] : [a],
-  );
-  const soundRows = SOUND_TRACKS.slice(0, lanes);
-  const trackRows: Track[] = [...projectionRows, ...soundRows];
-  /** The row a track shows on: its own, or — its group closed — its area's (or the first ♪) row. */
-  const visibleTrack = (t: Track): Track =>
-    trackRows.includes(t) ? t : isSoundTrack(t) ? 'sound' : (areaOfTrack(t) ?? 1);
+  /** A zone's sound rows showing: its ♪ row, or all its sound tracks. */
+  const zoneSoundRows = (zone: ZoneId): Track[] => zoneSounds(zone).slice(0, soundsOpen.includes(zone) ? MAX_SOUND_TRACKS : 1);
+  // Each zone's heading folds its areas open and closed, on its own (remembered; see zones.ts).
+  const zonesOpen = useZonesOpen();
+  const areaRows = (a: number): Track[] => (areasOpen.includes(a) ? [a, ...extraTracks(a)] : [a]);
+  /** The projection tracks showing: the open zones' areas (a bar is dragged among these). */
+  const projectionRows: Track[] = ZONES.flatMap((z) => (zonesOpen.includes(z.id) ? z.areas.flatMap(areaRows) : []));
+  /** The sound tracks showing: the open zones' (a sound's bar is dragged among these). */
+  const soundRows: Track[] = ZONES.flatMap((z) => (zonesOpen.includes(z.id) ? zoneSoundRows(z.id) : []));
+  // Each zone: its heading, then (folded open) its areas and its own sound tracks.
+  const trackRows: Row[] = ZONES.flatMap((z): Row[] => [
+    zoneRow(z.id),
+    ...(zonesOpen.includes(z.id) ? [...z.areas.flatMap(areaRows), ...zoneSoundRows(z.id)] : []),
+  ]);
+  /**
+   * The row a track shows on: its own, or — its group closed — its area's (or its zone's ♪) row; its
+   * zone folded shut: the zone's heading.
+   */
+  const visibleTrack = (t: Track): Row => {
+    if (trackRows.includes(t)) return t;
+    if (isSoundTrack(t)) {
+      const zone = zoneOfSound(t);
+      return zonesOpen.includes(zone) ? soundTrack(1, zone) : zoneRow(zone);
+    }
+    const area = areaOfTrack(t) ?? 1;
+    return trackRows.includes(area) ? area : zoneRow(zoneOfArea(area).id);
+  };
   const rowOf = (t: Track) => trackRows.indexOf(visibleTrack(t));
-  const rows: CSSProperties = { gridTemplateRows: `repeat(${trackRows.length}, minmax(22px, 1fr))` };
+  /** A sound in a zone folded shut: not drawn (the zone's heading shows only its pictures and video). */
+  const foldedAway = (t: Track) => isSoundTrack(t) && !isTrack(visibleTrack(t));
+  // Every row the same height however many are folded open: more than fit, and the tracks scroll
+  // (wheel or the bar at the side) under the ruler, which stays put.
+  const rows: CSSProperties = { gridTemplateRows: `repeat(${trackRows.length}, ${ROW_HEIGHT}px)` };
   const indexOf = (code: string, fallback: number) => {
     const i = stages.findIndex((s) => s.code === code);
     return i >= 0 ? i : fallback;
@@ -440,8 +504,10 @@ export function MediaTimeline({
       // Pictures and video move among the projection tracks shown (an area's extra ones too, if open);
       // sounds among the open sound tracks.
       const group = isSoundTrack(track) ? soundRows : projectionRows;
-      const pos = group.indexOf(visibleTrack(track));
-      track = group[Math.min(group.length - 1, Math.max(0, pos + rowsMoved))];
+      const shown = visibleTrack(track);
+      const pos = isTrack(shown) ? group.indexOf(shown) : -1;
+      // Its zone folded shut: it keeps its track (it only moves along the stages).
+      if (pos >= 0) track = group[Math.min(group.length - 1, Math.max(0, pos + rowsMoved))];
       now = { track, from, to: from + length };
     } else if (drag.mode === 'from') {
       now = { ...start, from: Math.min(start.to, Math.max(0, start.from + columns)) };
@@ -528,7 +594,9 @@ export function MediaTimeline({
     const stage = Math.floor((e.clientX - box.left) / (box.width / count));
     const row = Math.floor((e.clientY - box.top) / (box.height / trackRows.length));
     if (stage < 0 || stage >= count || row < 0 || row >= trackRows.length) return null;
-    return { stage, track: trackRows[row] };
+    const track = trackRows[row];
+    // A zone's heading takes nothing: open the zone and drop on one of its areas.
+    return isTrack(track) ? { stage, track } : null;
   };
   const dragOver = (e: React.DragEvent) => {
     const sound = e.dataTransfer.types.includes(DRAG_SOUND);
@@ -754,8 +822,8 @@ export function MediaTimeline({
           become the timeline&rsquo;s columns.
         </p>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-[34px_minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] overflow-y-auto overflow-x-hidden">
-          <div aria-hidden="true" />
+        <div className="grid min-h-0 flex-1 grid-cols-[34px_minmax(0,1fr)] grid-rows-[auto_auto] content-start overflow-y-auto overflow-x-hidden">
+          <div aria-hidden="true" className="sticky top-0 z-50 bg-paper" />
 
           {/* The ruler: each stage's code, with alternative branches bracketed, and the playhead's handle. */}
           <div
@@ -798,7 +866,7 @@ export function MediaTimeline({
               e.preventDefault();
               moveTo(move);
             }}
-            className="relative h-14 cursor-ew-resize touch-none select-none outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
+            className="sticky top-0 z-50 h-14 cursor-ew-resize touch-none select-none bg-paper outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink"
           >
             {/* Alternative branches: a bracket over 2A, 2B… — the conversation takes one of them. */}
             {runs.map((r) => (
@@ -847,18 +915,37 @@ export function MediaTimeline({
           {/* Track numbers, and the sound tracks (the first one's arrow opens and closes the rest). */}
           <div className="grid" style={rows}>
             {trackRows.map((t) =>
-              t === 'sound' ? (
+              !isTrack(t) ? (
+                // A zone's heading: its arrow folds the zone's areas open and closed.
                 <button
                   key={t}
-                  data-tour="timeline-sound"
-                  onClick={toggleSounds}
-                  aria-expanded={soundsOpen}
+                  data-tour={`timeline-${t}`}
+                  onClick={() => toggleZoneOpen(zoneOfRow(t)!)}
+                  aria-expanded={zonesOpen.includes(zoneOfRow(t)!)}
                   title={
-                    soundsOpen ? 'Close the sound tracks into one' : 'Open more sound tracks, for sounds that overlap'
+                    zonesOpen.includes(zoneOfRow(t)!)
+                      ? `Fold zone ${zoneOfRow(t)}'s ${zoneById(zoneOfRow(t)!).areas.length} areas away`
+                      : `Zone ${zoneOfRow(t)} — open its ${zoneById(zoneOfRow(t)!).areas.length} projection areas`
                   }
-                  className="flex items-center justify-between font-body text-[11px] text-[#3c5eac] hover:text-ink"
+                  className="flex items-center justify-between bg-ink px-0.5 font-label text-[10px] text-paper hover:bg-[#3c5eac]"
                 >
-                  ♪<OpenArrow open={soundsOpen} />
+                  Z{zoneOfRow(t)}
+                  <OpenArrow open={zonesOpen.includes(zoneOfRow(t)!)} />
+                </button>
+              ) : isSoundTrack(t) && laneOf(t) === 1 ? (
+                <button
+                  key={t}
+                  data-tour={t === 'sound' ? 'timeline-sound' : undefined}
+                  onClick={() => toggleSounds(zoneOfSound(t))}
+                  aria-expanded={soundsOpen.includes(zoneOfSound(t))}
+                  title={
+                    soundsOpen.includes(zoneOfSound(t))
+                      ? `Close zone ${zoneOfSound(t)}'s sound tracks into one`
+                      : `Zone ${zoneOfSound(t)}'s sound track — open more, for sounds that overlap`
+                  }
+                  className="flex items-center justify-between font-body text-[11px] text-[#15803d] hover:text-ink"
+                >
+                  ♪<OpenArrow open={soundsOpen.includes(zoneOfSound(t))} />
                 </button>
               ) : typeof t === 'number' ? (
                 // A projection area: its number, and an arrow that opens it into MAX_AREA_TRACKS tracks.
@@ -869,25 +956,25 @@ export function MediaTimeline({
                   aria-expanded={areasOpen.includes(t)}
                   title={
                     areasOpen.includes(t)
-                      ? `Close projection area ${t}'s tracks into one`
-                      : `Projection area ${t} — open ${MAX_AREA_TRACKS} tracks for it`
+                      ? `Close ${areaName(t)}'s tracks into one`
+                      : `${areaName(t)} — open ${MAX_AREA_TRACKS} tracks for it`
                   }
                   className="flex items-center justify-between font-body text-[11px] text-ink hover:text-[#3c5eac]"
                 >
-                  {t}
+                  {areaNumber(t)}
                   <OpenArrow open={areasOpen.includes(t)} />
                 </button>
               ) : (
                 <span
                   key={t}
-                  className={`flex items-center font-body text-[11px] ${isSoundTrack(t) ? 'text-[#3c5eac]' : 'pl-1 text-[9px] text-muted-ink'}`}
+                  className={`flex items-center font-body text-[11px] ${isSoundTrack(t) ? 'text-[#15803d]' : 'pl-1 text-[9px] text-muted-ink'}`}
                   title={
                     isSoundTrack(t)
-                      ? `Sound track ${laneOf(t)}`
-                      : `Projection area ${areaOfTrack(t)}, track ${laneOf(t)}`
+                      ? `Zone ${zoneOfSound(t)} sound track ${laneOf(t)}`
+                      : `${areaName(areaOfTrack(t) ?? 1)}, track ${laneOf(t)}`
                   }
                 >
-                  {isSoundTrack(t) ? `♪${laneOf(t)}` : `${areaOfTrack(t)}.${laneOf(t)}`}
+                  {isSoundTrack(t) ? `♪${laneOf(t)}` : `${areaNumber(areaOfTrack(t) ?? 1)}.${laneOf(t)}`}
                 </span>
               ),
             )}
@@ -923,34 +1010,46 @@ export function MediaTimeline({
               style={{ left: at(index), width }}
               aria-hidden="true"
             />
-            {trackRows.map((t) => (
+            {trackRows.map((t) =>
+              !isTrack(t) ? (
+                // A zone's heading: a band across the tracks (its bars show here while it's folded shut).
+                <div key={t} className="relative bg-ink/10" aria-label={`Zone ${zoneOfRow(t)}`}>
+                  <div className="absolute inset-x-0 top-0 h-px bg-ink/60" />
+                </div>
+              ) : (
               <div
                 key={t}
                 className="relative"
                 aria-label={
                   isSoundTrack(t)
-                    ? `Sound track ${laneOf(t)}`
+                    ? `Zone ${zoneOfSound(t)} sound track ${laneOf(t)}`
                     : typeof t === 'number'
-                      ? `Track ${t}`
-                      : `Track ${areaOfTrack(t)}.${laneOf(t)}`
+                      ? `Track ${areaName(t)}`
+                      : `Track ${areaName(areaOfTrack(t) ?? 1)}.${laneOf(t)}`
                 }
               >
                 {Array.from({ length: count + 1 }, (_, i) => (
                   <div key={i} className="absolute inset-y-0 w-px bg-ink/15" style={{ left: at(i) }} />
                 ))}
                 <div
-                  className={`absolute inset-x-0 bottom-[2.5px] top-[2.5px] border border-dashed ${isSoundTrack(t) ? 'border-[#3c5eac]/60 bg-[#3c5eac]/15' : 'border-ink/50'}`}
+                  className={`absolute inset-x-0 bottom-[2.5px] top-[2.5px] border border-dashed ${isSoundTrack(t) ? 'border-[#15803d]/60 bg-[#15803d]/15' : 'border-ink/50'}`}
                 />
               </div>
-            ))}
+              ),
+            )}
             {/* The bars, on one layer over the tracks — so a bar dragged to another track stays the same element. */}
             {mine.flatMap((l) =>
               barsOf(l).map((bar, i) => {
+                if (foldedAway(bar.track)) return null;
                 // Where another bar shares this one's row (a closed area's five tracks, or the closed ♪ row),
                 // the shared stages are striped — so the bars underneath aren't missed.
                 const mineSpan = span(bar);
                 const shared = mine
-                  .flatMap((o) => barsOf(o).map((b, j) => ({ key: barKey(o, j), row: rowOf(b.track), ...span(b) })))
+                  .flatMap((o) =>
+                    barsOf(o)
+                      .filter((b) => !foldedAway(b.track))
+                      .map((b) => ({ key: barKey(o, barsOf(o).indexOf(b)), row: rowOf(b.track), ...span(b) })),
+                  )
                   .filter((o) => o.key !== barKey(l, i) && o.row === rowOf(bar.track))
                   .map((o) => ({ from: Math.max(o.from, mineSpan.from), to: Math.min(o.to, mineSpan.to) }))
                   .filter((o) => o.from <= o.to);
@@ -1129,8 +1228,17 @@ export function MediaTimeline({
                     onPointerUp={() => letGo(l, i)}
                     onPointerCancel={() => setDrag(null)}
                     title={`${l.action || 'Not connected to an action yet'}\n${l.assetId}${l.assetName ? ` ${l.assetName}` : ''} · ${stagesText(place)} — drag to move, drag an end to stretch, Option-drag to duplicate, ▼ to connect it to an action`}
-                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border border-[#3c5eac] px-5 text-paper shadow-sm ${
-                      isConnected(l) ? 'bg-[#3c5eac]' : 'border-dashed border-paper/80 bg-[#3c5eac]/60'
+                    // Sounds are green; pictures, video, text, colour and characters blue.
+                    className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border px-5 text-paper shadow-sm ${
+                      isSoundTrack(bar.track) ? 'border-[#15803d]' : 'border-[#3c5eac]'
+                    } ${
+                      isConnected(l)
+                        ? isSoundTrack(bar.track)
+                          ? 'bg-[#15803d]'
+                          : 'bg-[#3c5eac]'
+                        : isSoundTrack(bar.track)
+                          ? 'border-dashed border-paper/80 bg-[#15803d]/60'
+                          : 'border-dashed border-paper/80 bg-[#3c5eac]/60'
                     } ${
                       optionHeld ? 'cursor-copy' : 'cursor-grab active:cursor-grabbing'
                     } ${dragging && !dragging.copy ? 'opacity-80 ring-2 ring-ink' : ''}`}
@@ -1143,7 +1251,7 @@ export function MediaTimeline({
                         style={{
                           left: `${((o.from - mineSpan.from) / (mineSpan.to - mineSpan.from + 1)) * 100}%`,
                           width: `${((o.to - o.from + 1) / (mineSpan.to - mineSpan.from + 1)) * 100}%`,
-                          background: 'repeating-linear-gradient(135deg, #5d7cc4 0 10px, transparent 10px 20px)',
+                          background: `repeating-linear-gradient(135deg, ${isSoundTrack(bar.track) ? '#3fa564' : '#5d7cc4'} 0 10px, transparent 10px 20px)`,
                         }}
                         aria-hidden="true"
                       />
@@ -1244,7 +1352,7 @@ export function MediaTimeline({
                   dragging?.copy && (
                     <div
                       key={`${key}-copy`}
-                      className="pointer-events-none absolute z-20 flex items-center overflow-hidden border-2 border-dashed border-ink bg-[#3c5eac]/70 text-paper"
+                      className={`pointer-events-none absolute z-20 flex items-center overflow-hidden border-2 border-dashed border-ink text-paper ${isSoundTrack(dragging.now.track) ? 'bg-[#15803d]/70' : 'bg-[#3c5eac]/70'}`}
                       style={box(dragging.now)}
                       aria-hidden="true"
                     >

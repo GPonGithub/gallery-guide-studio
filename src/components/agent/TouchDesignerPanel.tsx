@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { ALL_AREAS, areaName, zoneOfArea } from '@/lib/agent/projectionLayout';
 import { buttonOutline, fieldInput } from '@/lib/styles';
 import type { MediaAsset } from '@/lib/agent/media';
 import {
@@ -14,7 +15,7 @@ import {
 } from '@/lib/agent/touchDesigner';
 
 const SCRIPT_URL = '/touchdesigner/build_immersive_lab.py';
-const AREAS = Array.from({ length: 11 }, (_, i) => i + 1);
+const AREAS = ALL_AREAS;
 const SOUNDS_ON: { value: SoundsOn; label: string; hint: string }[] = [
   { value: 'computer', label: 'This computer', hint: 'Sounds play through this computer’s speakers only' },
   {
@@ -152,7 +153,7 @@ export function TouchDesignerPanel({ assets }: { assets: MediaAsset[] }) {
           >
             {AREAS.map((a) => (
               <option key={a} value={a}>
-                Area {a}
+                {zoneOfArea(a).id === 2 ? `Area ${a}` : areaName(a)}
               </option>
             ))}
           </select>
@@ -175,10 +176,10 @@ export function TouchDesignerPanel({ assets }: { assets: MediaAsset[] }) {
             disabled={!visual}
             className={small}
           >
-            ▶ Show in area {area}
+            ▶ Show in {zoneOfArea(area).id === 2 ? `area ${area}` : areaName(area)}
           </button>
           <button onClick={() => send({ type: 'media', action: 'hide', area })} className={small}>
-            Hide area {area}
+            Hide {zoneOfArea(area).id === 2 ? `area ${area}` : areaName(area)}
           </button>
           <label className="flex items-center gap-1 font-body text-xs text-ink">
             <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> Loop video

@@ -58,10 +58,11 @@ and `length` how many.
 }
 ```
 
-- `regions` has **11** entries, one per projection area of the room drawing (Show Control has 10;
-  the room has 11 — region 11 is added).
+- `regions` has **17** entries, one per projection area (Show Control has 10): 1–11 are zone 2 (the
+  room drawing), 12–14 are zone 1's faces 1–3 (projector 5) and 15–17 zone 3's faces 1–3 (projector 6).
 - A span's `lane` (1–5) is which of the area's five tracks it sits on.
-- `sound` holds up to five sound tracks.
+- `sound` holds the sound tracks: 1–5 are zone 2's, 11–15 zone 1's and 31–35 zone 3's (all play on the
+  same room speakers; the zone is only where the bar sits on the timeline).
 - `action` is the media action (row 8 of the sheet) the span belongs to. **When it plays is not a
   fixed time**: it comes from the action's timing in `connections` — "once" actions wait for their
   moment in the conversation, "every time" ones repeat, "throughout" ones run from the call's start.

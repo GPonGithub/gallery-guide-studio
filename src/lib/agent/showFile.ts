@@ -18,7 +18,7 @@ import { barsOf, type MediaLink, type TimelineBar } from './mediaFolder';
 export const SHOW_FORMAT = 'immersive-lab-show';
 export const SHOW_VERSION = 1;
 export const SHOW_FILE_NAME = 'show.json';
-export const REGION_COUNT = 11;
+export const REGION_COUNT = 17; // 1–11 zone 2, 12–14 zone 1's faces 1–3, 15–17 zone 3's (projectionLayout.ts)
 
 export type ShowMemberKind = 'video' | 'sound' | 'image' | 'text' | 'color' | 'character';
 

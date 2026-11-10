@@ -1,9 +1,20 @@
 /**
- * The room as seen from the front, from "Immersive Room Projection
- * Outlines_02.svg": the room drawing itself (public/room/projection-room.svg,
- * without its outlines and numbers) and, drawn over it, the 11 projection
- * areas — each outline exactly as in that file (its coordinates), with its
- * number where the file puts it.
+ * The room's projection areas, as the drawings show them. There are three zones, each with its own
+ * drawing and its own projectors:
+ *
+ *   Zone 1  three faces on projector 5   ("Immersive Rook Projection Outlines ZONE 1_01.svg")
+ *   Zone 2  the 11 areas on projectors 1–4, seen from the front ("Immersive Space Projection
+ *           Outlines_03.svg": the room drawing itself is public/room/projection-room.svg, without
+ *           its outlines and numbers)
+ *   Zone 3  three faces on projector 6   ("Immersive Rook Projection Outlines ZONE 3_01.svg")
+ *
+ * Every area has one number for the whole app — its timeline track, its messages to TouchDesigner, the
+ * show file: 1–11 are zone 2's, 12–14 zone 1's faces 1–3, 15–17 zone 3's faces 1–3. People only ever
+ * see an area's number within its zone (areaNumber): "Zone 1 · area 2".
+ *
+ * All three drawings share one coordinate space, so a placement (roomPlacement.ts) means the same
+ * thing everywhere: zone 2 sits where it always has (from 0, 0), zone 1 from x = 3000 and zone 3 from
+ * x = 6000. Each zone's `view` is the part of that space its drawing shows.
  */
 
 export type ProjectionShape = {
@@ -17,10 +28,51 @@ export type ProjectionShape = {
   filled?: boolean;
   /** Areas inside this one: its media leaves them out (they stay white, or show their own). */
   holes?: number[];
+  /**
+   * The surface's own four corners (top-left, top-right, bottom-right, bottom-left) where the outline
+   * isn't simply those four points — a wall drawn around a panel. None: see cornersOf (roomPlacement.ts).
+   */
+  corners?: [number, number][];
+  /** The real surface, in inches (width, height) — zones 1 and 3; zone 2's are in Projection Templates. */
+  inches?: [number, number];
+};
+
+export type ZoneId = 1 | 2 | 3;
+export type Zone = {
+  id: ZoneId;
+  /** The part of the shared drawing space this zone's drawing shows. */
+  view: { x: number; y: number; w: number; h: number };
+  /** Its drawing (behind the outlines), covering `view` — zone 2's room. */
+  drawing?: string;
+  /** Its areas' numbers (app-wide), in the order people count them: 1, 2, 3… */
+  areas: number[];
+  /** The projectors that light it. */
+  projectors: number[];
 };
 
 export const LAYOUT_SIZE = { width: 1566.13, height: 679.46 } as const;
 export const ROOM_DRAWING = '/room/projection-room.svg';
+
+/** The whole shared drawing space (every zone, with room to spare): what a mask over it must cover. */
+export const DRAWING_SPACE = { x: -500, y: -500, width: 8500, height: 2000 } as const;
+
+export const ZONES: Zone[] = [
+  { id: 1, view: { x: 3000, y: 0, w: 1014, h: 596 }, areas: [12, 13, 14], projectors: [5] },
+  { id: 2, view: { x: 0, y: 0, w: LAYOUT_SIZE.width, h: LAYOUT_SIZE.height }, drawing: ROOM_DRAWING, areas: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], projectors: [1, 2, 3, 4] },
+  { id: 3, view: { x: 6000, y: 0, w: 1112, h: 666 }, areas: [15, 16, 17], projectors: [6] },
+];
+export const zoneById = (id: ZoneId) => ZONES.find((z) => z.id === id)!;
+/** The zone an area is in (zone 2 for anything unknown — the areas there before zones existed). */
+export const zoneOfArea = (area: number): Zone => ZONES.find((z) => z.areas.includes(area)) ?? zoneById(2);
+/** An area's number as people see it: its place within its zone (1, 2, 3…). */
+export const areaNumber = (area: number): number => {
+  const i = zoneOfArea(area).areas.indexOf(area);
+  return i < 0 ? area : i + 1;
+};
+/** "Zone 1 · area 2" — an area named in full. */
+export const areaName = (area: number) => `Zone ${zoneOfArea(area).id} · area ${areaNumber(area)}`;
+/** Every area, zone by zone. */
+export const ALL_AREAS = ZONES.flatMap((z) => z.areas);
 
 export const PROJECTION_SHAPES: ProjectionShape[] = [
   { area: 1, points: [[78.59, 413.8], [31.5, 427.58], [7.38, 281.7], [59.06, 277.11]], label: [37, 342], filled: true },
@@ -57,4 +109,12 @@ export const PROJECTION_SHAPES: ProjectionShape[] = [
     label: [1416, 122],
   },
   { area: 11, points: [[1398.83, 295.72], [1344.55, 277.8], [1383.57, 218.75], [1441.82, 230.89]], label: [1389, 254], small: true },
+  // Zone 1 (projector 5): the faces as its SVG draws them, moved into the shared space.
+  { area: 12, points: [[3050.2, 51.64], [3523.06, 158.09], [3525.3, 437.1], [3068.13, 544.67]], label: [3317, 283], inches: [94, 61] }, // left wall
+  { area: 13, points: [[3532.03, 158.09], [3963.43, 96.46], [3955.59, 498.73], [3534.27, 438.22]], label: [3870, 281], holes: [14], inches: [80.5, 59] }, // right wall, around the panel
+  { area: 14, points: [[3545.47, 221.96], [3787.51, 205.15], [3786.39, 370.99], [3545.47, 354.18]], label: [3667, 284], inches: [48, 27] }, // the panel on the right wall
+  // Zone 3 (projector 6): the faces as its SVG draws them, moved into the shared space.
+  { area: 15, points: [[6372.96, 199.04], [7061.95, 50.15], [7057.57, 615.06], [6375.88, 486.61]], label: [6687, 324], inches: [100, 47] }, // right wall
+  { area: 16, points: [[6049.98, 143.57], [6361.28, 199.04], [6365.66, 485.23], [6318.57, 493.45], [6315.11, 242.54], [6103.82, 214.01], [6106.82, 529.56], [6051.27, 541.24]], label: [6077, 203], small: true, corners: [[6049.98, 143.57], [6361.28, 199.04], [6365.66, 485.23], [6051.27, 541.24]], inches: [47, 48] }, // left wall, around the panel
+  { area: 17, points: [[6115.33, 228.07], [6304.6, 252.97], [6307.98, 497.28], [6117.17, 529.48]], label: [6215, 360], inches: [30, 40] }, // the panel on the left wall
 ];

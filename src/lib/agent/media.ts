@@ -142,7 +142,7 @@ export function fromRows(rows: MediaRow[]): MediaAsset[] {
 }
 
 /** The 11 projection areas. */
-export const PROJECTION_AREAS = Array.from({ length: 11 }, (_, i) => i + 1);
+export const PROJECTION_AREAS = Array.from({ length: 17 }, (_, i) => i + 1);
 
 /** What TouchDesigner is sent to show, play or stop media. */
 export type MediaMessage =
@@ -190,6 +190,37 @@ export const wordsSayLoop = (text: string) =>
   /\b(?:loop(?:s|ing|ed)?|repeat(?:s|ing|edly)?|over\s+and\s+over|continuous(?:ly)?|keep\s+(?:playing|looping|going))\b/i.test(text);
 
 /**
+ * What an action does to media that is already on when it happens, before its own media starts — e.g.
+ * "play dance music, but after fading out all soundtracks". The chatbot's voice is never touched.
+ *  - stop:   the other sounds fade out and stop (`sounds`), the other pictures and video come down
+ *            (`visuals`), or both (`all`). `seconds`: how long the sounds take to fade (0 = at once).
+ *  - volume: the other sounds are turned to `level` percent of their own volume (100 = back to normal).
+ */
+export type ActionControl =
+  | { do: 'stop'; target: 'sounds' | 'visuals' | 'all'; seconds?: number }
+  | { do: 'volume'; level: number };
+/** How long "fade out" takes when the action doesn't say. */
+export const CONTROL_FADE_SECONDS = 2;
+/** The longest fade an action can ask for. */
+export const MAX_CONTROL_FADE_SECONDS = 30;
+
+const OTHER_SOUNDS =
+  '(?:all|any|every|other|existing|current|the)\\s+(?:the\\s+)?(?:other\\s+|existing\\s+|current\\s+)?(?:sound\\s*tracks?|sounds?|music|tracks?|audio|songs?)';
+const FADES = new RegExp(`\\bfad(?:e|es|ing)\\s+(?:out\\s+)?${OTHER_SOUNDS}|\\bfad(?:e|es|ing)\\s+${OTHER_SOUNDS}\\s+out`, 'i');
+const STOPS = new RegExp(`\\b(?:stop(?:s|ping)?|cut(?:s|ting)?|silenc(?:e|es|ing))\\s+${OTHER_SOUNDS}`, 'i');
+const OVER_SECONDS = /\b(?:over|for|in|of)\s+(\d+(?:\.\d+)?)\s*(?:s|sec|secs|seconds?)\b/i;
+
+/** An action's controls, read from its words — the fallback until Claude has read it (English phrases only). */
+export function wordsControls(text: string): ActionControl[] {
+  if (FADES.test(text)) {
+    const said = Number(OVER_SECONDS.exec(text)?.[1]);
+    return [{ do: 'stop', target: 'sounds', seconds: Number.isFinite(said) ? Math.min(MAX_CONTROL_FADE_SECONDS, said) : CONTROL_FADE_SECONDS }];
+  }
+  if (STOPS.test(text)) return [{ do: 'stop', target: 'sounds', seconds: 0 }];
+  return [];
+}
+
+/**
  * What an action (a row 8 line) means, as Claude read it — in any wording or
  * language. `clear` is false when it could mean more than one thing; then
  * `options` are the likely kinds for the student to pick from.
@@ -198,6 +229,8 @@ export type ActionReading = Partial<Pick<ActionTiming, 'when' | 'voice'>> & {
   kind: ActionKind;
   /** For "once": it should loop until removed. */
   loop?: boolean;
+  /** What it does to media already on, before its own starts (none: []). Missing on readings made before controls existed. */
+  controls?: ActionControl[];
   clear: boolean;
   options?: ActionKind[];
 };

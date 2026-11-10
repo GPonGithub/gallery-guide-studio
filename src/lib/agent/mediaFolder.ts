@@ -3,9 +3,12 @@
 import { useSyncExternalStore } from 'react';
 import { run } from '@/lib/browserDb';
 import {
+  CONTROL_FADE_SECONDS,
   kindOf,
   readActionTiming,
+  wordsControls,
   wordsSayLoop,
+  type ActionControl,
   type ActionKind,
   type ActionReading,
   type ActionTiming,
@@ -525,6 +528,20 @@ function loadReadings(): Promise<void> {
 /** An action's reading by Claude, if it has been read (and the readings are loaded). */
 export const readingNow = (action: string): ActionReading | undefined => readings?.[action.trim()];
 
+/** What an action does to media already on (see ActionControl): Claude's reading, else its words alone. */
+export const controlsOf = (action: string): ActionControl[] => readingNow(action)?.controls ?? wordsControls(action);
+
+/** An action's controls in a few words ("fades out other sounds"), or '' if it has none. */
+export function controlsText(action: string): string {
+  return controlsOf(action)
+    .map((c) => {
+      if (c.do === 'volume') return `turns other sounds to ${Math.round(c.level)}%`;
+      const sounds = (c.seconds ?? CONTROL_FADE_SECONDS) > 0 ? 'fades out other sounds' : 'stops other sounds';
+      return c.target === 'sounds' ? sounds : c.target === 'visuals' ? 'removes other pictures and video' : `${sounds}, removes other pictures and video`;
+    })
+    .join(' · ');
+}
+
 /** The readings, kept up to date (re-renders as actions are read). */
 export const useActionReadings = () =>
   useSyncExternalStore(
@@ -551,7 +568,10 @@ const beingRead = new Set<string>();
  */
 export async function readActions(actions: string[], anthropicApiKey: string): Promise<void> {
   await loadReadings();
-  const unread = [...new Set(actions.map((a) => a.trim()))].filter((a) => a && !readings?.[a] && !beingRead.has(a));
+  // Read before actions could control other media (no `controls`): read again.
+  const unread = [...new Set(actions.map((a) => a.trim()))].filter(
+    (a) => a && (!readings?.[a] || readings[a].controls === undefined) && !beingRead.has(a),
+  );
   if (unread.length === 0) return;
   unread.forEach((a) => beingRead.add(a));
   try {

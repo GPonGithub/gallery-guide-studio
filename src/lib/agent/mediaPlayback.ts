@@ -625,6 +625,36 @@ export function stopSounds(assetId?: string, fade = 0) {
 }
 
 /**
+ * An action's control ("…after fading out all soundtracks"): stops every sound except one file's —
+ * the scene's loops, "once" and "every time" sounds, and the sound of any video — eased down to silence
+ * over `fade` seconds first. Says whether anything was playing.
+ */
+export function stopOtherSounds(exceptAssetId: string | undefined, fade = 0): boolean {
+  const others = [...playing].filter((p) => p.assetId !== exceptAssetId);
+  for (const p of others) p.stop(fade);
+  return others.length > 0;
+}
+
+const TURN_MS = 800;
+
+/**
+ * An action's control ("…turn the music down to half"): every sound playing now except one file's is
+ * eased to `share` of its own volume (its bar's slider) — 1 puts it back. Here and in TouchDesigner.
+ */
+export function turnOtherSounds(exceptAssetId: string | undefined, share: number) {
+  const turned = new Map<string, number>();
+  for (const [audio, own] of owns) {
+    if (own.assetId === exceptAssetId) continue;
+    own.volume = clampSoundVolume(soundVolumeOf(own.assetId) * Math.max(0, share));
+    boost(audio);
+    turned.set(own.assetId, own.volume);
+  }
+  if (turned.size === 0) return;
+  for (const [assetId, volume] of turned) tdSoundVolume(assetId, volume);
+  rampAll(TURN_MS);
+}
+
+/**
  * Plays a sound file from the media folder. Resolves when it has finished
  * ('ended'), been stopped ('stopped'), or played for LONGEST_WAIT ('waited' —
  * it plays on); rejects if it can't be played. `ask`: may ask the browser for

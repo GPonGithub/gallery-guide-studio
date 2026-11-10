@@ -1,7 +1,16 @@
 'use client';
 
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
-import { LAYOUT_SIZE, PROJECTION_SHAPES, ROOM_DRAWING, type ProjectionShape } from '@/lib/agent/projectionLayout';
+import {
+  areaNumber,
+  DRAWING_SPACE,
+  PROJECTION_SHAPES,
+  zoneById,
+  zoneOfArea,
+  type ProjectionShape,
+  type ZoneId,
+} from '@/lib/agent/projectionLayout';
+import { setZone, useZone } from '@/lib/agent/zones';
 import { dropUnbacked, hideArea, useShowing, type Shown } from '@/lib/agent/mediaShow';
 import type { MediaAsset } from '@/lib/agent/media';
 import AiCharacterOrb from './AiCharacterOrb';
@@ -303,7 +312,6 @@ function ChatBorder({ width, onResize }: { width: number; onResize: (width: numb
   );
 }
 
-/** The room drawing with its 11 projection areas over it, drawn to fit the space it's given. */
 /** The outlines' weight in the drawing's own units (as in the source file): it thins and thickens with the drawing. */
 const OUTLINE_WEIGHT = 4;
 
@@ -315,7 +323,6 @@ const SHAPES = new Map(PROJECTION_SHAPES.map((s) => [s.area, s]));
 const clipOf = (s: ProjectionShape) => [s.points, ...(s.holes ?? []).map((h) => SHAPES.get(h)!.points)].map(pathOf).join(' ');
 
 type View = { x: number; y: number; w: number; h: number };
-const FULL_VIEW: View = { x: 0, y: 0, w: LAYOUT_SIZE.width, h: LAYOUT_SIZE.height };
 /** How far in the drawing zooms (scroll or pinch over it). */
 const MAX_ZOOM = 8;
 /** The picture outside the areas it's on, while placing it. */
@@ -498,6 +505,10 @@ const textStyle = (w: number, h: number): CSSProperties => ({
   whiteSpace: 'pre-wrap',
 });
 
+/**
+ * The open zone's drawing with its projection areas over it, drawn to fit the space it's given. Which
+ * zone that is is chosen with the Zone 1 / 2 / 3 buttons in the top bar (ZoneButtons).
+ */
 function ProjectionDiagram({
   scene,
   stages,
@@ -509,7 +520,19 @@ function ProjectionDiagram({
 }) {
   const svg = useRef<SVGSVGElement>(null);
   const [pixels, setPixels] = useState({ width: 0, height: 0 });
-  const [view, setView] = useState(FULL_VIEW);
+  // The zone whose drawing is open: its areas, and the part of the drawing space it shows in full.
+  const zone = useZone();
+  const zoneDef = zoneById(zone);
+  const full: View = zoneDef.view;
+  const zoneShapes = PROJECTION_SHAPES.filter((s) => zoneDef.areas.includes(s.area));
+  // Zoomed in (scroll or pinch): the part showing — each zone opens whole.
+  const [zoomed, setZoomed] = useState<{ zone: ZoneId; view: View } | null>(null);
+  const view = zoomed?.zone === zone ? zoomed.view : full;
+  const setView = (next: View | ((v: View) => View)) =>
+    setZoomed((was) => {
+      const now = was?.zone === zone ? was.view : full;
+      return { zone, view: typeof next === 'function' ? next(now) : next };
+    });
   const showing = useShowing();
   const links = useMediaLinks();
   const placing = usePlacing();
@@ -524,6 +547,11 @@ function ProjectionDiagram({
   const gesture = useRef<Gesture | null>(null);
   const [hover, setHover] = useState<number | null>(null);
 
+  // The picture being placed is in another zone (picked on the timeline): that zone's drawing opens.
+  const placingArea = group?.bars.map((b) => areaOfTrack(b.track)).find((a) => a !== null) ?? null;
+  useEffect(() => {
+    if (placingArea !== null) setZone(zoneOfArea(placingArea).id);
+  }, [placingArea]);
   // Placing something that's gone (undone, deleted, connected to an action, another scene): stop placing.
   useEffect(() => {
     if (placing && !group) setPlacing(null);
@@ -563,7 +591,7 @@ function ProjectionDiagram({
   // How many drawing units one screen pixel is ("meet": whichever of width or height is tighter) — so
   // outlines and handles keep their size on screen however far it's zoomed.
   const unitsPerPixel = pixels.width ? Math.max(view.w / pixels.width, view.h / pixels.height) : 1;
-  const weight = Math.max(OUTLINE_WEIGHT * (view.w / FULL_VIEW.w), unitsPerPixel);
+  const weight = Math.max(OUTLINE_WEIGHT * (view.w / full.w), unitsPerPixel);
 
   /** A screen point, in the drawing's units. */
   const toDrawing = (clientX: number, clientY: number) => {
@@ -583,18 +611,20 @@ function ProjectionDiagram({
       const m = el.getScreenCTM();
       if (!m) return;
       const at = new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse());
-      setView((v) => {
+      const whole = zoneById(zone).view;
+      setZoomed((was) => {
+        const v = was?.zone === zone ? was.view : whole;
         const factor = Math.exp(e.deltaY * (e.ctrlKey ? 0.01 : 0.0015));
-        const w = Math.min(FULL_VIEW.w, Math.max(FULL_VIEW.w / MAX_ZOOM, v.w * factor));
+        const w = Math.min(whole.w, Math.max(whole.w / MAX_ZOOM, v.w * factor));
         const k = w / v.w;
         const h = v.h * k;
-        if (w >= FULL_VIEW.w) return FULL_VIEW;
-        return { x: at.x - (at.x - v.x) * k, y: at.y - (at.y - v.y) * k, w, h };
+        if (w >= whole.w) return null;
+        return { zone, view: { x: at.x - (at.x - v.x) * k, y: at.y - (at.y - v.y) * k, w, h } };
       });
     };
     el.addEventListener('wheel', wheel, { passive: false });
     return () => el.removeEventListener('wheel', wheel);
-  }, []);
+  }, [zone]);
 
   const place = draft ?? group?.bars[0].place ?? null;
   const onAreas = new Set(group?.bars.flatMap((b) => areaOfTrack(b.track) ?? []) ?? []);
@@ -659,7 +689,7 @@ function ProjectionDiagram({
     if (!g.moved && Math.hypot(e.clientX - g.client.x, e.clientY - g.client.y) < 4) return;
     g.moved = true;
     if (g.kind === 'pan') {
-      if (g.view.w >= FULL_VIEW.w) return;
+      if (g.view.w >= full.w) return;
       const k = g.view.w / Math.max(1, pixels.width);
       setView({ ...g.view, x: g.view.x - (e.clientX - g.client.x) * k, y: g.view.y - (e.clientY - g.client.y) * k });
       return;
@@ -777,7 +807,7 @@ function ProjectionDiagram({
   // What's showing that was placed on the drawing, by picture and placement: each drawn once over its areas.
   const placedGroups: { shown: Shown; areas: number[] }[] = [];
   for (const sh of showing) {
-    if (!sh.place) continue;
+    if (!sh.place || !zoneDef.areas.includes(sh.area)) continue;
     const same = placedGroups.find(
       (g) => g.shown.assetId === sh.assetId && JSON.stringify(g.shown.place) === JSON.stringify(sh.place),
     );
@@ -792,9 +822,9 @@ function ProjectionDiagram({
         data-tour="room-diagram"
         viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
         preserveAspectRatio="xMidYMid meet"
-        className={`min-h-0 w-full flex-1 touch-none select-none ${view.w < FULL_VIEW.w ? 'cursor-grab' : ''}`}
+        className={`min-h-0 w-full flex-1 touch-none select-none ${view.w < full.w ? 'cursor-grab' : ''}`}
         role="img"
-        aria-label="The room's 11 projection areas — drop a picture or video on an area to place it"
+        aria-label={`Zone ${zone}'s ${zoneShapes.length} projection areas — drop a picture or video on an area to place it`}
         onDragOver={dragOver}
         onDragLeave={() => setHover(null)}
         onDrop={drop}
@@ -805,7 +835,7 @@ function ProjectionDiagram({
           gesture.current = null;
           setDraft(null);
         }}
-        onDoubleClick={() => setView(FULL_VIEW)}
+        onDoubleClick={() => setZoomed(null)}
       >
         <defs>
           {PROJECTION_SHAPES.map((s) => (
@@ -821,8 +851,8 @@ function ProjectionDiagram({
           ))}
           <AreasMask id="placing-areas" areas={[...onAreas]} />
         </defs>
-        <image href={ROOM_DRAWING} x={0} y={0} width={LAYOUT_SIZE.width} height={LAYOUT_SIZE.height} />
-        {PROJECTION_SHAPES.map((s) => {
+        {zoneDef.drawing && <image href={zoneDef.drawing} x={full.x} y={full.y} width={full.w} height={full.h} />}
+        {zoneShapes.map((s) => {
           const shown = showing.find((m) => m.area === s.area);
           return (
             <g key={s.area}>
@@ -855,7 +885,7 @@ function ProjectionDiagram({
             />
           </g>
         )}
-        {PROJECTION_SHAPES.map((s) => {
+        {zoneShapes.map((s) => {
           const shown = showing.find((m) => m.area === s.area);
           const on = onAreas.has(s.area);
           const lit = hover === s.area;
@@ -878,7 +908,7 @@ function ProjectionDiagram({
                 paintOrder="stroke"
                 fontSize={s.small ? 28 : 46}
               >
-                {s.area}
+                {areaNumber(s.area)}
               </text>
             </g>
           );
@@ -977,13 +1007,13 @@ function ProjectionDiagram({
           </g>
         )}
       </svg>
-      {view.w < FULL_VIEW.w && (
+      {view.w < full.w && (
         <button
-          onClick={() => setView(FULL_VIEW)}
+          onClick={() => setZoomed(null)}
           className={`absolute bottom-1 right-1 ${buttonOutline} px-2 py-0.5 text-[10px]`}
-          title="Show the whole room (or double-click the drawing)"
+          title={`Show the whole of zone ${zone} (or double-click the drawing)`}
         >
-          Whole room
+          Whole zone
         </button>
       )}
     </div>
@@ -993,7 +1023,7 @@ function ProjectionDiagram({
 /** White where any of these areas are (each with its own holes), black elsewhere: a mask showing them. */
 function AreasMask({ id, areas }: { id: string; areas: number[] }) {
   return (
-    <mask id={id} maskUnits="userSpaceOnUse" x={0} y={0} width={LAYOUT_SIZE.width} height={LAYOUT_SIZE.height}>
+    <mask id={id} maskUnits="userSpaceOnUse" {...DRAWING_SPACE}>
       {areas.map((a) => (
         <path key={a} d={clipOf(SHAPES.get(a)!)} fillRule="evenodd" fill="#fff" />
       ))}

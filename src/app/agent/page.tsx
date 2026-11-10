@@ -11,6 +11,7 @@ import { SpeechQueue } from '@/components/agent/speechQueue';
 import { sentencePauseMs } from '@/lib/agent/sentencePause';
 import { startStreamedClip, type StreamedClip } from '@/components/agent/streamedAudio';
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
+import { ZoneButtons } from '@/components/agent/ZoneButtons';
 import { MusicPanel } from '@/components/agent/MusicPanel';
 import { OnboardingTour } from '@/components/agent/OnboardingTour';
 import { SceneButtons } from '@/components/agent/SceneButtons';
@@ -37,7 +38,9 @@ import {
   startLoop,
   playSound,
   stopLoops,
+  stopOtherSounds,
   stopSounds,
+  turnOtherSounds,
   clampSoundVolume,
   isSoundPlaying,
   anySoundPlaying,
@@ -47,9 +50,10 @@ import {
   setVoiceVolume,
   type PlannedSound,
 } from '@/lib/agent/mediaPlayback';
-import { clearVisuals, dropUnbacked, everyVisuals, hideVisual, isShowing, sceneMedia, showVisual, type PlannedMedia } from '@/lib/agent/mediaShow';
+import { clearVisuals, dropUnbacked, everyVisuals, hideOtherVisuals, hideVisual, isShowing, sceneMedia, showVisual, type PlannedMedia } from '@/lib/agent/mediaShow';
 import {
   currentMediaLinks,
+  controlsOf,
   followRewording,
   loopOf,
   barOn,
@@ -118,7 +122,7 @@ import type { AgentProject, ProjectMusic, ProjectVoice, SheetSource } from '@/li
 import { Inspector, type TurnLog } from '@/components/agent/Inspector';
 import { blankStage, emptyFlow, initialState, sampleFlow, sortStages, startStage } from '@/lib/agent/flow';
 import type { AgentEvent, AgentFlow, ChatTurn, CueEvent, CueStatus, RoomMedia, SessionState, Stage, TurnResponse } from '@/lib/agent/types';
-import { ACTION_KINDS, type EveryWhen } from '@/lib/agent/media';
+import { ACTION_KINDS, CONTROL_FADE_SECONDS, MAX_CONTROL_FADE_SECONDS, type EveryWhen } from '@/lib/agent/media';
 import { buttonBusyCompact, buttonIcon, buttonOutline, buttonOutlineCompact, buttonPrimary, toolbarButtonWidth, buttonSaved, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
 import { ProgressLine } from '@/components/agent/ProgressLine';
 import { Spinner } from '@/components/agent/Spinner';
@@ -436,6 +440,15 @@ export default function AgentStudioPage() {
   const interruptRef = useRef<() => unknown>(() => {});
   // Images and video on their way into the room (opening takes a moment), so a second check doesn't show them twice.
   const mediaStarting = useRef(new Set<string>());
+  // "Once" media waiting for the other sounds to fade out before it starts (its action's control), by file.
+  const mediaWaiting = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const forgetWaiting = (assetId?: string) => {
+    for (const [id, timer] of [...mediaWaiting.current]) {
+      if (assetId && id !== assetId) continue;
+      clearTimeout(timer);
+      mediaWaiting.current.delete(id);
+    }
+  };
   // The caller's words, judged for media moments (by history length and text) — see judgeCaller.
   const callerJudgements = useRef(new Map<string, Promise<JudgedMedia[]>>());
   const conversations = useRef<ConversationStore>({ threads: {}, lastStart: {} });
@@ -907,6 +920,7 @@ export default function AgentStudioPage() {
   const stopSceneMedia = () => {
     stopAudio();
     musicRef.current?.stop();
+    forgetWaiting();
     stopLoops();
     stopSounds();
     clearVisuals();
@@ -1785,12 +1799,50 @@ export default function AgentStudioPage() {
       ];
     });
 
+  // A "once" action's controls over the media already on (row 8: "…play dance music, but after fading out
+  // all soundtracks"): the other sounds fade out or change volume, the other pictures and video come
+  // down. The chatbot's voice is never touched. Returns how long its own media waits (the fade), in seconds.
+  const applyControls = (media: PlannedMedia): number => {
+    if (media.timing.kind !== 'once') return 0;
+    let wait = 0;
+    for (const control of controlsOf(media.link.action)) {
+      if (control.do === 'volume') {
+        const share = Math.max(0, Math.min(400, control.level)) / 100;
+        turnOtherSounds(media.asset.id, share);
+        musicRef.current?.setLevels(saved.musicVolume * Math.min(1, share), saved.musicDip);
+        continue;
+      }
+      if (control.target !== 'visuals') {
+        const seconds = Math.max(0, Math.min(MAX_CONTROL_FADE_SECONDS, control.seconds ?? CONTROL_FADE_SECONDS));
+        const music = Boolean(musicRef.current?.playing);
+        if (music) musicRef.current?.stop(seconds);
+        if (stopOtherSounds(media.asset.id, seconds) || music) wait = Math.max(wait, seconds);
+      }
+      if (control.target !== 'sounds') hideOtherVisuals(media.asset.id);
+    }
+    return wait;
+  };
+
   // Shows an image or video in its area, or (a "once" sound) plays it — and marks it.
   const startMedia = (media: PlannedMedia, afterMessage: number) => {
     const id = media.asset.id;
+    noteMedia(media, afterMessage, 'shown');
+    // What it does to the media already on comes first; its own starts once the other sounds have faded.
+    const wait = applyControls(media);
+    if (wait <= 0) return beginMedia(media, afterMessage);
+    forgetWaiting(id);
+    mediaWaiting.current.set(
+      id,
+      setTimeout(() => {
+        mediaWaiting.current.delete(id);
+        beginMedia(media, afterMessage);
+      }, wait * 1000),
+    );
+  };
+  const beginMedia = (media: PlannedMedia, afterMessage: number) => {
+    const id = media.asset.id;
     const fail = (err: unknown) =>
       noteMedia(media, afterMessage, 'shown', err instanceof Error ? err.message : 'It couldn’t be shown.');
-    noteMedia(media, afterMessage, 'shown');
     if (media.asset.kind === 'sound') {
       // "Loop, when user instructs": it loops until removed (or the call ends).
       const volume = clampSoundVolume(media.link.volume);
@@ -1806,6 +1858,8 @@ export default function AgentStudioPage() {
   };
   const endMedia = (media: PlannedMedia, afterMessage: number) => {
     noteMedia(media, afterMessage, 'removed');
+    // Removed while it was still waiting for the other sounds to fade: it never starts.
+    forgetWaiting(media.asset.id);
     // Its bar fades out: eased down to silence (pictures and video: their area's bar says, in mediaShow).
     if (media.asset.kind === 'sound') stopSounds(media.asset.id, fadeOutSeconds(barOn(media.link)));
     else hideVisual(media.asset.id);
@@ -1814,7 +1868,8 @@ export default function AgentStudioPage() {
   // "Once, when…" media actions: after each part of an exchange (the caller speaking, then the reply),
   // Claude says which of this scene's actions it triggered — to show (or play) their media, or remove it.
   const mediaOn = (m: PlannedMedia) =>
-    m.asset.kind === 'sound' ? isSoundPlaying(m.asset.id) : isShowing(m.asset.id) || mediaStarting.current.has(m.asset.id);
+    mediaWaiting.current.has(m.asset.id) ||
+    (m.asset.kind === 'sound' ? isSoundPlaying(m.asset.id) : isShowing(m.asset.id) || mediaStarting.current.has(m.asset.id));
   const sceneRef = () =>
     saved.sceneSheet ? { sheetId: saved.sceneSheet.sheetId, number: saved.sceneSheet.number } : null;
 
@@ -2326,6 +2381,10 @@ export default function AgentStudioPage() {
             </p>
           </div>
         </div>
+        {/* Adding Immersive Media: which zone's drawing is open — in the middle of the bar. */}
+        {mediaOpen && (
+          <ZoneButtons className="order-last w-full justify-center lg:absolute lg:left-1/2 lg:top-1/2 lg:order-none lg:w-auto lg:-translate-x-1/2 lg:-translate-y-1/2" />
+        )}
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setKeysOpen((o) => !o)} aria-expanded={keysOpen} data-tour="keys-button" className={buttonOutline}>
             Keys
