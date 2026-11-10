@@ -5,6 +5,7 @@ import { dipToShare } from '@/components/agent/backgroundMusic';
 import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
 import { soundsHere, tdLevels, tdSound, tdSoundLoop, tdSoundPan, tdSoundVolume } from './touchDesigner';
 import { voiceAnalyser } from './voiceLevel';
+import { recordTap } from './recordTap';
 import {
   browserChannelLevels,
   clampPan,
@@ -236,6 +237,7 @@ function limiterOf(ctx: AudioContext): AudioNode {
     c.connect(join, 0, i);
   }
   join.connect(ctx.destination);
+  join.connect(recordTap(ctx)); // Record conversation hears the sounds here
   limiter = bus;
   return bus;
 }
@@ -288,6 +290,7 @@ export function voiceToAllSpeakers(audio: HTMLAudioElement) {
     limit.connect(voiceAnalyser(ctx)); // the AI character listens here (voiceLevel.ts)
     for (let i = 0; i < 4; i++) level.connect(merger, 0, i);
     merger.connect(ctx.destination);
+    merger.connect(recordTap(ctx)); // Record conversation hears the voice here
     ctx.createMediaElementSource(audio).connect(volume);
     voiceGains.add(volume);
     if (ctx.state === 'suspended') void ctx.resume();

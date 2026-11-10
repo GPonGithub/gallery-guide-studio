@@ -13,6 +13,8 @@ import { startStreamedClip, type StreamedClip } from '@/components/agent/streame
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { ZoneButtons } from '@/components/agent/ZoneButtons';
 import { MusicPanel } from '@/components/agent/MusicPanel';
+import { RecordConversation } from '@/components/agent/RecordConversation';
+import { beginRecording, endRecording, useRecordSettings } from '@/lib/agent/conversationRecorder';
 import { OnboardingTour } from '@/components/agent/OnboardingTour';
 import { SceneButtons } from '@/components/agent/SceneButtons';
 import { TeamToggle } from '@/components/agent/TeamToggle';
@@ -704,6 +706,21 @@ export default function AgentStudioPage() {
   useEffect(() => {
     if (session?.ended && !speaking) musicRef.current?.stop();
   }, [session?.ended, speaking]);
+
+  // Record conversation (the chat toolbar): the recording starts the moment a conversation does — its
+  // first turn being worked out — and stops 5 seconds after it ends: once the goodbye has been spoken,
+  // or the conversation is started again or swapped for another. A new conversation starting within
+  // those 5 seconds closes that file at once and begins its own.
+  const recordOn = useRecordSettings().on;
+  const recordLabel = saved?.sceneSheet?.number ? `Scene ${saved.sceneSheet.number}` : '';
+  const conversationOver = Boolean(session?.ended) || messages.length === 0;
+  useEffect(() => {
+    if (!recordOn) endRecording(0);
+    else if (busy && !session?.ended) beginRecording(recordLabel);
+    else if (!busy && !speaking && conversationOver) endRecording();
+  }, [recordOn, busy, speaking, session?.ended, conversationOver, recordLabel]);
+  // Leaving the page: what's been recorded so far is saved.
+  useEffect(() => () => endRecording(0), []);
 
   useEffect(() => {
     // A Scenes demo the page was closed in the middle of: put the work back first.
@@ -2607,6 +2624,7 @@ export default function AgentStudioPage() {
                   />
                 )}
               </button>
+              <RecordConversation />
               {/* Sound controls: always together at the right — if the row wraps, they move down as a pair
                   (so the Voice panel opens neatly under its button). */}
               {/* The pair wraps too: in a very narrow chat all four make one column on the right. */}

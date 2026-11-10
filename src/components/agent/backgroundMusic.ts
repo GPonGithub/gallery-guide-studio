@@ -1,5 +1,7 @@
 'use client';
 
+import { recordTap } from '@/lib/agent/recordTap';
+
 /**
  * A looping background soundtrack under the conversation. It plays from a
  * file already in the browser, through the Web Audio API, so it never waits
@@ -144,6 +146,7 @@ export class BackgroundMusic {
     this.element.preload = 'auto';
     this.context.createMediaElementSource(this.element).connect(this.gain);
     this.gain.connect(this.context.destination);
+    this.gain.connect(recordTap(this.context)); // Record conversation hears the music here
     // If the browser suspends the audio (another sound starting, a change of
     // output device), pick it straight back up while the music is meant to play.
     this.context.onstatechange = () => {
