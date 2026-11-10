@@ -12,7 +12,7 @@ import {
   type Placement,
   type TimelineBar,
 } from './mediaFolder';
-import { areaName, PROJECTION_SHAPES, type ProjectionShape } from './projectionLayout';
+import { areaName, PROJECTION_SHAPES, zoneOfArea, type ProjectionShape } from './projectionLayout';
 
 /**
  * Placing pictures and video on the room drawing. A picture dropped on an area fills it; it can then
@@ -96,6 +96,22 @@ export function boxOfShape(s: ProjectionShape) {
 export function fillArea(area: number): Placement {
   const b = boxOfShape(SHAPES.get(area)!);
   return { cx: b.x + b.width / 2, cy: b.y + b.height / 2, w: b.width, h: b.height, rot: 0 };
+}
+
+/**
+ * A picture dropped on an area. Zone 2: it fills the rectangle around the outline (flat, as seen from
+ * where the room is drawn). Zones 1 and 3: its four corners go on the face's own four corners, in
+ * perspective — a picture made square-on for that wall (an opening cut for its panel, say) then lands
+ * square on the real wall, and lines up with the drawing's outlines. It can still be moved or re-pinned.
+ */
+export function dropPlace(area: number): Placement {
+  const place = fillArea(area);
+  if (zoneOfArea(area).id === 2) return place;
+  const pin = cornersOf(area).map(([x, y]): [number, number] => [
+    (x - (place.cx - place.w / 2)) / place.w,
+    (y - (place.cy - place.h / 2)) / place.h,
+  ]);
+  return pinIsConvex(pin) ? { ...place, pin } : place;
 }
 
 /** Whether two placements are the same (one copy of a picture: its bars share one placement). */
@@ -183,7 +199,7 @@ export function dropOnArea(
     to: stage,
     area,
   };
-  const bar: TimelineBar = { track: area, from: stage, to: stage, place: fillArea(area) };
+  const bar: TimelineBar = { track: area, from: stage, to: stage, place: dropPlace(area) };
   updateMediaLinks((all) => {
     const cleared = clearArea(all, p, area, order);
     const mine = cleared.find((l) => sameLink(l, p));

@@ -324,7 +324,9 @@ const clipOf = (s: ProjectionShape) => [s.points, ...(s.holes ?? []).map((h) => 
 
 type View = { x: number; y: number; w: number; h: number };
 /** How far in the drawing zooms (scroll or pinch over it). */
-const MAX_ZOOM = 8;
+const MAX_ZOOM = 64;
+/** How far out it zooms: the whole zone drawn this many times smaller, with room around it. */
+const MAX_ZOOM_OUT = 4;
 /** The picture outside the areas it's on, while placing it. */
 const OUTSIDE_OPACITY = 0.25;
 const SMALLEST = 12;
@@ -525,7 +527,7 @@ function ProjectionDiagram({
   const zoneDef = zoneById(zone);
   const full: View = zoneDef.view;
   const zoneShapes = PROJECTION_SHAPES.filter((s) => zoneDef.areas.includes(s.area));
-  // Zoomed in (scroll or pinch): the part showing — each zone opens whole.
+  // Zoomed in or out (scroll or pinch): the part showing — each zone opens whole.
   const [zoomed, setZoomed] = useState<{ zone: ZoneId; view: View } | null>(null);
   const view = zoomed?.zone === zone ? zoomed.view : full;
   const setView = (next: View | ((v: View) => View)) =>
@@ -615,10 +617,9 @@ function ProjectionDiagram({
       setZoomed((was) => {
         const v = was?.zone === zone ? was.view : whole;
         const factor = Math.exp(e.deltaY * (e.ctrlKey ? 0.01 : 0.0015));
-        const w = Math.min(whole.w, Math.max(whole.w / MAX_ZOOM, v.w * factor));
+        const w = Math.min(whole.w * MAX_ZOOM_OUT, Math.max(whole.w / MAX_ZOOM, v.w * factor));
         const k = w / v.w;
         const h = v.h * k;
-        if (w >= whole.w) return null;
         return { zone, view: { x: at.x - (at.x - v.x) * k, y: at.y - (at.y - v.y) * k, w, h } };
       });
     };
@@ -629,11 +630,17 @@ function ProjectionDiagram({
   const place = draft ?? group?.bars[0].place ?? null;
   const onAreas = new Set(group?.bars.flatMap((b) => areaOfTrack(b.track) ?? []) ?? []);
 
+  // The open zone's area at a point (zoomed out, other zones' space comes into view, undrawn: not theirs).
+  const areaHere = (x: number, y: number) => {
+    const area = areaAt(x, y);
+    return area !== null && zoneDef.areas.includes(area) ? area : null;
+  };
+
   // --- dropping a Media Library item on an area ---
   const dragOver = (e: React.DragEvent) => {
     if (!e.dataTransfer.types.includes(DRAG_VISUAL) || !scene || !stages.length) return;
     const p = toDrawing(e.clientX, e.clientY);
-    const area = areaAt(p.x, p.y);
+    const area = areaHere(p.x, p.y);
     if (area !== null) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
@@ -645,7 +652,7 @@ function ProjectionDiagram({
     const raw = e.dataTransfer.getData(DRAG_VISUAL);
     if (!raw || !scene || !stages.length) return;
     const p = toDrawing(e.clientX, e.clientY);
-    const area = areaAt(p.x, p.y);
+    const area = areaHere(p.x, p.y);
     if (area === null) return;
     e.preventDefault();
     let item: DraggedAsset;
@@ -689,7 +696,7 @@ function ProjectionDiagram({
     if (!g.moved && Math.hypot(e.clientX - g.client.x, e.clientY - g.client.y) < 4) return;
     g.moved = true;
     if (g.kind === 'pan') {
-      if (g.view.w >= full.w) return;
+      if (g.view === full) return;
       const k = g.view.w / Math.max(1, pixels.width);
       setView({ ...g.view, x: g.view.x - (e.clientX - g.client.x) * k, y: g.view.y - (e.clientY - g.client.y) * k });
       return;
@@ -785,7 +792,7 @@ function ProjectionDiagram({
     }
     // A click: an area goes on or off while placing; otherwise the picture on it is picked up.
     const p = toDrawing(e.clientX, e.clientY);
-    const area = areaAt(p.x, p.y);
+    const area = areaHere(p.x, p.y);
     if (placing && group) {
       if (area === null) {
         setPlacing(null);
@@ -822,7 +829,7 @@ function ProjectionDiagram({
         data-tour="room-diagram"
         viewBox={`${view.x} ${view.y} ${view.w} ${view.h}`}
         preserveAspectRatio="xMidYMid meet"
-        className={`min-h-0 w-full flex-1 touch-none select-none ${view.w < full.w ? 'cursor-grab' : ''}`}
+        className={`min-h-0 w-full flex-1 touch-none select-none ${view !== full ? 'cursor-grab' : ''}`}
         role="img"
         aria-label={`Zone ${zone}'s ${zoneShapes.length} projection areas — drop a picture or video on an area to place it`}
         onDragOver={dragOver}
@@ -1007,7 +1014,7 @@ function ProjectionDiagram({
           </g>
         )}
       </svg>
-      {view.w < full.w && (
+      {view !== full && (
         <button
           onClick={() => setZoomed(null)}
           className={`absolute bottom-1 right-1 ${buttonOutline} px-2 py-0.5 text-[10px]`}

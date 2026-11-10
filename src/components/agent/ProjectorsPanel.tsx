@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { buttonOutline, fieldInput } from '@/lib/styles';
 import { send, useTDStatus } from '@/lib/agent/touchDesigner';
+import { useZone } from '@/lib/agent/zones';
 
 const SCRIPT_URL = '/touchdesigner/projector_output.py';
 
@@ -19,6 +20,10 @@ export function ProjectorsPanel() {
   const connected = status.state === 'connected';
   const projectors = connected ? status.projectors : undefined;
   const count = projectors?.count ?? 0;
+  // The zone whose drawing is open (the Zone 1 / 2 / 3 buttons): zones 1 and 3 are on projectors 5 and 6,
+  // mapped by their own Kantan Mapper ('p56').
+  const zone = useZone();
+  const p56 = zone !== 2;
   // Ask again each time this step opens: projectors may have been added since connecting (5 and 6 on 2026-11-09).
   useEffect(() => {
     if (connected) send({ type: 'projectors', action: 'status' });
@@ -155,18 +160,19 @@ export function ProjectorsPanel() {
         <div className="flex flex-col gap-1.5">
           <div className="flex flex-wrap items-center gap-1.5">
             <button
-              onClick={() => send({ type: 'kantan', action: 'open' })}
+              onClick={() => {
+                // Each zone's projectors have their own Kantan Mapper: the open zone's editor comes up, the other closes.
+                send(p56 ? { type: 'kantan', action: 'close' } : { type: 'kantan', action: 'close', mapper: 'p56' });
+                send(p56 ? { type: 'kantan', action: 'open', mapper: 'p56' } : { type: 'kantan', action: 'open' });
+              }}
               className={small}
-              title="Opens Kantan Mapper's editor in TouchDesigner, ready to drag shapes and corners"
+              title={
+                p56
+                  ? `Opens the Kantan Mapper for projectors 5 and 6 (zones 1 and 3) in TouchDesigner, as zone ${zone} is open — choose Zone 2 above for the room's walls`
+                  : "Opens the Kantan Mapper for projectors 1 to 4 (zone 2, the room's walls) in TouchDesigner — choose Zone 1 or 3 above for theirs"
+              }
             >
-              Open Kantan Mapper
-            </button>
-            <button
-              onClick={() => send({ type: 'kantan', action: 'open', mapper: 'p56' })}
-              className={small}
-              title="Opens the Kantan Mapper for projectors 5 and 6 (shapes 5-1 to 6-3) in TouchDesigner"
-            >
-              Open Kantan 5 &amp; 6
+              Open Kantan Mapper · Zone {zone}
             </button>
             <button
               onClick={() => send({ type: 'numbers', action: status.areaNumbers === false ? 'show' : 'hide' })}
@@ -192,7 +198,8 @@ export function ProjectorsPanel() {
             </button>
           </div>
           <p className="font-body text-xs italic text-muted-ink">
-            To fit a shape to the wall, open Kantan Mapper (it opens on TouchDesigner&rsquo;s computer) and drag the
+            To fit a shape to the wall, open the Kantan Mapper for the zone that&rsquo;s open (it opens on
+            TouchDesigner&rsquo;s computer) and drag the
             shape or its corners — the projectors follow as you drag. Save the TouchDesigner project when you&rsquo;re
             done.
           </p>

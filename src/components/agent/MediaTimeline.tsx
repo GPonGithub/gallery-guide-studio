@@ -1289,7 +1289,9 @@ export function MediaTimeline({
                           ? 'Delete this bar'
                           : 'Delete this bar — its file is disconnected from the action (connect it again in the Media Library)'
                       }
-                      className="flex h-full w-6 shrink-0 cursor-pointer items-center justify-center font-body text-xl leading-none text-paper/80 hover:bg-ink/30 hover:text-paper"
+                      // Twice the ▼'s size, and held clear of the fade out: its ramp and grip reach
+                      // END + MAX_FADE_SECONDS × NOTCH (52px) in from the bar's right edge.
+                      className="relative z-40 mr-10 flex h-full w-12 shrink-0 cursor-pointer items-center justify-center font-body text-4xl leading-none text-paper/80 hover:bg-ink/30 hover:text-paper"
                     >
                       ×
                     </button>
