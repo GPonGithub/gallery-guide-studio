@@ -6,6 +6,7 @@ import { loadLibrary, onMediaSceneChange } from './mediaFolder';
 import { areaUvMatrix } from './roomPlacement';
 import type { Shown } from './mediaShow';
 import { onVoiceReading } from './voiceLevel';
+import { masterLevel, onMasterChange } from './masterVolume';
 
 /**
  * The live link to TouchDesigner for the room's media. The browser connects
@@ -217,7 +218,7 @@ async function greet() {
   send({ type: 'clear' });
   sent.clear();
   syncVisuals(current);
-  if (lastLevels) send({ type: 'levels', ...lastLevels, ms: 0 });
+  if (lastLevels) send({ type: 'levels', gain: lastLevels.gain * masterLevel(), ms: 0 });
   connectedListeners.forEach((listener) => listener());
   if (projectionsWanted.length > 0) {
     openProjections();
@@ -376,8 +377,17 @@ export function tdSoundVolume(id: string, volume: number) {
 
 let lastLevels: { gain: number } | null = null;
 
-/** The sounds' volume now (0–1), easing over `ms` — the Music / Sounds volume, dipped while the agent talks. */
+/**
+ * The sounds' volume now (0–1), easing over `ms` — the Music / Sounds volume, dipped while the agent talks,
+ * times the top bar's master volume (0 while Sound is off).
+ */
 export function tdLevels(gain: number, ms: number) {
   lastLevels = { gain };
-  if (tdSettings().sounds !== 'computer') send({ type: 'levels', gain, ms });
+  if (tdSettings().sounds !== 'computer') send({ type: 'levels', gain: gain * masterLevel(), ms });
+}
+// The master volume moved (or Sound went off or on): TouchDesigner's sounds follow at once.
+if (typeof window !== 'undefined') {
+  onMasterChange(() => {
+    if (lastLevels) tdLevels(lastLevels.gain, 60);
+  });
 }

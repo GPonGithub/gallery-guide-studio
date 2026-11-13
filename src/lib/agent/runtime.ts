@@ -36,6 +36,8 @@ import {
  */
 
 const FAST_MODEL = 'claude-haiku-4-5-20251001';
+/** Writes the replies when Fast replies is on (TurnRequest.fastReplies). */
+const FAST_REPLY_MODEL = 'claude-haiku-5-5';
 // Enough context to read the latest reply; more just slows the analysis down.
 const HISTORY_FOR_ANALYSIS = 8;
 const CUE_TIMEOUT_MS = 800;
@@ -447,6 +449,7 @@ function responderSystem(
   arrivedFrom: Turn['arrivedFrom'],
   memory: RememberedItem[],
   media: RoomMedia[],
+  speakers?: TurnRequest['speakers'],
 ): SystemModelMessage[] {
   // The part that's the same every turn (persona, rules, knowledge base) goes
   // first and is cached by Anthropic, so a long knowledge base isn't re-read
@@ -472,6 +475,12 @@ function responderSystem(
   const collected = Object.entries(state.slots).map(([k, v]) => `${k} = ${v}`);
   const missing = stage.collect.filter((s) => !state.slots[s.name]);
   const parts = [
+    speakers &&
+      `TWO PEOPLE ARE IN THIS CONVERSATION, each on their own microphone: ${speakers.left} and ${speakers.right}. ` +
+        `Each of their messages starts with who said it ("${speakers.left}: …"); a message without a name is from ` +
+        'whichever of them spoke. Reply to the person who just spoke — use their name or role naturally where it ' +
+        'fits — and keep both of them in the conversation. Never mix up who said what, and never start your reply ' +
+        'with a name and a colon.',
     `CURRENT GOAL: ${stage.goal}`,
     stage.instructions.trim() && `HOW TO APPROACH IT:\n${stage.instructions.trim()}`,
     collected.length > 0 &&
@@ -667,14 +676,51 @@ class ReplyStream {
   }
 }
 
+/** At most this many replies are written ahead for other stages each turn (each is an extra request). */
+const MAX_WRITTEN_AHEAD = 4;
+
+/**
+ * Where this turn could take the conversation, each with the state it would be in there — the stages its
+ * exits lead to (this stage's, the global ones and the look-ahead ones, as the analysis numbers them), and
+ * the stage that finishing its goal leads to. Mirrors Turn.moveTo, without firing any cues.
+ */
+export function speculate(flow: AgentFlow, stage: Stage, state: SessionState) {
+  const guesses: { to: string; reason: string; stage: Stage | undefined; state: SessionState; arrivedFrom: Turn['arrivedFrom'] }[] = [];
+  const add = (exit: Exit, reason: string) => {
+    if (guesses.length >= MAX_WRITTEN_AHEAD || exit.to === stage.code) return;
+    if (guesses.some((g) => g.to === exit.to)) return;
+    const to = exit.to === END ? undefined : findStage(flow, exit.to);
+    if (exit.to !== END && !to) return;
+    const st: SessionState = structuredClone(state);
+    if (to) {
+      st.stageCode = to.code;
+      st.turnsInStage = 0;
+      st.offTopicStreak = 0;
+    } else {
+      st.ended = true;
+    }
+    guesses.push({ to: exit.to, reason, stage: to, state: st, arrivedFrom: to ? { stage, reason } : null });
+  };
+  const byWords = [...stage.exits, ...flow.globalExits, ...lookAheadExits(flow, stage)].filter((e) => !e.onComplete);
+  const next = state.completedStages.includes(stage.code)
+    ? undefined
+    : (stage.exits.find((e) => e.onComplete) ?? (stage.exits.length === 1 ? stage.exits[0] : undefined));
+  // Other stages first (ending the call is rarer, and its reply is short anyway).
+  for (const exit of byWords) if (exit.to !== END) add(exit, exit.when.trim() || 'the caller asked');
+  if (next) add(next, 'stage goal met');
+  for (const exit of byWords) if (exit.to === END) add(exit, exit.when.trim() || 'the caller asked');
+  return guesses;
+}
+
 export async function runTurnStream(
-  { flow, state: incoming, history, userText, anthropicApiKey, holdCues, memory = [], savedHere, media = [] }: TurnRequest,
+  { flow, state: incoming, history, userText, anthropicApiKey, holdCues, memory = [], savedHere, media = [], fastReplies, speakers }: TurnRequest,
   abortSignal: AbortSignal | undefined,
   emit: (event: TurnStreamEvent) => void,
 ): Promise<void> {
-  const model = anthropicModel(anthropicApiKey);
+  const model = fastReplies ? anthropicModel(anthropicApiKey, FAST_REPLY_MODEL) : anthropicModel(anthropicApiKey);
   const fast = anthropicModel(anthropicApiKey, FAST_MODEL);
-  const timings: string[] = [];
+  // Says in the [wait] log which model wrote the reply, so the two can be compared.
+  const timings: string[] = fastReplies ? ['fast replies (Haiku 5.5)'] : [];
   const startedAt = Date.now();
   const state: SessionState = structuredClone(incoming);
   const turn = new Turn(flow, state, holdCues);
@@ -685,7 +731,7 @@ export async function runTurnStream(
   if (state.ended) throw new Error('This conversation has ended — restart it to talk again.');
 
   // Starts writing a reply for `stage`; its sentences collect in a ReplyStream.
-  const respond = (stage: Stage, arrivedFrom: Turn['arrivedFrom'], label: string) => {
+  const respond = (stage: Stage, arrivedFrom: Turn['arrivedFrom'], label: string, st: SessionState = state) => {
     const stop = new AbortController();
     let failure: unknown = null;
     const began = Date.now();
@@ -693,7 +739,7 @@ export async function runTurnStream(
       model,
       abortSignal: abortSignal ? AbortSignal.any([abortSignal, stop.signal]) : stop.signal,
       // Built right now, from the state as it is at this moment.
-      system: responderSystem(flow, stage, state, arrivedFrom, memory, media),
+      system: responderSystem(flow, stage, st, arrivedFrom, memory, media, speakers),
       messages: toModelMessages(history, userText),
       providerOptions: NO_THINKING,
       maxOutputTokens: 300,
@@ -736,7 +782,14 @@ export async function runTurnStream(
         return;
       }
     })().catch(() => {});
+    // Replies for the stages the caller's words could move to, started now too: if the analysis moves the
+    // conversation on, the right one is already being written instead of starting only once it's known.
+    const ahead = speculate(flow, startStage, state).map((guess) => ({
+      ...guess,
+      ...respond(guess.stage ?? startStage, guess.arrivedFrom, `respond (written ahead for ${guess.to})`, guess.state),
+    }));
     const streakBefore = state.offTopicStreak;
+    const slotsBefore = { ...state.slots };
     try {
       const analysis = await timed(timings, 'analyse', analyse(fast, flow, startStage, state, history, userText, memory, savedHere ?? [], media, abortSignal));
       turn.apply(analysis);
@@ -748,9 +801,31 @@ export async function runTurnStream(
       state.ended ||
       turn.events.some((e) => e.type === 'complete') ||
       (state.offTopicStreak >= OFF_TOPIC_ESCALATE && streakBefore < OFF_TOPIC_ESCALATE);
+    // The reply written ahead fits if the conversation went where it guessed and nothing the caller just gave
+    // belongs to the new stage (its prompt was built before the analysis recorded it). The reason it moved can
+    // differ (words vs goal met): that only changes the one line saying where it came from.
+    const target = state.ended ? END : state.stageCode;
+    const newSlots = Object.keys(state.slots).filter((k) => state.slots[k] !== slotsBefore[k]);
+    const fits = (guess: (typeof ahead)[number]) =>
+      guess.to === target &&
+      !(guess.stage?.collect ?? []).some((c) => newSlots.includes(c.name)) &&
+      !(state.offTopicStreak >= OFF_TOPIC_ESCALATE && streakBefore < OFF_TOPIC_ESCALATE);
+    const chosen = situationChanged ? ahead.find(fits) : undefined;
+    for (const guess of ahead) if (guess !== chosen) guess.stop.abort();
     if (situationChanged) {
       early.stop.abort();
-      reply = await speak(respond(turn.stage() ?? startStage, turn.arrivedFrom, 'respond again for the new situation').reply);
+      const fresh = () => respond(turn.stage() ?? startStage, turn.arrivedFrom, 'respond again for the new situation').reply;
+      if (chosen) {
+        timings.push(`used the reply written ahead for ${chosen.to}`);
+        try {
+          reply = await speak(chosen.reply);
+        } catch (err) {
+          if (spoken > 0) throw err;
+          reply = await speak(fresh());
+        }
+      } else {
+        reply = await speak(fresh());
+      }
     } else {
       try {
         reply = await speak(early.reply);

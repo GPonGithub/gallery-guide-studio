@@ -1,5 +1,6 @@
 'use client';
 
+import { currentTeam, teamFileTag } from '@/lib/team';
 import { useEffect, useSyncExternalStore } from 'react';
 import { sortStages } from './flow';
 import { listProjects } from './localProjects';
@@ -129,7 +130,8 @@ export async function downloadShow() {
   const url = URL.createObjectURL(new Blob([showText(show)], { type: 'application/json' }));
   const a = document.createElement('a');
   a.href = url;
-  a.download = SHOW_FILE_NAME;
+  // A copy says whose it is (show.json in the media folder keeps its own name, for Show Control).
+  a.download = `show ${teamFileTag(currentTeam())}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

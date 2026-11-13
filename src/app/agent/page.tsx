@@ -12,6 +12,7 @@ import { sentencePauseMs } from '@/lib/agent/sentencePause';
 import { startStreamedClip, type StreamedClip } from '@/components/agent/streamedAudio';
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { ZoneButtons } from '@/components/agent/ZoneButtons';
+import { SoundControls } from '@/components/agent/SoundControls';
 import { MusicPanel } from '@/components/agent/MusicPanel';
 import { RecordConversation } from '@/components/agent/RecordConversation';
 import { beginRecording, endRecording, useRecordSettings } from '@/lib/agent/conversationRecorder';
@@ -27,6 +28,8 @@ import { LAYOUT_DEMO_ACTIONS } from '@/components/agent/layoutDemo';
 import { DEMO_SCENE, DEMO_STAGES, endMediaDemo, useMediaDemo } from '@/lib/agent/mediaDemo';
 import { forgetMarker, markerArrived, replayMarker, setMarkerProblem } from '@/lib/agent/markerPlay';
 import { send as sendToTD } from '@/lib/agent/touchDesigner';
+import { isPress, useMqttMessages } from '@/lib/agent/mqttEvents';
+import { dualSpeakers, markSpeechStart, personLabel, setSceneTextSource, withSpeaker } from '@/lib/agent/dualMic';
 import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -190,6 +193,8 @@ type Saved = {
   pauseSeconds: number;
   /** Open mic: the caller can talk over the agent to interrupt it (the mic keeps listening while it speaks). */
   interruptByVoice: boolean;
+  /** Fast replies: the agent's replies are written by Claude Haiku 5.5, which starts speaking sooner, instead of Sonnet. Missing = off. */
+  fastReplies?: boolean;
   /** Up to ten saved ElevenLabs voices (empty ID = the default voice). */
   voices: SavedVoice[];
   /** Index into `voices` of the one the agent speaks with. */
@@ -261,6 +266,24 @@ const toRemembered = (it: MemoryItem): RememberedItem => ({
 // The chat toolbar's buttons are the compact kind, so the row stays on one line.
 
 // Performance cues ([warmly], [laughs softly]…) are for the voice, not the reader.
+// Words that say how or when a media action happens, not what it's about (see mightTriggerMedia).
+const MEDIA_FILLER = new Set(
+  ('when what where which while with without that this then them they there their from into onto after before ' +
+    'asked asks asking user users caller show shows shown play plays playing remove removes stop stops hide ' +
+    'start starts every time times only also just like normal function should would could will have been ' +
+    'about some your chatbot voice let lets please')
+    .split(' '),
+);
+// The key words of a phrase, each cut to its first four letters ("dancing" and "dance" both "danc").
+const keyWords = (text: string) =>
+  new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z]+/)
+      .filter((w) => w.length >= 4 && !MEDIA_FILLER.has(w))
+      .map((w) => w.slice(0, 4)),
+  );
+
 const withoutCues = (text: string) => text.replace(/\[[^\]\n]{1,40}\]\s*/g, '').trim();
 
 // What a project saves, as it stands now — compared with the last save to
@@ -533,6 +556,34 @@ export default function AgentStudioPage() {
   const cueStatusRef = useRef(new Map<string, CueStatus>());
   const [openMicOn, setOpenMicOn] = useState(false);
   const [openMicStatus, setOpenMicStatus] = useState<OpenMicStatus>('off');
+  // Dual microphones reads the people's names from the open scene's sheet text.
+  useEffect(() => {
+    if (!saved) return;
+    setSceneTextSource(() =>
+      [
+        saved.brief,
+        saved.flow.scenePersona,
+        saved.flow.knowledge,
+        ...saved.flow.stages.map((st) => `Stage ${st.code} ${st.name}: ${st.goal}\n${st.instructions}`),
+      ]
+        .filter((x) => x?.trim())
+        .join('\n\n'),
+    );
+  });
+  // The room's sb-02 button (MQTT, via the Zigbee Pi): each press turns the open mic on or off,
+  // the same as clicking its 🎙️ button.
+  const MIC_BUTTON = 'sb-02';
+  useMqttMessages((message) => {
+    // (Runs on a later message, so everything it uses below is declared by then.)
+    if (!isPress(message, MIC_BUTTON)) return;
+    const on = !openMicOn;
+    if (on) {
+      recognitionRef.current?.stop();
+      setError(null);
+    }
+    setOpenMicOn(on);
+  });
+
   // A reply being worked out early, during the open mic's pause (see startEarlyTurn).
   const earlyTurnRef = useRef<{
     text: string;
@@ -951,6 +1002,15 @@ export default function AgentStudioPage() {
     queueRef.current?.cancel();
     queueRef.current = null;
     setSpeaking(false);
+  };
+
+  // The top bar's Stop all sound: the agent's voice (cut off where it was, as Interrupt does), the
+  // background music and every timeline sound, here and in TouchDesigner.
+  const stopAllSound = () => {
+    if (speaking || audioRef.current || queueRef.current) interrupt();
+    musicRef.current?.stop(0.3);
+    stopLoops();
+    stopSounds();
   };
 
   // Interrupting the agent (the Interrupt button, Escape, talking over it with the open mic, or sending
@@ -1625,10 +1685,15 @@ export default function AgentStudioPage() {
       const allowed = (await checkMemory(memoryKey, cannotUseNow, earlierItems, saved.anthropicApiKey)).allowed;
       // What the room can show or play (the scene's media actions with a file connected), and what's on now —
       // so the agent goes along with it rather than saying it can't show anything.
-      // What the caller's words are about to put up or take down (waited for, but never for long).
-      const judged = userText
-        ? await Promise.race([judgeCaller(history, userText), new Promise<JudgedMedia[]>((r) => setTimeout(() => r([]), 3000))])
-        : [];
+      // What the caller's words are about to put up or take down. The judgement is an AI call (about a
+      // second), so the reply only waits for it when the words share a key word with one of the scene's
+      // media actions ("play the dance music"); otherwise it runs alongside and the room still reacts
+      // (see judgeCaller's other use in sendTurn). Waited for, but never for long.
+      const judging = userText ? judgeCaller(history, userText) : null;
+      const judged =
+        judging && userText && (await mightTriggerMedia(userText))
+          ? await Promise.race([judging, new Promise<JudgedMedia[]>((r) => setTimeout(() => r([]), 3000))])
+          : [];
       const media: RoomMedia[] = (await sceneMedia(sceneRef(), [...ACTION_KINDS])).map((m) => {
         const change = judged.find((j) => j.media.asset.id === m.asset.id && j.media.link.action === m.link.action)?.do;
         return {
@@ -1649,6 +1714,9 @@ export default function AgentStudioPage() {
           anthropicApiKey: saved.anthropicApiKey,
           // "When spoken" cues are held by the server and sent by the app as the reply is heard.
           holdCues: options.holdCues || cuesWhenSpoken,
+          fastReplies: Boolean(saved.fastReplies),
+          // Dual microphones: the two people, so the agent answers whoever spoke.
+          speakers: dualSpeakers() ? { left: personLabel('left'), right: personLabel('right') } : undefined,
           memory: allowed.map(toRemembered),
           savedHere: savedInScene(activePatient, sceneNow?.id ?? null).map((it) => ({ label: displayLabel(it.label), value: it.value })),
           media,
@@ -1931,6 +1999,17 @@ export default function AgentStudioPage() {
   // What the caller's words trigger is judged once (from the moment their phrase is confirmed, alongside
   // an early turn) — before the reply is written, so the agent is told what the room is putting up or
   // taking down and goes along with it, instead of the two deciding separately and disagreeing.
+  // Whether the caller's words could be about one of the scene's media actions: they share a key word
+  // with an action's line (the first four letters, so "dancing" meets "dance"). Generic words like
+  // "show", "play" or "when asked" don't count. Errs towards yes; a no only means the reply doesn't
+  // wait for the judgement.
+  const mightTriggerMedia = async (text: string): Promise<boolean> => {
+    const once = await sceneMedia(sceneRef(), ['once']);
+    if (once.length === 0) return false;
+    const said = keyWords(text);
+    return once.some((m) => [...keyWords(m.link.action)].some((w) => said.has(w)));
+  };
+
   const judgeCaller = (history: ChatTurn[], text: string): Promise<JudgedMedia[]> => {
     const key = `${history.length}|${text}`;
     const kept = callerJudgements.current.get(key);
@@ -2399,8 +2478,12 @@ export default function AgentStudioPage() {
           </div>
         </div>
         {/* Adding Immersive Media: which zone's drawing is open — in the middle of the bar. */}
+        {/* …with the master volume and Stop all sound to their right. */}
         {mediaOpen && (
-          <ZoneButtons className="order-last w-full justify-center lg:absolute lg:left-1/2 lg:top-1/2 lg:order-none lg:w-auto lg:-translate-x-1/2 lg:-translate-y-1/2" />
+          <div className="order-last flex w-full flex-wrap items-center justify-center gap-4 lg:absolute lg:left-1/2 lg:top-1/2 lg:order-none lg:w-auto lg:-translate-x-1/2 lg:-translate-y-1/2">
+            <ZoneButtons />
+            <SoundControls onStopAll={stopAllSound} />
+          </div>
         )}
         <div className="flex flex-wrap gap-2">
           <button onClick={() => setKeysOpen((o) => !o)} aria-expanded={keysOpen} data-tour="keys-button" className={buttonOutline}>
@@ -2889,12 +2972,18 @@ export default function AgentStudioPage() {
                 if (on) setError(null);
               }}
               onTranscript={setInput}
-              onUtterance={(text, timing) => {
+              onUtterance={(heard, timing) => {
                 setInput('');
+                // Dual microphones: "Dr Patel (doctor): …" — whoever's side was louder while it was said.
+                const text = withSpeaker(heard, timing.lastHeardAt);
                 void sendTurn(text, takeEarlyTurn(text), timing);
               }}
-              onPhraseFinal={startEarlyTurn}
-              onStatus={setOpenMicStatus}
+              onPhraseFinal={(heard) => startEarlyTurn(withSpeaker(heard))}
+              onStatus={(status) => {
+                // A new sentence starts being heard: dual microphones measures each side from here.
+                if (status === 'hearing' && openMicStatus !== 'hearing') markSpeechStart();
+                setOpenMicStatus(status);
+              }}
               onError={setError}
             />
             <input
@@ -2919,6 +3008,25 @@ export default function AgentStudioPage() {
                 Send
               </button>
             )}
+            {/* Fast replies: a quicker model writes the agent's replies (TurnRequest.fastReplies). */}
+            <button
+              onClick={() => setSaved({ ...saved, fastReplies: !saved.fastReplies })}
+              aria-pressed={Boolean(saved.fastReplies)}
+              title={
+                saved.fastReplies
+                  ? 'Fast replies on: Claude Haiku 5.5 writes the replies, so the agent starts talking sooner (they may be a little plainer). Click to go back to Sonnet.'
+                  : 'Fast replies off: Claude Sonnet writes the replies. Click to use Claude Haiku 5.5, which starts talking sooner.'
+              }
+              className={`shrink-0 self-stretch border-2 px-2 font-label text-[10px] uppercase leading-tight tracking-wider transition-colors duration-100 ${
+                saved.fastReplies
+                  ? 'border-[#f59f00] bg-[#f59f00] text-white hover:bg-[#f59f00]/80'
+                  : 'border-ink/40 bg-paper text-muted-ink hover:border-ink hover:text-ink'
+              }`}
+            >
+              ⚡ Fast
+              <br />
+              {saved.fastReplies ? 'On' : 'Off'}
+            </button>
           </div>
         </section>
 

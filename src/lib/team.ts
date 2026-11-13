@@ -32,6 +32,42 @@ export const isTeamControlKey = (name: string) =>
 /** The button's words: "Team ED", "Team AE", "Graham". */
 export const teamLabel = (t: Team) => (t === 'Graham' ? 'Graham' : `Team ${t}`);
 
+/** How a team is named in an exported file's name: "team-ED", "team-AE", "Graham". */
+export const teamFileTag = (t: Team) => (t === 'Graham' ? 'Graham' : `team-${t}`);
+
+/** The team a file's name is labelled with ("…team-AE…", "…Graham…"), or null. */
+export function teamInFileName(name: string): Team | null {
+  if (/team[-_ ]?AE\b/i.test(name)) return 'AE';
+  if (/team[-_ ]?ED\b/i.test(name)) return 'ED';
+  if (/\bGraham\b/i.test(name)) return 'Graham';
+  return null;
+}
+
+/**
+ * Whether a file may be imported into the team this page is on. Every exported JSON file says which team
+ * it came from (a "team" field, and the team in its name); it goes back into that team only, so one team's
+ * file can never overwrite another team's work. A file with no team in it falls back to its name. Returns
+ * a plain-English reason it can't, or null when it can.
+ */
+export function teamImportProblem(fileTeam: unknown, fileName = ''): string | null {
+  const here = currentTeam();
+  const from = isTeam(fileTeam) ? fileTeam : teamInFileName(fileName);
+  if (!from) {
+    return (
+      `“${fileName || 'This file'}” doesn’t say which team it belongs to, so it isn’t opened — that keeps it from ` +
+      `overwriting another team’s work. Export it again from its team, or add “${teamFileTag(here)}” to its name ` +
+      `if it really is ${teamLabel(here)}’s.`
+    );
+  }
+  if (from !== here) {
+    return (
+      `“${fileName || 'This file'}” belongs to ${teamLabel(from)}, and this page is ${teamLabel(here)}. It can only be ` +
+      `opened in ${teamLabel(from)}: switch to ${teamLabel(from)} (top bar) and open it there.`
+    );
+  }
+  return null;
+}
+
 /** The team this page was loaded as. */
 export function currentTeam(): Team {
   if (typeof window === 'undefined') return 'ED';

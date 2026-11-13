@@ -6,6 +6,7 @@ import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
 import { soundsHere, tdLevels, tdSound, tdSoundLoop, tdSoundPan, tdSoundVolume } from './touchDesigner';
 import { voiceAnalyser } from './voiceLevel';
 import { recordTap } from './recordTap';
+import { masterOutput } from './masterVolume';
 import {
   browserChannelLevels,
   clampPan,
@@ -236,7 +237,7 @@ function limiterOf(ctx: AudioContext): AudioNode {
     split.connect(c, i);
     c.connect(join, 0, i);
   }
-  join.connect(ctx.destination);
+  join.connect(masterOutput(ctx)); // the top bar's master volume, then the speakers
   join.connect(recordTap(ctx)); // Record conversation hears the sounds here
   limiter = bus;
   return bus;
@@ -289,7 +290,7 @@ export function voiceToAllSpeakers(audio: HTMLAudioElement) {
     limit.connect(level);
     limit.connect(voiceAnalyser(ctx)); // the AI character listens here (voiceLevel.ts)
     for (let i = 0; i < 4; i++) level.connect(merger, 0, i);
-    merger.connect(ctx.destination);
+    merger.connect(masterOutput(ctx)); // the top bar's master volume, then the speakers
     merger.connect(recordTap(ctx)); // Record conversation hears the voice here
     ctx.createMediaElementSource(audio).connect(volume);
     voiceGains.add(volume);

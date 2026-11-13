@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { buttonIcon } from '@/lib/styles';
 import { DropdownArrow } from './DropdownArrow';
 import { markerArrived, markerIsAt, setMarkerProblem, useMarkerProblem } from '@/lib/agent/markerPlay';
@@ -23,7 +23,8 @@ import { useMediaFolderRevision } from '@/lib/agent/mediaDemo';
 import { clampSoundVolume, MAX_SOUND_VOLUME, setSoundLoop, setSoundVolume, stopSounds } from '@/lib/agent/mediaPlayback';
 import { hideVisualExcept } from '@/lib/agent/mediaShow';
 import { ALL_AREAS, areaName, areaNumber, ZONES, zoneById, zoneOfArea, type ZoneId } from '@/lib/agent/projectionLayout';
-import { toggleZoneOpen, useZonesOpen } from '@/lib/agent/zones';
+import { setZone, toggleZoneOpen, useZone, useZonesOpen } from '@/lib/agent/zones';
+import { setHighlightedArea } from '@/lib/agent/areaHighlight';
 import { pickSpatialSound } from '@/lib/agent/spatialAudio';
 import { audible, checkVideoSound, useVideoSoundResults } from '@/lib/agent/videoSound';
 import {
@@ -203,6 +204,11 @@ function branchRuns(stages: TimelineStage[]): { from: number; to: number; number
   return runs.filter((r) => r.to > r.from);
 }
 
+/** The track-number column at the timeline's left, in px (kept in view when the timeline scrolls sideways). */
+const LABEL_COLUMN = 34;
+/** The most the timeline zooms in: each stage this many times as wide as when they all fit. */
+const MAX_ZOOM = 8;
+
 export function MediaTimeline({
   sceneKey,
   sceneTitle,
@@ -273,6 +279,42 @@ export function MediaTimeline({
   }, [headCode]);
 
   const ruler = useRef<HTMLDivElement>(null);
+  // Zoom: the mouse wheel over the timeline widens the stages' columns (never narrower than fitting the
+  // width, 1×), keeping the spot under the pointer where it is; the timeline then scrolls sideways.
+  const scroller = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const zoomAnchor = useRef<{ x: number; at: number } | null>(null);
+  const hasStages = stages.length > 0;
+  // The zoom as it is right now, for the wheel handler (which is set up once).
+  const zoomNow = useRef(1);
+  useEffect(() => {
+    const box = scroller.current;
+    if (!box) return;
+    const onWheel = (e: WheelEvent) => {
+      // Sideways trackpad swipes and Shift+wheel scroll sideways, as normal.
+      if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.deltaY === 0) return;
+      e.preventDefault();
+      const lines = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 400 : 1;
+      const z = zoomNow.current;
+      const next = Math.min(MAX_ZOOM, Math.max(1, z * Math.exp(-e.deltaY * lines * 0.002)));
+      if (next === z) return;
+      // The pointer's place along the tracks (0–1), to keep it under the pointer after zooming.
+      const r = box.getBoundingClientRect();
+      const x = e.clientX - r.left - LABEL_COLUMN;
+      zoomAnchor.current = { x, at: (box.scrollLeft + x) / ((box.clientWidth - LABEL_COLUMN) * z) };
+      zoomNow.current = next;
+      setZoom(next);
+    };
+    box.addEventListener('wheel', onWheel, { passive: false });
+    return () => box.removeEventListener('wheel', onWheel);
+  }, [hasStages]);
+  useLayoutEffect(() => {
+    const box = scroller.current;
+    const anchor = zoomAnchor.current;
+    zoomAnchor.current = null;
+    if (!box || !anchor) return;
+    box.scrollLeft = anchor.at * (box.clientWidth - LABEL_COLUMN) * zoom - anchor.x;
+  }, [zoom]);
   const dragging = useRef(false);
   const stageAt = (clientX: number) => {
     const r = ruler.current?.getBoundingClientRect();
@@ -475,6 +517,17 @@ export function MediaTimeline({
     start: { track: Track; from: number; to: number };
     now: { track: Track; from: number; to: number };
   } | null>(null);
+  /**
+   * A picture/video track picked (its bar, or an empty spot on it): the drawing above switches to that
+   * area's zone (as the Zone buttons do) and highlights the area. A sound track highlights nothing.
+   */
+  const showTrackArea = (track: Track) => {
+    const area = isSoundTrack(track) ? null : areaOfTrack(track);
+    setHighlightedArea(area ?? null);
+    if (area == null || zoneOfArea(area).id === zoneShown) return;
+    if (placing) setPlacing(null); // letting go of a picture being placed in the zone being left
+    setZone(zoneOfArea(area).id);
+  };
   const grab = (e: React.PointerEvent, l: MediaLink, i: number, mode: 'move' | 'from' | 'to') => {
     const bar = barsOf(l)[i];
     if (e.button !== 0 || !bar) return;
@@ -485,6 +538,8 @@ export function MediaTimeline({
     } catch {
       // Not a real pointer — following still works on the bar.
     }
+    // A picture or video bar: the drawing above shows its area's zone, with the area highlighted.
+    showTrackArea(bar.track);
     const start = { track: bar.track, ...span(bar) };
     const copy = mode === 'move' && e.altKey;
     setDrag({ key: barKey(l, i), index: i, mode, copy, x: e.clientX, y: e.clientY, start, now: start });
@@ -673,6 +728,7 @@ export function MediaTimeline({
     };
   }, [picking]);
   const placing = usePlacing();
+  const zoneShown = useZone();
   const connectBar = (l: MediaLink, i: number, action: string) => {
     setPicking(null);
     if (action === l.action) return;
@@ -822,8 +878,13 @@ export function MediaTimeline({
           become the timeline&rsquo;s columns.
         </p>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-[34px_minmax(0,1fr)] grid-rows-[auto_auto] content-start overflow-y-auto overflow-x-hidden">
-          <div aria-hidden="true" className="sticky top-0 z-50 bg-paper" />
+        <div
+          ref={scroller}
+          className="grid min-h-0 flex-1 grid-rows-[auto_auto] content-start overflow-y-auto overflow-x-auto"
+          style={{ gridTemplateColumns: `${LABEL_COLUMN}px calc((100% - ${LABEL_COLUMN}px) * ${zoom})` }}
+          title={zoom > 1 ? `Zoomed ${zoom.toFixed(1)}× — roll the wheel back to zoom out, Shift+wheel to scroll sideways` : undefined}
+        >
+          <div aria-hidden="true" className="sticky left-0 top-0 z-[55] bg-paper" />
 
           {/* The ruler: each stage's code, with alternative branches bracketed, and the playhead's handle. */}
           <div
@@ -913,7 +974,7 @@ export function MediaTimeline({
           </div>
 
           {/* Track numbers, and the sound tracks (the first one's arrow opens and closes the rest). */}
-          <div className="grid" style={rows}>
+          <div className="sticky left-0 z-[35] grid bg-paper" style={rows}>
             {trackRows.map((t) =>
               !isTrack(t) ? (
                 // A zone's heading: its arrow folds the zone's areas open and closed.
@@ -986,6 +1047,25 @@ export function MediaTimeline({
             className="relative grid"
             style={rows}
             data-tour="timeline-tracks"
+            // An empty spot on a track (bars handle their own presses): highlight its area above. A zone's
+            // heading row shows that zone.
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              const box = e.currentTarget.getBoundingClientRect();
+              const row = Math.floor((e.clientY - box.top) / (box.height / trackRows.length));
+              const t = trackRows[row];
+              if (t === undefined) return;
+              if (isTrack(t)) {
+                showTrackArea(t);
+                return;
+              }
+              const z = zoneOfRow(t);
+              setHighlightedArea(null);
+              if (z && z !== zoneShown) {
+                if (placing) setPlacing(null);
+                setZone(z);
+              }
+            }}
             onDragOver={dragOver}
             onDragLeave={(e) => {
               if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropHere(null);

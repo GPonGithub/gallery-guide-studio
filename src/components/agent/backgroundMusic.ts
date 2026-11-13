@@ -1,6 +1,7 @@
 'use client';
 
 import { recordTap } from '@/lib/agent/recordTap';
+import { masterOutput } from '@/lib/agent/masterVolume';
 
 /**
  * A looping background soundtrack under the conversation. It plays from a
@@ -145,7 +146,7 @@ export class BackgroundMusic {
     this.element.loop = true;
     this.element.preload = 'auto';
     this.context.createMediaElementSource(this.element).connect(this.gain);
-    this.gain.connect(this.context.destination);
+    this.gain.connect(masterOutput(this.context)); // the top bar's master volume, then the speakers
     this.gain.connect(recordTap(this.context)); // Record conversation hears the music here
     // If the browser suspends the audio (another sound starting, a change of
     // output device), pick it straight back up while the music is meant to play.

@@ -1,5 +1,6 @@
 'use client';
 
+import { currentTeam } from '@/lib/team';
 import { isMade, type MediaAsset } from './media';
 import { barsOf, type MediaLink, type TimelineBar } from './mediaFolder';
 
@@ -75,6 +76,8 @@ export type Show = {
   format: typeof SHOW_FORMAT;
   version: number;
   savedAt: string;
+  /** The team that saved it ("ED", "AE", "Graham"): Open Show takes it in that team only. Show Control ignores it. */
+  team?: string;
   mediaFolder: string;
   cast: ShowMember[];
   /** Show Control's fields, for the first scene (its tools show one score at a time). */
@@ -167,6 +170,7 @@ export function buildShow(folderName: string, assets: MediaAsset[], links: Media
     format: SHOW_FORMAT,
     version: SHOW_VERSION,
     savedAt: new Date().toISOString(),
+    team: currentTeam(),
     mediaFolder: folderName,
     cast,
     score: { regions: showScenes[0]?.score.regions ?? emptyRegions() },

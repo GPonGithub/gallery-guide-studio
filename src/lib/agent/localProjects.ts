@@ -1,7 +1,7 @@
 'use client';
 
 import { run } from '@/lib/browserDb';
-import { currentTeam } from '@/lib/team';
+import { currentTeam, teamFileTag, teamImportProblem } from '@/lib/team';
 import { blankStage, emptyFlow } from './flow';
 import type { AgentProject, ProjectVoice } from './projectStore';
 import { compareSceneNumbers, type SheetScene } from './sheetScenes';
@@ -101,6 +101,8 @@ const FORMAT = 'goal-agent-project';
 type ProjectFile = {
   format: typeof FORMAT;
   version: 1;
+  /** The team it was exported from: it imports into that team only (see teamImportProblem). */
+  team?: string;
   project: AgentProject;
   /** The music file, base64-encoded, if the project has music. */
   music?: { type: string; base64: string };
@@ -121,13 +123,14 @@ export async function exportProject(project: AgentProject): Promise<void> {
   const file: ProjectFile = {
     format: FORMAT,
     version: 1,
+    team: currentTeam(),
     project,
     ...(music && { music: { type: music.type || 'audio/mpeg', base64: await blobToBase64(music) } }),
   };
   const url = URL.createObjectURL(new Blob([JSON.stringify(file)], { type: 'application/json' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = `${project.name.replace(/[^\w\s-]+/g, '').trim() || 'project'}.goal-agent.json`;
+  link.download = `${teamFileTag(currentTeam())} - ${project.name.replace(/[^\w\s-]+/g, '').trim() || 'project'}.goal-agent.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -140,6 +143,8 @@ type AllScenesFile = {
   format: typeof ALL_FORMAT;
   version: 1;
   exportedAt: string;
+  /** The team it was exported from: it imports into that team only (see teamImportProblem). */
+  team?: string;
   /** In list order; archived ones included (each keeps its `archived` flag). */
   scenes: Omit<ProjectFile, 'format' | 'version'>[];
 };
@@ -155,11 +160,11 @@ export async function exportAllProjects(): Promise<number> {
     const music = project.music ? await getProjectMusic(project.id) : null;
     scenes.push({ project, ...(music && { music: { type: music.type || 'audio/mpeg', base64: await blobToBase64(music) } }) });
   }
-  const file: AllScenesFile = { format: ALL_FORMAT, version: 1, exportedAt: new Date().toISOString(), scenes };
+  const file: AllScenesFile = { format: ALL_FORMAT, version: 1, exportedAt: new Date().toISOString(), team: currentTeam(), scenes };
   const url = URL.createObjectURL(new Blob([JSON.stringify(file)], { type: 'application/json' }));
   const link = document.createElement('a');
   link.href = url;
-  link.download = `Chatbot Designer scenes ${new Date().toISOString().slice(0, 10)}.json`;
+  link.download = `Chatbot Designer scenes ${teamFileTag(currentTeam())} ${new Date().toISOString().slice(0, 10)}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   return scenes.length;
@@ -191,6 +196,9 @@ export async function importAllProjects(
         ? [{ project: data.project, music: data.music }]
         : null;
   if (!scenes || scenes.some((s) => !s?.project?.flow)) throw new Error(`“${file.name}” isn’t a Chatbot Designer scenes file.`);
+  // Only into the team it was exported from — never over another team's scenes.
+  const problem = teamImportProblem(data.team, file.name);
+  if (problem) throw new Error(problem);
 
   const here = new Map((await listProjects()).map((p) => [p.id, p]));
   const clashes = scenes.flatMap((s) => (here.has(s.project.id) ? [here.get(s.project.id)!] : []));

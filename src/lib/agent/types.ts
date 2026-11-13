@@ -192,6 +192,10 @@ export type TurnRequest = {
    * away and nothing must have fired.
    */
   holdCues?: boolean;
+  /** Write the reply with the faster, lighter model (Claude Haiku 5.5) instead of the usual one: it starts speaking sooner. */
+  fastReplies?: boolean;
+  /** Dual microphones: the person on each side ("Dr Patel (doctor)"). Each caller message starts with who said it. */
+  speakers?: { left: string; right: string };
   /**
    * What the patient's earlier scenes saved that this scene may use —
    * anything its "cannot use" rules out has already been removed.

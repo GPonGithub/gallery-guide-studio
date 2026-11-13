@@ -36,8 +36,11 @@ export async function PUT(req: Request) {
   const team = new URL(req.url).searchParams.get('team') ?? 'ED';
   const text = await req.text();
   try {
-    const data = JSON.parse(text) as { format?: string; db?: { projects?: unknown[] } };
+    const data = JSON.parse(text) as { format?: string; team?: string; db?: { projects?: unknown[] } };
     if (data.format !== 'chatbot-designer-project') throw new Error();
+    // A team's backup only ever holds that team's work.
+    if (fileFor(data.team ?? '') !== fileFor(team) || (data.team !== 'ED' && data.team !== 'AE' && data.team !== 'Graham'))
+      return Response.json({ error: `That backup is ${data.team ?? 'no team'}’s, not ${team}’s.` }, { status: 409 });
     // No saved scene: a browser that has forgotten its work (or never had any) — the copy here stays.
     if (!data.db?.projects?.length) return Response.json({ kept: true, reason: 'no scenes' });
   } catch {

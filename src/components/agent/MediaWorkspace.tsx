@@ -1,5 +1,6 @@
 'use client';
 
+import { useHighlightedArea } from '@/lib/agent/areaHighlight';
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   areaNumber,
@@ -524,6 +525,8 @@ function ProjectionDiagram({
   const [pixels, setPixels] = useState({ width: 0, height: 0 });
   // The zone whose drawing is open: its areas, and the part of the drawing space it shows in full.
   const zone = useZone();
+  // The area picked in the timeline (useHighlightedArea): its outline drawn thick, in the timeline clips' blue.
+  const picked = useHighlightedArea();
   const zoneDef = zoneById(zone);
   const full: View = zoneDef.view;
   const zoneShapes = PROJECTION_SHAPES.filter((s) => zoneDef.areas.includes(s.area));
@@ -896,12 +899,13 @@ function ProjectionDiagram({
           const shown = showing.find((m) => m.area === s.area);
           const on = onAreas.has(s.area);
           const lit = hover === s.area;
+          const isPicked = picked === s.area;
           return (
             <g key={s.area} style={{ pointerEvents: 'none' }}>
               <polygon
                 points={pointsOf(s)}
-                className={`fill-none ${lit ? 'stroke-[#15803d]' : on ? 'stroke-[#3c5eac]' : 'stroke-ink'}`}
-                strokeWidth={lit || on ? weight * 2 : weight}
+                className={`fill-none ${lit ? 'stroke-[#15803d]' : isPicked ? 'stroke-[#3c5eac]' : on ? 'stroke-[#3c5eac]' : 'stroke-ink'}`}
+                strokeWidth={lit || on ? weight * 2 : isPicked ? weight * 3 : weight}
                 strokeMiterlimit={10}
               />
               <text

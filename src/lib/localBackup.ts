@@ -139,7 +139,7 @@ export async function startLocalBackup(): Promise<void> {
           } catch {
             // As above.
           }
-          await importProject(file); // reloads the page
+          await importProject(file, `${currentTeam()} backup`); // reloads the page (only if it's this team's)
           return;
         }
       }

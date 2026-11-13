@@ -1,5 +1,6 @@
 'use client';
 
+import { teamImportProblem } from '@/lib/team';
 import { useRef, useState } from 'react';
 import { updateMediaLinks, type MediaFolder, type StoredLibrary } from '@/lib/agent/mediaFolder';
 import { connectionsFrom, parseShow, SHOW_FILE_NAME } from '@/lib/agent/showFile';
@@ -25,6 +26,9 @@ export function ShowFilePanel({ folder, library }: { folder: MediaFolder | null;
     setNote(null);
     try {
       const show = parseShow(await file.text());
+      // Another team's show (or one that doesn't say) is never opened over this team's connections.
+      const problem = teamImportProblem(show.team, file.name);
+      if (problem) throw new Error(problem);
       const { links, unmatched } = connectionsFrom(show, library?.assets ?? []);
       const scenes = new Set(show.connections.map((c) => `${c.sheetId}#${c.sceneNumber}`));
       const ok = window.confirm(

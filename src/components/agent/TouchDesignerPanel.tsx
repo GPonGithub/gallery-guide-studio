@@ -104,6 +104,20 @@ export function TouchDesignerPanel({ assets }: { assets: MediaAsset[] }) {
         >
           Show projections
         </button>
+        <button
+          onClick={() => send({ type: 'numbers', action: status.areaNumbers === false ? 'show' : 'hide' })}
+          disabled={!connected || status.areaNumbers === null}
+          className={`${small} w-[120px]`}
+          title={
+            !connected
+              ? 'Connect first'
+              : status.areaNumbers === null
+                ? 'No area numbers in TouchDesigner — run area_labels.py'
+                : 'The small area number in the corner of each section of the projection'
+          }
+        >
+          {status.areaNumbers === false ? 'Show numbers' : 'Hide numbers'}
+        </button>
       </div>
       {status.projectors === null && connected && (
         <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">

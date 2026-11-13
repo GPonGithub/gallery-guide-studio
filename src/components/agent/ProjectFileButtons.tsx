@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { buttonBusy, buttonOutline } from '@/lib/styles';
 import { exportProject, importProject, readProjectFile } from '@/lib/projectBackup';
-import { currentTeam, teamLabel } from '@/lib/team';
+import { currentTeam, teamImportProblem, teamLabel } from '@/lib/team';
 import { Spinner } from './Spinner';
 
 /**
@@ -28,13 +28,19 @@ export function ProjectFileButtons() {
   const doImport = async (file: File) => {
     try {
       const project = await readProjectFile(file);
+      // Another team's file (or one that doesn't say) is never opened here.
+      const problem = teamImportProblem(project.team, file.name);
+      if (problem) {
+        window.alert(problem);
+        return;
+      }
       const ok = window.confirm(
-        `Open “${file.name}”${project.team !== currentTeam() ? ` (exported from ${project.team === 'Graham' ? 'Graham' : `Team ${project.team}`})` : ''}?\n\n` +
+        `Open “${file.name}” (${teamLabel(currentTeam())}’s)?\n\n` +
           `It replaces everything ${teamLabel(currentTeam())} has in this browser — every scene, conversation, voice, music file, ` +
           'patient, media connection and setting. Export Project first if you want to keep what’s here.\n\n' +
           'Your API keys stay as they are. Afterwards, choose the media folder again (Adding Immersive Media → 1).',
       );
-      if (ok) await importProject(project);
+      if (ok) await importProject(project, file.name);
     } catch (err) {
       window.alert(err instanceof Error ? err.message : 'That project couldn’t be opened.');
     }

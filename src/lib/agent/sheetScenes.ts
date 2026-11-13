@@ -19,6 +19,9 @@
  *   row 9  Media in this scene — for the student; the app doesn't read it
  *   row 10 Persona — the character who speaks in this scene, in the student's
  *          own words. Each scene has its own: the "All scenes" column's is ignored
+ *   row 11 People in this scene — the people the agent talks with, one per line,
+ *          "Name: role" (e.g. "Dave: The nurse"). Dual microphones puts the first on
+ *          the left microphone and the second on the right
  *
  * Whatever the "All scenes" column says in rows 3–6 and 8 is given to every scene,
  * ahead of the scene's own. A column with nothing in rows 2–6 is skipped, and
@@ -30,7 +33,7 @@
 export const FIRST_SCENE_COLUMN = 'B';
 export const LAST_SCENE_COLUMN = 'Z';
 const MAX_SCENES = 20;
-const ROW = { number: 1, name: 2, describe: 3, knowledge: 4, save: 5, cannotUse: 6, mediaActions: 8, persona: 10 } as const;
+const ROW = { number: 1, name: 2, describe: 3, knowledge: 4, save: 5, cannotUse: 6, mediaActions: 8, persona: 10, people: 11 } as const;
 const SHARED_COLUMN = /\ball\s*scenes\b/i;
 
 /** One scene as read from the sheet. */
@@ -52,7 +55,21 @@ export type SheetScene = {
   mediaActions: string[];
   /** Persona (row 10): this scene's own, word for word. */
   persona: string;
+  /** People in this scene (row 11): who the agent talks with, in order (Dual microphones: left, then right). */
+  people: { name: string; role: string }[];
 };
+
+/** Row 11's lines, "Name: role" (or "Name - role", or just a name) — in order. */
+export function peopleLines(text: string): { name: string; role: string }[] {
+  return actionLines(text)
+    .map((line) => {
+      const m = /^(.+?)\s*(?::|\s[-–—]\s|\|)\s*(.*)$/.exec(line);
+      const name = (m ? m[1] : line).trim();
+      const role = (m ? m[2] : '').replace(/^(the|a|an)\s+/i, '').trim();
+      return { name, role };
+    })
+    .filter((p) => p.name && p.name.length <= 60);
+}
 
 /** A cell's lines, each one action — blank lines and leading bullets ("-", "•", "1.") dropped. */
 export const actionLines = (text: string) =>
@@ -146,6 +163,7 @@ export function mapSheetScenes(grid: string[][]): SheetScene[] {
       cannotUse: withShared(ROW.cannotUse, col),
       mediaActions: [...sharedActions, ...actionLines(cell(ROW.mediaActions, col))],
       persona: cell(ROW.persona, col),
+      people: peopleLines(cell(ROW.people, col)),
     };
   });
 }

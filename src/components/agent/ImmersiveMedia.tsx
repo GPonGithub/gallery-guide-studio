@@ -1,10 +1,13 @@
 'use client';
 
+import { masterLevel, onMasterChange } from '@/lib/agent/masterVolume';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CollapsiblePanel } from './CollapsiblePanel';
 import { SpatialAudioPanel } from './SpatialAudioPanel';
 import { useSpatialPick } from '@/lib/agent/spatialAudio';
 import { DEMO_SCENE, DEMO_SHEET_ID, useMediaDemo, useMediaFolderRevision } from '@/lib/agent/mediaDemo';
+import { MqttPanel } from './MqttPanel';
+import { DualMicPanel } from './DualMicPanel';
 import { ProjectorsPanel } from './ProjectorsPanel';
 import { TouchDesignerPanel } from './TouchDesignerPanel';
 import { ShowFilePanel } from './ShowFilePanel';
@@ -598,6 +601,14 @@ export function ImmersiveMedia({
           assets={assets}
         />
       </CollapsiblePanel>
+
+      <CollapsiblePanel title="7 · Room buttons & sensors (MQTT)" tourId="media-7">
+        <MqttPanel />
+      </CollapsiblePanel>
+
+      <CollapsiblePanel title="8 · Dual microphones" tourId="media-8">
+        <DualMicPanel anthropicApiKey={anthropicApiKey} sceneSheet={sceneSheet} />
+      </CollapsiblePanel>
     </>
   );
 }
@@ -806,7 +817,16 @@ function MediaList({
   const onPlay = useCallback((el: HTMLMediaElement) => {
     if (playing.current && playing.current !== el) playing.current.pause();
     playing.current = el;
+    el.volume = masterLevel(); // the top bar's master volume (silent while Sound is off)
   }, []);
+  // The master volume moved while a preview plays: it follows.
+  useEffect(
+    () =>
+      onMasterChange(() => {
+        if (playing.current) playing.current.volume = masterLevel();
+      }),
+    [],
+  );
   const [height, setHeight] = useState<number>(LIST_HEIGHT.standard);
   const drag = useRef<{ startY: number; startHeight: number } | null>(null);
   const [grabbed, setGrabbed] = useState(false);

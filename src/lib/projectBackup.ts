@@ -1,7 +1,7 @@
 'use client';
 
 import { openDb, STORES } from './browserDb';
-import { currentTeam, isTeamControlKey } from './team';
+import { currentTeam, isTeamControlKey, teamFileTag, teamImportProblem, type Team } from './team';
 
 /**
  * Export Project / Import Project: everything this team has in this browser, in one file — every
@@ -154,7 +154,7 @@ export async function exportProject(): Promise<void> {
   const url = URL.createObjectURL(new Blob([JSON.stringify(file)], { type: 'application/json' }));
   const a = document.createElement('a');
   a.href = url;
-  a.download = `chatbot-designer-project-team-${file.team}-${day}.json`;
+  a.download = `chatbot-designer-project-${teamFileTag(file.team as Team)}-${day}.json`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
@@ -177,7 +177,10 @@ export async function readProjectFile(f: File): Promise<ProjectFile> {
  * Replaces everything this team has in this browser with the project, keeping this browser's API keys,
  * then reloads the page.
  */
-export async function importProject(project: ProjectFile): Promise<void> {
+export async function importProject(project: ProjectFile, fileName = ''): Promise<void> {
+  // Only ever into the team it was exported from (see teamImportProblem).
+  const problem = teamImportProblem(project.team, fileName);
+  if (problem) throw new Error(problem);
   const keys = currentKeys();
   const db = await openDb();
   try {
