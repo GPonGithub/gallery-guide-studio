@@ -13,7 +13,7 @@ cb = op('/project1/immersive_lab/receiver_callbacks')
 if cb is None:
     print('  ! /project1/immersive_lab/receiver_callbacks not found - run build_immersive_lab.py first')
 else:
-    tree = ast.parse(open(BUILD).read())
+    tree = ast.parse(open(BUILD, encoding='utf-8').read())
     code = next(n.value.value for n in tree.body if isinstance(n, ast.Assign)
                 and getattr(n.targets[0], 'id', '') == 'CALLBACKS')
     cb.text = code

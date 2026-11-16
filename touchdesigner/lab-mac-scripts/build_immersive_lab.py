@@ -121,8 +121,9 @@ STUDENT_WORK = os.path.expanduser('~/Documents/2026 Fall Student Work')
 
 
 def student_files(folder, path, team=''):
-    """The file in a team's scene folder of that name (the app sends the folder's name, not where it is):
-    the sending team's own folder first ("team": "Team AE"), then any team's."""
+    """The file in a team's folder (the app sends the chosen folder's name, not where it is): the team folder
+    itself if that's what was chosen ("Team ED"), else a scene folder of that name inside the sending team's
+    folder first ("team": "Team AE"), then any team's."""
     try:
         teams = sorted(os.listdir(STUDENT_WORK))
     except OSError:
@@ -131,6 +132,10 @@ def student_files(folder, path, team=''):
         teams.remove(team)
         teams.insert(0, team)
     found = []
+    # The team's own folder chosen as the media folder (e.g. "Team ED", files in Scene Images/...).
+    whole = os.path.join(STUDENT_WORK, folder, path)
+    if os.path.isfile(whole):
+        found.append(whole)
     for team in teams:
         f = os.path.join(STUDENT_WORK, team, folder, path)
         if os.path.isfile(f):
@@ -849,6 +854,10 @@ def handle(text):
     except Exception:
         log({'type': '?'}, '', 'not JSON')
         return {'type': 'result', 'ok': False, 'result': 'not JSON'}
+    # Kantan Mapper only redraws while the timeline plays: a stopped timeline leaves the wall projectors
+    # black whatever the areas show (2026-11-16). Any message from the app starts it again.
+    if msg.get('type') != 'voice' and not op('/').time.play:
+        op('/').time.play = True
     if 'cue' in msg and 'type' not in msg:
         # A stage cue from the app's server (the flow's TouchDesigner address).
         log({'type': 'cue', 'action': msg.get('cue', ''), 'id': msg.get('stage', '')}, '', 'cue')
