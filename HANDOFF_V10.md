@@ -1,15 +1,101 @@
-# Chatbot Designer — v10 handoff
+# Chatbot Designer — v10 handoff, and how to continue as v11
 
-Branch **v10** (made from v8 on 2026-11-09; v8 is the frozen safe copy, v9 is set aside).
-Latest commit at the time of writing: **b535275** (2026-11-15), pushed; Vercel preview builds from every v10 push.
+This document is for whoever continues the project as **version 11**, in their own Claude account. Part A is everything you need to get going; Part B is what v10 contains and how it works.
 
-- Studio on the Immersive Lab Mac: **http://localhost:3000/agent** (not the bare root — that's the old Conversation Generator).
-- Vercel preview (needs a Vercel sign-in): https://gallery-guide-studio-git-v10-gpongithubs-projects.vercel.app/agent
-- TouchDesigner project on the lab Mac: `~/CCA-TouchDesigner/immersive_room_f2026/F2026_StudioMap_r1.52.toe` (the latest save holds everything below).
-
-Older background: `HANDOFF_V7_IMMERSIVE_LAB.md` (TouchDesigner receiver, Kantan Mapper, projectors), `SHOW_FORMAT.md`, `HOSTING.md`.
+- Repository: **https://github.com/GPonGithub/gallery-guide-studio** (public), branch **v10**, latest commit when this was written: **90c62de** (2026-11-15). v8 is a frozen safe copy; v9 is set aside.
+- Owner: Graham Plumb (CCA, Fall 2026 Immersive Lab / Connected Hospital project).
+- Studio on the Immersive Lab Mac: **http://localhost:3000/agent** (not the bare root — that's the older Conversation Generator).
+- Vercel preview of v10 (needs a sign-in to Graham's Vercel team): https://gallery-guide-studio-git-v10-gpongithubs-projects.vercel.app/agent
+- TouchDesigner project on the lab Mac: `~/CCA-TouchDesigner/immersive_room_f2026/F2026_StudioMap_r1.52.toe`.
 
 ---
+
+# Part A — Continuing the project as v11
+
+## A1. What this project is
+
+**Chatbot Designer** is a Next.js web app ("the studio") that students use to design voice chatbots for scenes in a hospital role-play, and to run those scenes in CCA's **Immersive Lab** (room 140): a room with six projectors and four speakers, driven by **TouchDesigner**. A scene is written in a shared **Google Sheet** (one column per scene); the studio turns it into a staged conversation, speaks it with **ElevenLabs** voices, listens with Chrome's speech recognition, and puts pictures, video and sound into the room as the conversation moves through its stages. Zigbee buttons in the room reach the studio over **MQTT**.
+
+## A2. What you need (accounts and access)
+
+| You need | Why | How |
+|---|---|---|
+| A GitHub account with **write access** to `GPonGithub/gallery-guide-studio` | To push v11 | Ask Graham to add you as a collaborator — or fork the repo and work in your fork |
+| An **Anthropic API key** | The chatbot's replies, scene generation, the media judge | console.anthropic.com. Typed into the studio's **Keys** panel (kept only in that browser) |
+| An **ElevenLabs API key** and a **voice ID** | The chatbot's voice | elevenlabs.io. Also typed into **Keys** |
+| The scenes **Google Sheet** link (or your own copy) | Scenes are imported from it | Ask Graham. The sheet must be shared "anyone with the link"; writing back (row 7 saved info, the media list) needs the Apps Script in `src/lib/agent/sheetScript.ts` deployed from the sheet (Extensions → Apps Script → Deploy → web app) |
+| **Chrome** (or Edge) | Speech recognition, folder access, Web Audio | Safari and Firefox aren't supported |
+| Access to the **Immersive Lab Mac** (user `ixdstudio`) | TouchDesigner, the projectors, the speakers, the MQTT broker | Only needed for room features; the studio itself runs anywhere |
+| Optional: **Vercel** access | Hosted previews for students | Ask Graham to add you to `gpongithubs-projects`, or import the repo into your own Vercel account (see `HOSTING.md`) |
+
+No server-side API keys are required: every key is typed into the studio by the person using it. Optional server environment variables: `MQTT_BROKER_URL`, `MQTT_BROKER_ADDRESSES` (MQTT), `FFMPEG_PATH`, and `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` (or `KV_REST_API_URL` / `KV_REST_API_TOKEN`) for the FigJam plugin on a hosted copy.
+
+## A3. Set up on your computer
+
+1. Install **Node.js** (v20 or later; the lab Mac runs v26) and **git**. On a Mac: `brew install node git`.
+2. Get the code and start v11 from v10:
+   ```bash
+   git clone https://github.com/GPonGithub/gallery-guide-studio.git
+   ```
+   ```bash
+   cd gallery-guide-studio && git checkout v10 && git switch -c v11
+   ```
+3. Install and run:
+   ```bash
+   npm install
+   ```
+   ```bash
+   npm run dev
+   ```
+   `npm install` also applies the patches in `patches/` (patch-package) and brings `ffmpeg-static` (video conversion and thumbnails).
+4. Open **http://localhost:3000/agent** in Chrome. Pick a team (Team ED / Team AE / Graham — each is a separate copy of the app in the browser), open **Keys** (top right) and enter the Anthropic key, ElevenLabs key and voice ID.
+5. Design Process → **1 · Generate scenes from Google Sheet**: paste the sheet link. Adding Immersive Media → **1 · Media folder**: choose the scene's media folder. **Onboard Me** beside each section walks through the rest.
+6. Push v11 when you're ready: `git push -u origin v11`. Vercel (if connected) builds a preview of every push.
+
+## A4. Working on it with Claude Code (your own account)
+
+- Open the repo folder in Claude Code (desktop app Code tab, or `claude` in a terminal inside `gallery-guide-studio`).
+- `CLAUDE.md` points to `AGENTS.md`, which says: **this Next.js (16.3.5) has breaking changes — read the guide in `node_modules/next/dist/docs/` before writing Next code.** Claude reads this automatically.
+- A good first message: *"Read HANDOFF_V10.md, then check `git branch --show-current` is v11. We're continuing the project as v11."*
+- `.claude/launch.json` defines the dev server (`npm run dev`, port 3000) for Claude's preview tools.
+- Check every change with `npx tsc --noEmit -p .` and `npx eslint <files>` before committing.
+
+## A5. House rules (carried over from v10 — keep them)
+
+1. **Work on your own branch (v11).** Never commit to v8 (the safe copy) or rewrite v10.
+2. **Commit and push only when asked**, with clear messages.
+3. **On the lab Mac, don't open the studio in a fresh browser to test it.** A fresh browser restores Team ED's backup, and connecting to TouchDesigner sends `clear` (blanks the room). Test with type-check, lint, curl and small scripts; say what wasn't seen.
+4. **Never quit Chrome on the lab Mac.** Its profile is ephemeral (school-managed): quitting wipes every key, scene and media connection. `.local-backup/` (lab Mac only, not in git) holds automatic backups per team.
+5. **Never overwrite a media file under the same name** without asking. Keep originals in an `Originals before …` folder (the library skips these).
+6. **Every wall image is a flat, square-on front elevation** (nothing drawn at an angle, no floor).
+7. **Don't reword a sheet row 8 media action**: the media connections store the exact action text, so a reworded line disconnects its timeline bar. Row 8 actions start "When asked…".
+8. **Every exported JSON carries its team** and imports only into the same team (`src/lib/team.ts`). Keep it that way for any new export.
+9. **Don't change macOS settings** (input device, displays) from code; fixes go into the app or TouchDesigner.
+10. Graham dictates his messages, which are often cut off mid-sentence: say how you read a cut-off message, or ask. He prefers short plain reports and clickable choices.
+11. **Paid services** (image generation, Storyblocks downloads) only on a clear request.
+
+## A6. How the app is built
+
+- **Next.js 16 App Router**, React 19, TypeScript. Almost everything runs in the browser; server routes call Anthropic / ElevenLabs with the key sent from the browser.
+- **Pages:** `src/app/agent/page.tsx` (the studio — large; hooks must stay above its early return, around line 930), `src/app/ai-character/` (the orb page TouchDesigner shows for an AI character), `src/app/phone/`.
+- **Storage:** all in the browser, per team — localStorage (team ED unprefixed; others `team-<name>:`) and IndexedDB (`goal-agent-studio[-<team>]`): scenes, keys, media libraries, folder handles, timeline connections. `/api/local-backup` mirrors each team to `.local-backup/team-<name>.json` on the computer running the server.
+- **Main API routes:** `/api/agent/turn` (a conversation turn), `/api/agent/generate` (scene design from the sheet), `/api/media/moments` (the media judge: does the caller's sentence trigger a media action), `/api/agent/people` (dual-mic names), `/api/sheets/scenes|media|saved` (Google Sheet), `/api/tts*` (ElevenLabs), `/api/media/convert|thumbnail|ffmpeg` (ffmpeg), `/api/mqtt` (room buttons), `/api/local-backup`, `/api/recording`.
+- **The Google Sheet**: column A labels, one column per scene. Rows: 1 number, 2 name, 3 describe this conversation, 4 knowledge, 5 information saved, 6 cannot use, 7 saved list (written back), 8 media actions (one per line), 9 media, 10 persona, 11 people in this scene (`Name: role`). Quick read: `https://docs.google.com/spreadsheets/d/<id>/export?format=csv`.
+- **TouchDesigner** gets the room over a WebSocket from the browser (`src/lib/agent/touchDesigner.ts` → the receiver on port 9980). The receiver's code is `public/touchdesigner/build_immersive_lab.py`; the lab Mac's setup scripts are copied into `touchdesigner/lab-mac-scripts/` (see §9 and `touchdesigner/PROJECTORS_5_6_TOUCHDESIGNER.md`). Their absolute paths point at the lab Mac.
+- **Older handoffs** in the repo root explain earlier versions: `HANDOFF_V4…V7`, `SHOW_FORMAT.md`, `HOSTING.md`, `FIGJAM_PLUGIN_HANDOFF.md`.
+
+## A7. Where to start on v11
+
+The most useful next steps, in order:
+1. Test in the room what is only type-checked (§11 below): chatbot voice placement, the new tour, the scene label live, the permission re-ask, W4-01 buttons, dual microphones in a call.
+2. Move the projector-screen rule into the receiver (`heal_screens`), so macOS reshuffling the displays fixes itself.
+3. Label the speaker for push-to-talk too (only the open mic does now).
+4. Have the studio warn when a media file's content doesn't match its ending (the fake-PNG problem in §7), before it reaches TouchDesigner.
+5. Team ED's media folders into `~/Documents/2026 Fall Student Work/Team ED/` on the lab Mac.
+
+---
+
+# Part B — What v10 contains
 
 ## Contents
 
@@ -198,7 +284,7 @@ curl -s -X POST -H 'Content-Type: application/json' -d '{"type":"medialist","fol
 ```
 The second should answer `1 of 1 files found` (note: it replaces TouchDesigner's media_list table until the studio sends its own again).
 
-`Claude/TouchDesigner/area10_diag.py` (lab Mac) writes TouchDesigner's message log, now_playing and one area's state to `area10_diag.txt` — edit the `for a in (…)` line for other areas.
+`touchdesigner/lab-mac-scripts/area10_diag.py` (on the lab Mac: `Claude/TouchDesigner/area10_diag.py`) writes TouchDesigner's message log, now_playing and one area's state to `area10_diag.txt` — edit the `for a in (…)` line for other areas.
 
 ---
 

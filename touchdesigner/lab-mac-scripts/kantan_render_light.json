@@ -1,0 +1,9 @@
+{
+ "/project1/MAPPER/kantanMapper1/project/render1": {
+  "format": "rgba32float",
+  "antialias": "aa4"
+ },
+ "/project1/MAPPER/kantanMapper1/project/render2": {
+  "format": "rgba32float"
+ }
+}
