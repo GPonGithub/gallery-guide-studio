@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { buttonIcon } from '@/lib/styles';
 import { DropdownArrow } from './DropdownArrow';
-import { markerArrived, markerIsAt, setMarkerProblem, useMarkerProblem } from '@/lib/agent/markerPlay';
+import { markerArrived, markerIsAt, regainMediaFolder, setMarkerProblem, useMarkerProblem } from '@/lib/agent/markerPlay';
 import { samePlace, setPlacing, usePlacing } from '@/lib/agent/roomPlacement';
 import {
   ACTION_KINDS,
@@ -814,7 +814,12 @@ export function MediaTimeline({
   }, [historyNote]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-tour="timeline">
+    <div
+      className="flex min-h-0 flex-1 flex-col"
+      data-tour="timeline"
+      // After a reload: the first press here lets the browser read the media folder again.
+      onPointerDownCapture={() => void regainMediaFolder()}
+    >
       {/* One line: the scene on the left; on the right the stage the playhead is on, then ◀ ▶ —
           kept low, so the tracks get the room. */}
       <div className="mb-1 flex items-center justify-between gap-3">

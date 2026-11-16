@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { isMade, type MediaAsset } from './media';
-import { loadLibrary, onMediaSceneChange } from './mediaFolder';
+import { currentMediaScene, loadLibrary, onMediaSceneChange } from './mediaFolder';
 import { areaUvMatrix } from './roomPlacement';
 import type { Shown } from './mediaShow';
 import { onVoiceReading } from './voiceLevel';
@@ -212,6 +212,9 @@ const withFolder = <T extends Record<string, unknown>>(message: T) =>
 
 /** The open scene's media list (each scene has its own folder): sent on connecting, and when another scene opens. */
 async function sendMediaList() {
+  // No scene open yet (just after a reload): nothing to send — and the folder's name, if a scene opening
+  // already set it, is kept. It's sent when the scene opens (onMediaSceneChange, below).
+  if (!currentMediaScene()) return;
   const library = await loadLibrary();
   folderName = library?.folderName ?? '';
   send({

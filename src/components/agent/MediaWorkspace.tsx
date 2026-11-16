@@ -28,7 +28,7 @@ import {
   type DraggedAsset,
   type Placement,
 } from '@/lib/agent/mediaFolder';
-import { replayMarker, useMarkerStage } from '@/lib/agent/markerPlay';
+import { regainMediaFolder, replayMarker, useMarkerStage } from '@/lib/agent/markerPlay';
 import {
   areaAt,
   boxOfShape,
@@ -826,7 +826,11 @@ function ProjectionDiagram({
   }
 
   return (
-    <div className="relative flex h-full w-full flex-col gap-1">
+    <div
+      className="relative flex h-full w-full flex-col gap-1"
+      // After a reload: the first press on the drawing lets the browser read the media folder again.
+      onPointerDownCapture={() => void regainMediaFolder()}
+    >
       <svg
         ref={svg}
         data-tour="room-diagram"

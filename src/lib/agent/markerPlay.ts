@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import {
+  allowed,
   areaOfTrack,
   barsOf,
   fadeInSeconds,
@@ -12,6 +13,7 @@ import {
   loopOf,
   timingOf,
   mediaSceneKey,
+  savedMediaFolder,
   subscribeMediaLinks,
   type MediaLink,
   type TimelineBar,
@@ -58,6 +60,28 @@ export const useMarkerStage = () =>
     () => here?.code ?? null,
     () => null,
   );
+
+/**
+ * After a reload the browser forgets it may read the scene's media folder, and asks again only from a
+ * click. The drawing and the timeline call this on any press: if permission is needed, it's asked for
+ * there and then, and the marker's stage is put back up once it's given.
+ */
+let asking = false;
+export async function regainMediaFolder() {
+  if (asking) return;
+  const folder = await savedMediaFolder().catch(() => null);
+  if (!folder) return;
+  if ((await folder.queryPermission({ mode: 'read' }).catch(() => 'denied')) === 'granted') return;
+  asking = true;
+  try {
+    if (await allowed(folder, true).catch(() => false)) {
+      setMarkerProblem(null);
+      await replayMarker();
+    }
+  } finally {
+    asking = false;
+  }
+}
 
 /** Puts up again the pictures, video and colours with a bar on the marker's stage (no sounds). */
 export async function replayMarker() {
@@ -197,7 +221,10 @@ export async function markerArrived(
         areas: list.sort((a, b) => a - b),
         bars,
         only: true,
-      }).catch(() => undefined);
+      }).catch((err: unknown) =>
+        // Said on the timeline (most often: after a reload the browser needs a click to read the folder again).
+        onProblem?.(`“${asset.name}” didn’t show: ${err instanceof Error ? err.message : 'it couldn’t be opened.'}`),
+      );
     }
   }
 }

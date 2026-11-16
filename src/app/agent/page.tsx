@@ -1050,6 +1050,11 @@ export default function AgentStudioPage() {
     clearVisuals();
     forgetMarker();
     sendToTD({ type: 'clear' });
+    // The pictures, video, colours and chatbots on the marker's stage go back up (here and in TouchDesigner)
+    // — the timeline is a preview of the room, and Refresh This Scene or clearing the conversation shouldn't
+    // leave it blank until the marker moves. Sounds wait for the marker to arrive. A moment later, so a
+    // scene being opened has told the marker where it is first.
+    setTimeout(() => void replayMarker(), 400);
   };
 
   const stopAudio = () => {
