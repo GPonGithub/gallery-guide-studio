@@ -600,6 +600,28 @@ const changed = () => listeners.forEach((listener) => listener());
 
 /** Whether any timeline sound is playing now. */
 export const anySoundPlaying = () => playing.size > 0;
+/**
+ * Sounds someone asked for (a "when user instructs" action, like the dance music) — whether they play once
+ * or loop. Unlike the scene's own sounds ("throughout the scene" ambience, the timeline's marker sounds),
+ * these are the room's music: the open mic switches off when one starts, and "stop the music" stops them.
+ */
+const asked = new Set<string>();
+export function markAskedFor(assetId: string) {
+  asked.add(assetId);
+}
+/** A sound someone asked for is playing now (see markAskedFor). */
+export const oneOffSoundPlaying = () => [...playing].some((p) => asked.has(p.assetId));
+
+/** Stops every sound someone asked for (the music), eased out over `fade` seconds; the scene's own sounds play on. Says whether any was playing. */
+export function stopOneOffSounds(fade = 0): boolean {
+  const songs = [...playing].filter((p) => asked.has(p.assetId));
+  for (const p of songs) p.stop(fade);
+  return songs.length > 0;
+}
+
+/** "Stop the music", "pause the song", "turn the music off", "kill the music"… — in any scene. */
+export const STOP_MUSIC =
+  /\b(stop|pause|end|halt|kill|cut|mute|turn\s+off|switch\s+off|shut\s+off)\s+(the\s+|that\s+|this\s+)?(dance\s+|background\s+)?(music|song|tune|track)s?\b|\b(turn|switch|shut)\s+(the\s+|that\s+|this\s+)?(dance\s+)?(music|song)\s+off\b|\b(music|song)\s+off\b/i;
 
 /** Whether a media file's sound is playing now. */
 export const isSoundPlaying = (assetId: string) => [...playing].some((p) => p.assetId === assetId);

@@ -23,11 +23,16 @@ export type DualMicSettings = {
   right: Person;
   /** The scene the names were last filled in for ("sheetId:gid:number"): a change there changes them over. */
   namesFor?: string;
+  /** Music filter: a sentence heard about equally on both clip-on mics is the room's speakers (lyrics), not a person — dropped. */
+  musicFilter: boolean;
+  /** How much louder (dB) a person must be on their own mic than on the other one to count. */
+  balanceDb: number;
 };
 
 const KEY = 'gallery-guide-dual-mic';
 const EMPTY: Person = { name: '', role: '' };
-const DEFAULTS: DualMicSettings = { on: false, deviceId: '', left: EMPTY, right: EMPTY };
+export const DEFAULT_BALANCE_DB = 6;
+const DEFAULTS: DualMicSettings = { on: false, deviceId: '', left: EMPTY, right: EMPTY, musicFilter: true, balanceDb: DEFAULT_BALANCE_DB };
 /** The DJI Mic's receiver, as macOS names it — chosen by itself when no input has been picked. */
 export const DJI_INPUT = /wireless\s*mic\s*rx|dji/i;
 
@@ -122,8 +127,10 @@ type Live = {
   /** The side heard for the last sentence, and when. */
   lastSide: Side | null;
   lastAt: number;
+  /** The last sentence the music filter dropped, and why (for the panel). */
+  ignored: { text: string; at: number; why: string } | null;
 };
-let live: Live = { state: 'off', device: '', left: 0, right: 0, lastSide: null, lastAt: 0 };
+let live: Live = { state: 'off', device: '', left: 0, right: 0, lastSide: null, lastAt: 0, ignored: null };
 const liveListeners = new Set<() => void>();
 const setLive = (change: Partial<Live>) => {
   live = { ...live, ...change };
@@ -329,4 +336,70 @@ export async function scenePeople(
   if (listed.length > 0) return { people: listed, from: 'sheet' };
   if (!anthropicApiKey.trim()) return { people: [], from: 'sheet' };
   return { people: await readPeople(anthropicApiKey), from: 'ai' };
+}
+
+// --- music filter: a person, or the room's speakers? ---------------------------------------------------
+
+/** Below this (dBFS, the louder side's loudest moment) nothing near a clip-on mic said anything. */
+const PERSON_FLOOR_DB = -45;
+const db = (x: number) => 20 * Math.log10(x + 1e-9);
+
+/**
+ * Whether the sound between `from` and `to` was a person at a clip-on mic or the room (music from the
+ * speakers reaches both mics about equally; a wearer's voice is far louder on their own). `balanceDb`:
+ * how much louder the louder side must be. Null when it can't be told (not listening in stereo).
+ */
+export function personOrRoom(from: number, to: number, balanceDb: number): { person: boolean; side: Side; balance: number; peak: number } | null {
+  if (live.state !== 'on') return null;
+  const span = samples.filter((x) => x.at >= from && x.at <= to + SAMPLE_MS);
+  if (span.length === 0) return null;
+  let el = 0;
+  let er = 0;
+  let pl = 0;
+  let pr = 0;
+  for (const x of span) {
+    el += x.l * x.l;
+    er += x.r * x.r;
+    pl = Math.max(pl, x.l);
+    pr = Math.max(pr, x.r);
+  }
+  const side: Side = el >= er ? 'left' : 'right';
+  const balance = 10 * Math.log10((Math.max(el, er) + 1e-12) / (Math.min(el, er) + 1e-12));
+  const peak = db(side === 'left' ? pl : pr);
+  return { person: balance >= balanceDb && peak >= PERSON_FLOOR_DB, side, balance, peak };
+}
+
+/** Whether the dual mics can judge person-or-music right now (on, listening in stereo, filter on). */
+export const canJudgeMusic = () => {
+  const s = dualMicSettings();
+  return s.on && s.musicFilter && live.state === 'on';
+};
+
+/**
+ * What the open mic should send for words it heard (up to `lastHeardAt`, performance.now()): the words,
+ * labelled with who said them ("Dave (nurse): …") when dual microphones knows — or null when they're
+ * judged the room's music, so nothing is sent. With the dual mics listening, the music filter decides
+ * (a person clearly louder on their own mic gets through, even over a song). Without them, nothing heard
+ * while a song plays (`songPlaying`: a one-off sound like the dance music) is sent — its lyrics can't be
+ * told from a person.
+ */
+export function judgeHeard(text: string, lastHeardAt: number | undefined, songPlaying: boolean): string | null {
+  const s = dualMicSettings();
+  const to = lastHeardAt || performance.now();
+  const from = Math.max(speechFrom || to - 6000, to - 20_000);
+  if (canJudgeMusic()) {
+    const verdict = personOrRoom(from, to, s.balanceDb);
+    if (verdict && !verdict.person) {
+      const why =
+        verdict.peak < PERSON_FLOOR_DB
+          ? 'too quiet on both mics'
+          : `about as loud on both mics (${verdict.balance.toFixed(1)} dB apart, under ${s.balanceDb} dB)`;
+      setLive({ ignored: { text, at: Date.now(), why } });
+      return null;
+    }
+  } else if (songPlaying && s.musicFilter) {
+    setLive({ ignored: { text, at: Date.now(), why: 'a song was playing — turn on Dual microphones to talk over songs' } });
+    return null;
+  }
+  return s.on ? withSpeaker(text, lastHeardAt) : text;
 }

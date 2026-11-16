@@ -29,7 +29,7 @@ import { DEMO_SCENE, DEMO_STAGES, endMediaDemo, useMediaDemo } from '@/lib/agent
 import { forgetMarker, markerArrived, replayMarker, setMarkerProblem } from '@/lib/agent/markerPlay';
 import { send as sendToTD } from '@/lib/agent/touchDesigner';
 import { isPress, useMqttMessages } from '@/lib/agent/mqttEvents';
-import { dualSpeakers, markSpeechStart, personLabel, setSceneTextSource, withSpeaker } from '@/lib/agent/dualMic';
+import { dualSpeakers, judgeHeard, markSpeechStart, personLabel, setSceneTextSource } from '@/lib/agent/dualMic';
 import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -49,6 +49,10 @@ import {
   clampSoundVolume,
   isSoundPlaying,
   anySoundPlaying,
+  oneOffSoundPlaying,
+  stopOneOffSounds,
+  markAskedFor,
+  STOP_MUSIC,
   onSoundsChange,
   setSoundLevels,
   voiceToAllSpeakers,
@@ -573,15 +577,39 @@ export default function AgentStudioPage() {
   // The room's sb-02 button (MQTT, via the Zigbee Pi): each press turns the open mic on or off,
   // the same as clicking its 🎙️ button.
   const MIC_BUTTON = 'sb-02';
+  // sb-03 (and W4-01's button 3) begins the conversation, the same as clicking "Agent speaks first" —
+  // only while that button is showing (no conversation yet, nothing under way).
+  const START_BUTTON = 'sb-03';
+  const SCENE_SWITCH = 'w4-01';
   useMqttMessages((message) => {
     // (Runs on a later message, so everything it uses below is declared by then.)
-    if (!isPress(message, MIC_BUTTON)) return;
-    const on = !openMicOn;
-    if (on) {
-      recognitionRef.current?.stop();
-      setError(null);
+    const begin = () => {
+      if (messages.length === 0 && !busy && firstStage) openCall();
+    };
+    const toggleOpenMic = () => {
+      const on = !openMicOn;
+      if (on) {
+        recognitionRef.current?.stop();
+        setError(null);
+      }
+      setOpenMicOn(on);
+    };
+    if (isPress(message, START_BUTTON)) return begin();
+    if (isPress(message, MIC_BUTTON)) return toggleOpenMic();
+    // W4-01: button 1 the previous scene from the sheet, button 2 the next (staying put at the first and
+    // the last, as the scene buttons do; switchScene saves the open one first), button 3 "Agent speaks
+    // first", button 4 the open mic on or off.
+    if (isPress(message, SCENE_SWITCH)) {
+      const button = message.topic.slice(`/cca/r140/button/${SCENE_SWITCH}/`.length);
+      if (button === '3') return begin();
+      if (button === '4') return toggleOpenMic();
+      const step = button === '1' ? -1 : button === '2' ? 1 : 0;
+      if (step === 0 || sheetSceneList.length === 0) return;
+      const at = sheetSceneList.findIndex((sc) => sc.id === saved?.projectId);
+      // A scene not from the sheet open: the first one, either way.
+      const to = at < 0 ? 0 : Math.max(0, Math.min(sheetSceneList.length - 1, at + step));
+      if (to !== at) void switchScene(sheetSceneList[to].id);
     }
-    setOpenMicOn(on);
   });
 
   // A reply being worked out early, during the open mic's pause (see startEarlyTurn).
@@ -748,7 +776,25 @@ export default function AgentStudioPage() {
   }, [speaking]);
   // Whether any timeline sound is playing (so "Try the dip" can be tried on it).
   const [soundsPlaying, setSoundsPlaying] = useState(false);
-  useEffect(() => onSoundsChange(() => setSoundsPlaying(anySoundPlaying())), []);
+  // A sound someone asked for (like the dance music, looping or not) starting switches the open mic off, so
+  // its lyrics are never sent.
+  // A mic button (sb-02, or W4-01's button 4) turns it back on — then it listens as usual, song or not.
+  const songWasPlaying = useRef(false);
+  useEffect(
+    () =>
+      onSoundsChange(() => {
+        setSoundsPlaying(anySoundPlaying());
+        const song = oneOffSoundPlaying();
+        if (song && !songWasPlaying.current) {
+          setOpenMicOn((on) => {
+            if (on) setError('The music started, so the mic was switched off. Press the mic button (sb-02, or W4-01 button 4) to turn it back on.');
+            return false;
+          });
+        }
+        songWasPlaying.current = song;
+      }),
+    [],
+  );
   // Another scene, or leaving the page: its "throughout the scene" sounds stop.
   useEffect(() => stopLoops, [saved?.projectId]);
   // …and the room empties.
@@ -1933,6 +1979,8 @@ export default function AgentStudioPage() {
       const volume = clampSoundVolume(media.link.volume);
       // Its bar fades in: eased up from silence.
       const fade = fadeInSeconds(barOn(media.link));
+      // Asked for (like the dance music): the room's music — the open mic switches off as it starts.
+      markAskedFor(media.asset.id);
       (loopOf(media.link) ? startLoop(media.asset, volume, false, fade) : playSound(media.asset, false, volume, fade)).catch(fail);
       return;
     }
@@ -2062,6 +2110,9 @@ export default function AgentStudioPage() {
   // `heard`: when the open mic last heard the caller (for the wait measurement).
   const sendTurn = async (userText: string | null, early?: TurnStream, heard?: UtteranceTiming) => {
     if (busy || session.ended) return;
+    // "Stop the music" / "pause the music", in any scene: a playing song stops at once, without waiting for
+    // the AI (the media judge then tells the agent it's stopping, so it goes along with it).
+    if (userText && STOP_MUSIC.test(userText)) stopOneOffSounds(1);
     // How long the caller waits: from their last word (or the click) to the
     // reply's first words on screen and the voice starting. Shown in the
     // inspector and logged by the app server.
@@ -2974,11 +3025,19 @@ export default function AgentStudioPage() {
               onTranscript={setInput}
               onUtterance={(heard, timing) => {
                 setInput('');
-                // Dual microphones: "Dr Patel (doctor): …" — whoever's side was louder while it was said.
-                const text = withSpeaker(heard, timing.lastHeardAt);
+                // Dual microphones: "Dave (nurse): …" — whoever's side was louder while it was said; or
+                // nothing at all when the music filter hears it as the room's music (lyrics), not a person.
+                const text = judgeHeard(heard, timing.lastHeardAt, false);
+                if (text === null) {
+                  takeEarlyTurn(heard); // lets go of any reply started for it
+                  return;
+                }
                 void sendTurn(text, takeEarlyTurn(text), timing);
               }}
-              onPhraseFinal={(heard) => startEarlyTurn(withSpeaker(heard))}
+              onPhraseFinal={(heard) => {
+                const text = judgeHeard(heard, undefined, false);
+                if (text !== null) startEarlyTurn(text);
+              }}
               onStatus={(status) => {
                 // A new sentence starts being heard: dual microphones measures each side from here.
                 if (status === 'hearing' && openMicStatus !== 'hearing') markSpeechStart();

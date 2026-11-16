@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { SheetSource } from '@/lib/agent/projectStore';
 import { buttonOutline, fieldInput } from '@/lib/styles';
 import {
+  DEFAULT_BALANCE_DB,
   DJI_INPUT,
   dualMicSettings,
   listInputs,
@@ -209,6 +210,52 @@ export function DualMicPanel({ anthropicApiKey, sceneSheet }: { anthropicApiKey:
         {light.text}
       </p>
       {note && <p className={`font-body text-xs ${note.problem ? 'text-[#b91c1c]' : 'text-ink'}`}>{note.text}</p>}
+
+      {/* Music filter: lyrics from the room's speakers reach both clip-on mics about equally; a person is far
+          louder on their own. A sentence that isn't clearly one person's is dropped, never sent to the agent. */}
+      <div className="flex flex-col gap-1.5 border-2 border-ink/20 p-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            className={`${small} ${settings.musicFilter ? 'bg-ink text-paper' : ''}`}
+            aria-pressed={settings.musicFilter}
+            onClick={() => setDualMic({ musicFilter: !settings.musicFilter })}
+            title="Drops words that came from the music (heard about equally on both mics) instead of a person at a mic"
+          >
+            Music filter: {settings.musicFilter ? 'On' : 'Off'}
+          </button>
+          <label className="flex items-center gap-2 font-body text-xs text-ink">
+            A person must be
+            <input
+              type="range"
+              min={3}
+              max={15}
+              step={1}
+              value={settings.balanceDb}
+              disabled={!settings.musicFilter}
+              onChange={(e) => setDualMic({ balanceDb: Number(e.target.value) })}
+              aria-label="How much louder a person must be on their own mic"
+              className="h-1 w-28 cursor-pointer accent-ink"
+            />
+            <span className="w-24 tabular-nums">{settings.balanceDb} dB louder</span>
+          </label>
+          {settings.balanceDb !== DEFAULT_BALANCE_DB && (
+            <button className="font-body text-[11px] text-muted-ink underline" onClick={() => setDualMic({ balanceDb: DEFAULT_BALANCE_DB })}>
+              reset ({DEFAULT_BALANCE_DB} dB)
+            </button>
+          )}
+        </div>
+        <p className="font-body text-[11px] text-muted-ink">
+          …on their own mic than on the other one. Higher: stricter (more music ignored, but quiet speakers may be
+          missed); lower: more lenient. (A song like the dance music switches the open mic off when it
+          starts; a mic button — sb-02, or W4-01 button 4 — turns it back on.)
+        </p>
+        {live.ignored && (
+          <p className="font-body text-xs text-ink">
+            <b className="text-[#b45309]">Ignored as music:</b> &ldquo;{live.ignored.text}&rdquo;{' '}
+            <span className="text-muted-ink">({live.ignored.why})</span>
+          </p>
+        )}
+      </div>
 
       <div className="flex flex-col gap-2 sm:flex-row">
         {side('left')}
