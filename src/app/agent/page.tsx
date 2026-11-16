@@ -108,6 +108,8 @@ import {
   type SheetConflict,
 } from '@/lib/agent/localProjects';
 import { compareSceneNumbers, type SheetScene } from '@/lib/agent/sheetScenes';
+import { setSceneLabel } from '@/lib/agent/sceneLabel';
+import { startChatbotVoice } from '@/lib/agent/chatbotVoice';
 import { displayLabel, isScriptUrl } from '@/lib/agent/sheetScript';
 import {
   clearMemory,
@@ -622,6 +624,14 @@ export default function AgentStudioPage() {
   // True while the agent's voice is playing — the open mic stays deaf then.
   const [speaking, setSpeaking] = useState(false);
   const [listening, setListening] = useState(false);
+  // A chatbot showing from the timeline places the voice in the room, at its bar's volume.
+  useEffect(() => startChatbotVoice(), []);
+  // The scene label on the wall (zone 1 · area 2): mic on or off, the scene's number and title.
+  const labelNumber = saved?.sceneSheet?.number ?? '';
+  const labelTitle = saved?.projectName ?? '';
+  useEffect(() => {
+    setSceneLabel({ micOn: openMicOn || listening, number: labelNumber, title: labelTitle });
+  }, [openMicOn, listening, labelNumber, labelTitle]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // The reply being spoken sentence by sentence (see speechQueue.ts).
   const queueRef = useRef<SpeechQueue | null>(null);

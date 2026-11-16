@@ -58,6 +58,11 @@ export type TourHelpers = {
   slide: (handle: HTMLElement, dx: number) => Promise<void>;
   /** Drags `handle` by `dx`, `dy` pixels — with Option (Alt) held if `alt` (e.g. to duplicate a timeline bar). */
   move: (handle: HTMLElement, dx: number, dy: number, alt?: boolean) => Promise<void>;
+  /**
+   * Drags `source` (an HTML drag-and-drop item, e.g. a Media Library file) to the point `to` on the screen
+   * and drops it on whatever is there (the tour's own card and outline are looked through).
+   */
+  dragTo: (source: HTMLElement, to: { x: number; y: number }) => Promise<void>;
   /** Picks an option of a dropdown (<select>) by its value. */
   choose: (select: HTMLSelectElement, value: string) => Promise<void>;
   /** Plays what follows this many times slower again (e.g. 2 = half the usual demo speed). */
@@ -489,6 +494,46 @@ export function OnboardingTour({
         const from = centre(handle);
         if (alt) setPointer((p) => p && { ...p, key: '⌥ Option' });
         await pull(handle, from, { x: from.x + dx, y: from.y + dy }, alt);
+      },
+      dragTo: async (source, to) => {
+        await point(source);
+        const from = centre(source);
+        const data = new DataTransfer();
+        // What's under a point, looking through the tour's card, outline and pointer.
+        const under = (at: { x: number; y: number }) =>
+          document.elementsFromPoint(at.x, at.y).find((e) => !e.closest('[data-tour-ui]')) ?? null;
+        const fire = (target: Element, type: string, at: { x: number; y: number }) =>
+          target.dispatchEvent(
+            new DragEvent(type, { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y, dataTransfer: data }),
+          );
+        let at = from;
+        let over: Element | null = null;
+        setPointer({ ...from, pressed: true, glide: false });
+        fire(source, 'dragstart', from);
+        try {
+          await slow(200);
+          const moves = 32;
+          for (let i = 1; i <= moves; i++) {
+            const t = i / moves;
+            const ease = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+            at = { x: from.x + (to.x - from.x) * ease, y: from.y + (to.y - from.y) * ease };
+            setPointer({ ...at, pressed: true, glide: false });
+            const here = under(at);
+            if (here) {
+              if (here !== over) fire(here, 'dragenter', at);
+              over = here;
+              fire(here, 'dragover', at);
+            }
+            await slow(35);
+          }
+          await slow(250);
+          const target = under(to);
+          if (target) fire(target, 'drop', to);
+        } finally {
+          fire(source, 'dragend', at);
+        }
+        setPointer({ ...to, pressed: false, glide: false });
+        await slow(600);
       },
       choose: async (select, value) => {
         await point(select);

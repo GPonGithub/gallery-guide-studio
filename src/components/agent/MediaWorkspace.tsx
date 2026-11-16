@@ -909,6 +909,7 @@ function ProjectionDiagram({
                 strokeMiterlimit={10}
               />
               <text
+                data-area-label={s.area}
                 x={s.label[0]}
                 y={s.label[1]}
                 textAnchor="middle"

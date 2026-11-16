@@ -158,6 +158,7 @@ export const useRoomOutput = () =>
 
 /** Sets every playing sound's speaker levels again (the number of speakers changed). */
 function relevel() {
+  relevelVoice();
   for (const own of owns.values()) {
     if (!own.speakers) continue;
     const levels = outputs === 4 ? browserChannelLevels(own.pan) : [...stereoGains(own.pan), 0, 0];
@@ -245,19 +246,49 @@ function limiterOf(ctx: AudioContext): AudioNode {
 
 /**
  * The chatbot's voice in the room: a plain <audio> element only reaches the first two outputs
- * (speakers 1 and 2), so the voice goes through the sounds' Web Audio instead, at the same level on
- * all four outputs. It's one voice, the same on every channel, so Chrome's channel order doesn't
- * matter. On a two-channel output it plays on both, as before. Its loudness follows setVoiceVolume, live.
- * Call it once per element, before play(); without Web Audio the element plays as it is.
+ * (speakers 1 and 2), so the voice goes through the sounds' Web Audio instead. Normally it plays at the
+ * same level on all four outputs (on a two-channel output, on both). While a chatbot (an AI character)
+ * from the timeline is showing, it comes from that chatbot's place in the room (Spatialized Audio) at its
+ * bar's volume, 0–400% (chatbotVoice.ts sets this with setVoicePlacement). Its loudness also follows the
+ * Voice panel's setVoiceVolume, live. Call it once per element, before play(); without Web Audio the
+ * element plays as it is.
  */
 const VOICE_LEVEL = Math.SQRT1_2; // each of the four: as loud in the room as full on two
 /** The voice's own volume (the Voice panel's slider): 1 = as ElevenLabs made it, up to 3 (300%). */
 export const MAX_VOICE_VOLUME = 3;
 let voiceVolume = 1;
-const voiceGains = new Set<GainNode>();
+/** Where the voice comes from (null: all speakers evenly) and the showing chatbot's bar volume (0–4). */
+let voicePlace: { pan: Pan | null; volume: number } = { pan: null, volume: 1 };
+type VoiceGraph = { volume: GainNode; speakers: GainNode[] };
+const voiceGraphs = new Set<VoiceGraph>();
+/** The voice's level on each of the browser's four channels. */
+function voiceLevels(): number[] {
+  const p = voicePlace.pan;
+  if (!p) return [VOICE_LEVEL, VOICE_LEVEL, VOICE_LEVEL, VOICE_LEVEL];
+  // Placed: as loud in the middle of the room as when it isn't (√½ on each of four), never above full.
+  if (outputs === 4) return browserChannelLevels(p).map((g) => Math.min(1, g * Math.SQRT2));
+  return [...stereoGains(p), 0, 0];
+}
+const glide = (param: AudioParam, value: number) => {
+  const ctx = context;
+  if (ctx) param.setTargetAtTime(value, ctx.currentTime, 0.04);
+  else param.value = value;
+};
+function relevelVoice() {
+  const levels = voiceLevels();
+  for (const g of voiceGraphs) {
+    glide(g.volume.gain, voiceVolume * voicePlace.volume);
+    g.speakers.forEach((s, i) => glide(s.gain, levels[i]));
+  }
+}
 export function setVoiceVolume(volume: number) {
   voiceVolume = Number.isFinite(volume) ? Math.max(0, Math.min(MAX_VOICE_VOLUME, volume)) : 1;
-  for (const g of voiceGains) g.gain.value = voiceVolume;
+  relevelVoice();
+}
+/** Where the voice comes from (null: every speaker evenly) and how loud, 0–4 (a chatbot bar's volume); live. */
+export function setVoicePlacement(pan: Pan | null, volume = 1) {
+  voicePlace = { pan: pan ? clampPan(pan) : null, volume: clampSoundVolume(volume) };
+  relevelVoice();
 }
 export function voiceToAllSpeakers(audio: HTMLAudioElement) {
   try {
@@ -271,7 +302,7 @@ export function voiceToAllSpeakers(audio: HTMLAudioElement) {
     volume.channelCount = 1;
     volume.channelCountMode = 'explicit';
     volume.channelInterpretation = 'speakers';
-    volume.gain.value = voiceVolume;
+    volume.gain.value = voiceVolume * voicePlace.volume;
     // Turned up past 100%, its loudest moments are held just under full instead of distorting.
     const limit = ctx.createDynamicsCompressor();
     limit.channelCount = 1;
@@ -281,25 +312,31 @@ export function voiceToAllSpeakers(audio: HTMLAudioElement) {
     limit.ratio.value = 20;
     limit.attack.value = 0.002;
     limit.release.value = 0.15;
-    const level = ctx.createGain();
-    level.channelCount = 1;
-    level.channelCountMode = 'explicit';
-    level.gain.value = VOICE_LEVEL;
+    // One level per channel: even, or from the showing chatbot's place in the room.
+    const levels = voiceLevels();
     const merger = ctx.createChannelMerger(4);
+    const speakers = levels.map((v, i) => {
+      const g = ctx.createGain();
+      g.channelCount = 1;
+      g.channelCountMode = 'explicit';
+      g.gain.value = v;
+      limit.connect(g);
+      g.connect(merger, 0, i);
+      return g;
+    });
     volume.connect(limit);
-    limit.connect(level);
     limit.connect(voiceAnalyser(ctx)); // the AI character listens here (voiceLevel.ts)
-    for (let i = 0; i < 4; i++) level.connect(merger, 0, i);
     merger.connect(masterOutput(ctx)); // the top bar's master volume, then the speakers
     merger.connect(recordTap(ctx)); // Record conversation hears the voice here
     ctx.createMediaElementSource(audio).connect(volume);
-    voiceGains.add(volume);
+    const graph: VoiceGraph = { volume, speakers };
+    voiceGraphs.add(graph);
     if (ctx.state === 'suspended') void ctx.resume();
     // Let the nodes go once the element is done with (each clip gets a new element).
     const done = () => {
-      voiceGains.delete(volume);
+      voiceGraphs.delete(graph);
       merger.disconnect();
-      level.disconnect();
+      speakers.forEach((g) => g.disconnect());
       limit.disconnect();
       volume.disconnect();
     };

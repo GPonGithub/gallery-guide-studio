@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { ALL_AREAS, areaName, zoneOfArea } from '@/lib/agent/projectionLayout';
 import { buttonOutline, fieldInput } from '@/lib/styles';
 import type { MediaAsset } from '@/lib/agent/media';
+import { setSceneLabelOn, useSceneLabelOn } from '@/lib/agent/sceneLabel';
 import {
   send,
   setTDSettings,
@@ -36,6 +37,7 @@ const small = buttonOutline.replace('px-4 py-2', 'px-2.5 py-1.5');
 export function TouchDesignerPanel({ assets }: { assets: MediaAsset[] }) {
   const settings = useTDSettings();
   const status = useTDStatus();
+  const labelOn = useSceneLabelOn();
   const [address, setAddress] = useState(settings.address);
   const present = assets.filter((a) => a.status === 'present');
   const visuals = present.filter((a) => a.kind !== 'sound');
@@ -93,12 +95,14 @@ export function TouchDesignerPanel({ assets }: { assets: MediaAsset[] }) {
         />
         <button
           onClick={() => setTDSettings({ on: !settings.on, address: address.trim() })}
+          data-tour="td-connect"
           className={`${small} w-[110px]`}
         >
           {settings.on ? 'Disconnect' : 'Connect'}
         </button>
         <button
           onClick={() => void showProjections(address.trim())}
+          data-tour="td-projections"
           className={small}
           title="Connects to TouchDesigner if needed (showing the timeline marker's stage) and opens a full-screen window on each projector (numbers off)"
         >
@@ -106,6 +110,7 @@ export function TouchDesignerPanel({ assets }: { assets: MediaAsset[] }) {
         </button>
         <button
           onClick={() => send({ type: 'numbers', action: status.areaNumbers === false ? 'show' : 'hide' })}
+          data-tour="td-numbers"
           disabled={!connected || status.areaNumbers === null}
           className={`${small} w-[120px]`}
           title={
@@ -117,6 +122,14 @@ export function TouchDesignerPanel({ assets }: { assets: MediaAsset[] }) {
           }
         >
           {status.areaNumbers === false ? 'Show numbers' : 'Hide numbers'}
+        </button>
+        <button
+          onClick={() => setSceneLabelOn(!labelOn)}
+          data-tour="td-scene-label"
+          className={`${small} w-[150px]`}
+          title="The small label in the top-left corner of zone 1 · area 2: microphone on or off, the scene's number and title"
+        >
+          {labelOn ? 'Hide scene label' : 'Show scene label'}
         </button>
       </div>
       {status.projectors === null && connected && (

@@ -110,7 +110,32 @@ def full_path(msg):
         inside = os.path.join(root, folder, path)
         if os.path.isfile(inside):
             return inside
+        # A student team's scene folder: STUDENT_WORK/<team>/<folder> (e.g. Team AE/Waiting Room_01).
+        for found in student_files(folder, path, msg.get('team') or ''):
+            return found
     return os.path.join(root, path)
+
+
+# The students' work, beside the Media Folder: one folder per team, each holding that team's scene folders.
+STUDENT_WORK = os.path.expanduser('~/Documents/2026 Fall Student Work')
+
+
+def student_files(folder, path, team=''):
+    """The file in a team's scene folder of that name (the app sends the folder's name, not where it is):
+    the sending team's own folder first ("team": "Team AE"), then any team's."""
+    try:
+        teams = sorted(os.listdir(STUDENT_WORK))
+    except OSError:
+        return []
+    if team in teams:
+        teams.remove(team)
+        teams.insert(0, team)
+    found = []
+    for team in teams:
+        f = os.path.join(STUDENT_WORK, team, folder, path)
+        if os.path.isfile(f):
+            found.append(f)
+    return found
 
 
 def log(msg, where, result):
@@ -569,7 +594,8 @@ def media_list(msg):
     found = 0
     for item in msg.get('items', []):
         path = item.get('path', '')
-        here = os.path.isfile(path if os.path.isabs(path) else os.path.join(root, path))
+        # Looked for as a show message finds it: in the scene's folder (or a team's), then the Media Folder.
+        here = bool(path) and os.path.isfile(full_path({'path': path, 'folder': msg.get('folder'), 'team': msg.get('team')}))
         found += here
         t.appendRow([item.get('id', ''), item.get('name', ''), path, item.get('kind', ''),
                      item.get('status', ''), 'yes' if here else 'NO'])
@@ -736,7 +762,60 @@ def area_numbers(msg):
     return 'numbers', 'numbers shown' if on else 'numbers hidden', {'areaNumbers': on}
 
 
+# --- the scene label (mic on / off, scene number and title) --------------------
+# The app draws the label as a see-through PNG the size of an area's picture. It is laid over that
+# area's picture (made here the first time: fadeN -> label_overN -> areaN), so Kantan shows it wherever
+# it shows the area, above whatever media is there. Saved in turn as ..._a.png and ..._b.png beside
+# the project, so TouchDesigner always opens the new file.
+
+def label_ops(area):
+    pic, over = lab.op('label_pic%d' % area), lab.op('label_over%d' % area)
+    if pic is None:
+        fade = lab.op('fade%d' % area)
+        pic = lab.create(moviefileinTOP, 'label_pic%d' % area)
+        pic.nodeX, pic.nodeY = fade.nodeX, fade.nodeY - 110
+        over = lab.create(overTOP, 'label_over%d' % area)
+        over.nodeX, over.nodeY = fade.nodeX + 25, fade.nodeY - 55
+        over.inputConnectors[0].connect(pic)
+        over.inputConnectors[1].connect(fade)
+        set_par(over, 'outputresolution', 'custom')
+        for name, expr in (('resolutionw', 'parent().par.Width'), ('resolutionh', 'parent().par.Height')):
+            p = getattr(over.par, name, None)
+            if p is not None:
+                p.expr = expr
+        set_par(over, 'prefit', 'fill')
+    return pic, over
+
+
+def scene_label(msg):
+    """label show (png: base64, area) / hide (area)."""
+    area = int(msg.get('area') or 0)
+    if not 1 <= area <= AREAS:
+        return '', 'no such area'
+    where = 'area %d label' % area
+    target, fade = lab.op('area%d' % area), lab.op('fade%d' % area)
+    if msg.get('action') == 'hide':
+        if lab.op('label_over%d' % area) is not None:
+            target.inputConnectors[0].connect(fade)
+        return where, 'label hidden'
+    import base64
+    folder = os.path.join(project.folder, 'scene_labels')
+    os.makedirs(folder, exist_ok=True)
+    pic, over = label_ops(area)
+    old = str(pic.par.file.eval())
+    path = os.path.join(folder, 'area%d_%s.png' % (area, 'b' if old.endswith('_a.png') else 'a'))
+    with open(path, 'wb') as f:
+        f.write(base64.b64decode(msg.get('png') or ''))
+    pic.par.file = path
+    target.inputConnectors[0].connect(over)
+    # Kantan only redraws while the timeline plays.
+    op('/').time.play = True
+    return where, 'label shown'
+
+
 HANDLERS = {
+    ('label', 'show'): scene_label,
+    ('label', 'hide'): scene_label,
     ('media', 'show'): show,
     ('media', 'play'): show,
     ('media', 'hide'): hide,
@@ -792,6 +871,7 @@ def handle(text):
     if msg.get('type') == 'hello':
         root = media_root()
         reply.update({'type': 'ready', 'areas': AREAS, 'soundSlots': SLOTS, 'mediaFolder': root,
+                      'width': int(lab.par.Width.eval()), 'height': int(lab.par.Height.eval()),
                       'folderFound': os.path.isdir(root), 'project': project.name})
     return reply
 
@@ -913,6 +993,9 @@ GUIDE = [
      '{"type":"kantan","action":"open"}'],
     ['numbers show / hide / status', 'Shows or hides the area numbers on the shapes (area_labels.py)',
      '{"type":"numbers","action":"hide"}'],
+    ['label show / hide', 'The scene label (mic on / off, scene number and title): a see-through PNG (base64) '
+     'the size of an area\'s picture, laid over that area\'s media; hide takes it off',
+     '{"type":"label","action":"show","area":13,"png":"iVBORw0..."}'],
     ['projectors assign', 'shows: the number each projector (1, 2, ... as labelled in the room) shows now; '
      'swaps their screens so each shows its own', '{"type":"projectors","action":"assign","shows":[2,3,1,4]}'],
     ['(cue)', 'A stage cue from the app\'s server (the flow\'s TouchDesigner address) - logged only',

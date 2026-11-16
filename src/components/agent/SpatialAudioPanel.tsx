@@ -33,9 +33,11 @@ import {
 } from '@/lib/agent/spatialAudio';
 import { buttonOutlineCompact } from '@/lib/styles';
 import { audible, checkVideoSound, useVideoSoundResults } from '@/lib/agent/videoSound';
+import { isChatbot, previewChatbotPan } from '@/lib/agent/chatbotVoice';
 
-// A sound file, or a video with a sound track (its sound is placed in the room the same way).
-const isSound = audible;
+// A sound file, or a video with a sound track (its sound is placed in the room the same way), or a
+// chatbot (where its voice comes from while it shows).
+const isSound = (l: MediaLink) => audible(l) || isChatbot(l);
 const nameOf = (l: MediaLink) => l.assetName ?? l.assetId;
 
 /**
@@ -83,7 +85,7 @@ export function SpatialAudioPanel({
     return (
       <p className="font-body text-xs italic text-muted-ink">
         No sounds on this scene&rsquo;s timeline yet. Drag a sound from the Media Library onto a ♪ sound track (a
-        video with sound on the timeline shows here too).
+        video with sound, or a chatbot, on the timeline shows here too).
       </p>
     );
 
@@ -91,7 +93,8 @@ export function SpatialAudioPanel({
     <>
       <p className="font-body text-xs italic text-muted-ink">
         Where in the room each sound is heard. Drag the dot towards a speaker to hear it only there; in the middle, all
-        four speakers play it evenly. Click a sound&rsquo;s bar on the timeline to choose it here.
+        four speakers play it evenly. Click a sound&rsquo;s bar on the timeline to choose it here. For a chatbot, this
+        is where its voice comes from while it shows.
       </p>
       <label className="flex items-center gap-2 font-body text-xs text-ink">
         Sound
@@ -106,7 +109,7 @@ export function SpatialAudioPanel({
           {!chosen && <option value="">Choose a sound…</option>}
           {sounds.map((l, i) => (
             <option key={l.assetId} value={i}>
-              {nameOf(l)}
+              {isChatbot(l) ? `💬 ${nameOf(l)} (chatbot voice)` : nameOf(l)}
             </option>
           ))}
         </select>
@@ -145,6 +148,8 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
   const asset = assets.find((a) => a.id === link.assetId);
   const output = useRoomOutput();
   const [problem, setProblem] = useState('');
+  // A chatbot has no file: its dot places its voice (heard while it shows), with nothing to play or record.
+  const chatbot = isChatbot(link);
 
   // Another bar's sound chosen while dragging: the drag ends.
   useEffect(() => () => setMoving(null), []);
@@ -230,12 +235,14 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
         ),
       `Move ${link.assetId} in the room`,
     );
+    if (chatbot) previewChatbotPan(link.assetId, null);
   };
   const move = (p: Pan) => {
     if (fixed) return;
     dot.current = p;
     setMoving(p);
-    setSoundPan(link.assetId, p);
+    if (chatbot) previewChatbotPan(link.assetId, p);
+    else setSoundPan(link.assetId, p);
   };
   const at = (e: React.PointerEvent): Pan => {
     const r = box.current!.getBoundingClientRect();
@@ -305,7 +312,11 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
           aria-valuemax={100}
           onPointerDown={(e) => {
             if (e.button !== 0 || fixed) return;
-            e.currentTarget.setPointerCapture(e.pointerId);
+            try {
+              e.currentTarget.setPointerCapture(e.pointerId);
+            } catch {
+              // Not a real pointer (the tour's demonstration): moves still reach the square.
+            }
             dragging.current = true;
             move(at(e));
           }}
@@ -324,6 +335,7 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
           onPointerCancel={() => {
             dragging.current = false;
             if (!rec.current) setMoving(null);
+            if (chatbot) previewChatbotPan(link.assetId, null);
           }}
           onDoubleClick={() => {
             move(CENTRE);
@@ -437,29 +449,40 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
           Use the room&rsquo;s speakers
         </button>
       )}
+      {chatbot && (
+        <p className="font-body text-xs text-muted-ink">
+          The chatbot&rsquo;s voice comes from here whenever this chatbot is showing in the room, at its bar&rsquo;s
+          volume. Talk to it to hear where it is.
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
-        <button onClick={() => void listen()} className={buttonOutlineCompact}>
-          {playing ? '■ Stop' : '▶ Play it to listen'}
-        </button>
-        <button
-          onClick={() => void (recording ? stopRecording() : startRecording())}
-          className={`${buttonOutlineCompact} ${recording ? 'border-[#b91c1c] text-[#b91c1c]' : ''}`}
-          title={
-            recording
-              ? 'Stops recording and keeps the movement'
-              : 'Plays the sound and records how you move the dot, so it moves the same way every time it plays'
-          }
-        >
-          {recording ? '■ Stop Recording' : '● Record Movement'}
-        </button>
-        <button
-          onClick={deleteRecording}
-          disabled={!path || recording}
-          className={`${buttonOutlineCompact} disabled:opacity-40`}
-          title="Deletes the recorded movement: the sound stays in one place again"
-        >
-          Delete Movement Recording
-        </button>
+        {!chatbot && (
+          <>
+          <button onClick={() => void listen()} className={buttonOutlineCompact} data-tour="spatial-play">
+            {playing ? '■ Stop' : '▶ Play it to listen'}
+          </button>
+          <button
+            onClick={() => void (recording ? stopRecording() : startRecording())}
+            data-tour="spatial-record"
+            className={`${buttonOutlineCompact} ${recording ? 'border-[#b91c1c] text-[#b91c1c]' : ''}`}
+            title={
+              recording
+                ? 'Stops recording and keeps the movement'
+                : 'Plays the sound and records how you move the dot, so it moves the same way every time it plays'
+            }
+          >
+            {recording ? '■ Stop Recording' : '● Record Movement'}
+          </button>
+          <button
+            onClick={deleteRecording}
+            disabled={!path || recording}
+            className={`${buttonOutlineCompact} disabled:opacity-40`}
+            title="Deletes the recorded movement: the sound stays in one place again"
+          >
+            Delete Movement Recording
+          </button>
+          </>
+        )}
         <button
           onClick={() => {
             move(CENTRE);

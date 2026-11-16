@@ -26,6 +26,7 @@ import { ALL_AREAS, areaName, areaNumber, ZONES, zoneById, zoneOfArea, type Zone
 import { setZone, toggleZoneOpen, useZone, useZonesOpen } from '@/lib/agent/zones';
 import { setHighlightedArea } from '@/lib/agent/areaHighlight';
 import { pickSpatialSound } from '@/lib/agent/spatialAudio';
+import { isChatbot, previewChatbotVolume } from '@/lib/agent/chatbotVoice';
 import { audible, checkVideoSound, useVideoSoundResults } from '@/lib/agent/videoSound';
 import {
   areaOfTrack,
@@ -582,8 +583,9 @@ export function MediaTimeline({
     // Let go where it started: nothing changed (and a duplicate dropped there isn't one).
     const moved = now.track !== start.track || now.from !== start.from || now.to !== start.to;
     // A sound's bar clicked (not moved): Spatialized Audio opens on it.
-    // (A video with a sound track too: its sound is placed in the room the same way.)
-    if (!moved && drag.mode === 'move' && !copy && audible(l)) pickSpatialSound(l);
+    // (A video with a sound track too: its sound is placed in the room the same way; and a chatbot:
+    // where its voice comes from.)
+    if (!moved && drag.mode === 'move' && !copy && (audible(l) || isChatbot(l))) pickSpatialSound(l);
     // An end clicked (not dragged): its fade in (left) or fade out (right) turns on or off.
     if (!moved && drag.mode !== 'move' && original) {
       const which = drag.mode === 'from' ? 'fadeIn' : 'fadeOut';
@@ -1339,7 +1341,7 @@ export function MediaTimeline({
                     {handle('from')}
                     <BarThumb link={l} asset={asset} folder={folder} />
                     {label}
-                    {audible(l) && <BarVolume link={l} />}
+                    {(audible(l) || isChatbot(l)) && <BarVolume link={l} chatbot={isChatbot(l)} />}
                     <button
                       // Not a drag: pressing it mustn't pick the bar up.
                       onPointerDown={(e) => e.stopPropagation()}
@@ -1479,8 +1481,9 @@ function OpenArrow({ open }: { open: boolean }) {
 /**
  * A sound bar's volume: a slider from silent to MAX_SOUND_VOLUME (×4, 400%). The sound follows it as it
  * moves (here and in TouchDesigner); letting go saves it on the bar's connection, as one Undo step.
+ * A chatbot's bar has the same slider for its voice while it's showing (chatbotVoice.ts), without the loop button.
  */
-function BarVolume({ link }: { link: MediaLink }) {
+function BarVolume({ link, chatbot = false }: { link: MediaLink; chatbot?: boolean }) {
   const saved = clampSoundVolume(link.volume);
   const [moving, setMoving] = useState<number | null>(null);
   const value = moving ?? saved;
@@ -1488,11 +1491,15 @@ function BarVolume({ link }: { link: MediaLink }) {
     if (moving === null) return;
     const v = moving;
     setMoving(null);
-    if (v === saved) return;
+    if (v === saved) {
+      if (chatbot) previewChatbotVolume(link.assetId, null);
+      return;
+    }
     updateMediaLinks(
       (all) => all.map((x) => (sameLink(x, link) ? { ...x, volume: v === 1 ? undefined : v } : x)),
       `Change the volume of ${link.assetId}`,
     );
+    if (chatbot) previewChatbotVolume(link.assetId, null);
   };
   const percent = Math.round(value * 100);
   return (
@@ -1504,7 +1511,11 @@ function BarVolume({ link }: { link: MediaLink }) {
       data-bar-volume
       // Gives way first on a short bar, so its ▼ and × stay in reach.
       className="flex h-full min-w-0 shrink items-center gap-1 overflow-hidden px-1"
-      title={`Volume ${percent}% — from silent to 400% (100% is the file as it is; above that a limiter keeps it from distorting)`}
+      title={
+        chatbot
+          ? `Voice volume ${percent}% while this chatbot shows — from silent to 400% (a limiter keeps it from distorting). Click the bar to place its voice in the room.`
+          : `Volume ${percent}% — from silent to 400% (100% is the file as it is; above that a limiter keeps it from distorting)`
+      }
     >
       <span className="font-body text-[11px] leading-none" aria-hidden="true">
         {value === 0 ? '🔇' : '🔊'}
@@ -1518,7 +1529,8 @@ function BarVolume({ link }: { link: MediaLink }) {
         onChange={(e) => {
           const v = Number(e.target.value);
           setMoving(v);
-          setSoundVolume(link.assetId, v);
+          if (chatbot) previewChatbotVolume(link.assetId, v);
+          else setSoundVolume(link.assetId, v);
         }}
         onPointerUp={save}
         onKeyUp={save}
@@ -1528,7 +1540,7 @@ function BarVolume({ link }: { link: MediaLink }) {
         className="h-1 w-20 min-w-[28px] shrink cursor-pointer accent-paper"
       />
       <span className="w-8 text-right font-body text-[11px] tabular-nums leading-none">{percent}%</span>
-      <BarLoop link={link} />
+      {!chatbot && <BarLoop link={link} />}
     </span>
   );
 }

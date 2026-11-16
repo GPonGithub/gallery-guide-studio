@@ -18,7 +18,7 @@ import {
 /**
  * The Adding Immersive Media tour's sandbox. While it's on, the media panel
  * works on a demo scene — its own stages and row-8 actions, and a demo media
- * folder of three small files (a video, a picture, a sound) — so the tour can
+ * folder of four small files (a video, a picture, a ding, a short piece of music) — so the tour can
  * connect, drag, duplicate and delete for real without touching the student's
  * work. The demo scene has its own folder and library (every scene does — see
  * mediaFolder.ts), so the student's are never touched; the demo's are removed
@@ -47,6 +47,8 @@ const FILES: Pick<MediaAsset, 'id' | 'name' | 'kind'>[] = [
   { id: 'DEMO-1', name: 'demo-landscape-video.mp4', kind: 'video' },
   { id: 'DEMO-2', name: 'demo-picture.jpg', kind: 'image' },
   { id: 'DEMO-3', name: 'demo-ding.mp3', kind: 'sound' },
+  // Eight seconds of music, long enough to record a movement round the room (Spatialized Audio).
+  { id: 'DEMO-4', name: 'demo-music.mp3', kind: 'sound' },
 ];
 
 export type MediaDemo = { actions: string[] };
@@ -136,6 +138,19 @@ export async function endMediaDemo(): Promise<void> {
 async function putBack() {
   updateMediaLinks((all) => all.filter((l) => l.sheetId !== DEMO_SHEET_ID));
   forgetMediaHistory();
+  // Where the tour put the demo sounds in the room, and their recorded movement (spatialAudio.ts).
+  for (const key of ['sound-pans', 'sound-pan-paths']) {
+    try {
+      const kept = JSON.parse(window.localStorage.getItem(key) ?? '{}') as Record<string, unknown>;
+      const mine = Object.keys(kept).filter((k) => k.startsWith(`${DEMO_SHEET_ID}#`));
+      if (mine.length) {
+        mine.forEach((k) => delete kept[k]);
+        window.localStorage.setItem(key, JSON.stringify(kept));
+      }
+    } catch {
+      // Nothing kept.
+    }
+  }
   await forgetSceneMedia(DEMO_KEY).catch(() => undefined);
   const backup = (await get(BACKUP_KEY).catch(() => undefined)) as { folder: unknown; library: unknown } | undefined;
   if (backup) {

@@ -7,6 +7,7 @@ import { areaUvMatrix } from './roomPlacement';
 import type { Shown } from './mediaShow';
 import { onVoiceReading } from './voiceLevel';
 import { masterLevel, onMasterChange } from './masterVolume';
+import { currentTeam, teamLabel } from '@/lib/team';
 
 /**
  * The live link to TouchDesigner for the room's media. The browser connects
@@ -23,6 +24,7 @@ import { masterLevel, onMasterChange } from './masterVolume';
  *   projectors …               the projector windows (Set up the projectors): their
  *                              numbers on or off, and which projector shows which part
  *   numbers …                  the area numbers on the shapes (area_labels) on or off
+ *   label show / hide          the scene label on zone 1 · area 2 (sceneLabel.ts)
  *
  * The room diagram is mirrored: whatever mediaShow shows in an area is sent
  * there (syncVisuals). Sounds go too when "Sounds play on" says TouchDesigner.
@@ -38,6 +40,8 @@ export type TDStatus = {
   /** From TouchDesigner's "ready": its media folder, and whether it exists there. */
   mediaFolder?: string;
   folderFound?: boolean;
+  /** The size of an area's picture there (from "ready"; 1920 x 1080 until it says). */
+  size?: { width: number; height: number };
   /** Its projector windows; null when it has none, undefined until it says. */
   projectors?: TDProjectors | null;
   /** Whether the area numbers show on the shapes (area_labels); null when it has none. */
@@ -146,6 +150,8 @@ function connect() {
       id?: string;
       mediaFolder?: string;
       folderFound?: boolean;
+      width?: number;
+      height?: number;
       projectors?: TDProjectors | null;
       areaNumbers?: boolean | null;
     };
@@ -155,7 +161,13 @@ function connect() {
       return;
     }
     if (reply.type === 'ready') {
-      setStatus({ state: 'connected', mediaFolder: reply.mediaFolder, folderFound: reply.folderFound });
+      setStatus({
+        state: 'connected',
+        mediaFolder: reply.mediaFolder,
+        folderFound: reply.folderFound,
+        ...(reply.width && reply.height && { size: { width: reply.width, height: reply.height } }),
+      });
+      readyListeners.forEach((listener) => listener());
     } else if (reply.type === 'result' && reply.result) {
       const who = [reply.where, reply.id].filter(Boolean).join(' · ');
       setStatus({
@@ -173,6 +185,15 @@ function connect() {
   };
 }
 
+/** Called each time TouchDesigner answers "ready" (after connecting): sceneLabel sends the label then. */
+const readyListeners = new Set<() => void>();
+export function onTDReady(listener: () => void) {
+  readyListeners.add(listener);
+}
+
+/** The size of an area's picture in TouchDesigner. */
+export const tdOutputSize = () => status.size ?? { width: 1920, height: 1080 };
+
 /** Called each time TouchDesigner has been greeted (and its room cleared and re-sent) — markerPlay puts the marker's stage back up. */
 const connectedListeners = new Set<() => void>();
 export function onTDConnected(listener: () => void) {
@@ -184,8 +205,10 @@ export function onTDConnected(listener: () => void) {
  * Folder (the browser can't tell it where the folder is on disk — keep each scene's folder in one place).
  */
 let folderName = '';
+// With it goes the team ("Team AE"): a student team's scene folders live in its own folder
+// (Documents/2026 Fall Student Work/Team AE/…), where TouchDesigner looks when its Media Folder hasn't the folder.
 const withFolder = <T extends Record<string, unknown>>(message: T) =>
-  folderName ? { ...message, folder: folderName } : message;
+  folderName ? { ...message, folder: folderName, team: teamLabel(currentTeam()) } : message;
 
 /** The open scene's media list (each scene has its own folder): sent on connecting, and when another scene opens. */
 async function sendMediaList() {
@@ -193,7 +216,7 @@ async function sendMediaList() {
   folderName = library?.folderName ?? '';
   send({
     type: 'medialist',
-    ...(folderName && { folder: folderName }),
+    ...(folderName && { folder: folderName, team: teamLabel(currentTeam()) }),
     items: (library?.assets ?? []).map((a) => ({
       id: a.id,
       name: a.name,
