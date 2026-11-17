@@ -140,6 +140,22 @@ def student_files(folder, path, team=''):
         f = os.path.join(STUDENT_WORK, team, folder, path)
         if os.path.isfile(f):
             found.append(f)
+    if found:
+        return found
+    # A scene folder deeper inside a team's folder, chosen directly (2026-11-16: Team ED picked
+    # "Waiting + Examine Room", which is Team ED/Scene Images/Waiting + Examine Room).
+    name = os.path.basename(folder.rstrip('/'))
+    for team in teams:
+        top = os.path.join(STUDENT_WORK, team)
+        for here, dirs, files in os.walk(top):
+            if here[len(top):].count(os.sep) >= 3:
+                dirs[:] = []
+                continue
+            dirs[:] = [d for d in dirs if not d.startswith('Originals before')]
+            if os.path.basename(here) == name:
+                f = os.path.join(here, path)
+                if os.path.isfile(f):
+                    found.append(f)
     return found
 
 
