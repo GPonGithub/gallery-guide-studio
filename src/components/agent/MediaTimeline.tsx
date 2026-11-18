@@ -20,6 +20,7 @@ import {
   type VoiceWait,
 } from '@/lib/agent/media';
 import { useMediaFolderRevision } from '@/lib/agent/mediaDemo';
+import { SceneCopy } from './SceneCopy';
 import { clampSoundVolume, MAX_SOUND_VOLUME, setSoundLoop, setSoundVolume, stopSounds } from '@/lib/agent/mediaPlayback';
 import { hideVisualExcept } from '@/lib/agent/mediaShow';
 import { ALL_AREAS, areaName, areaNumber, ZONES, zoneById, zoneOfArea, type ZoneId } from '@/lib/agent/projectionLayout';
@@ -216,6 +217,7 @@ export function MediaTimeline({
   stages,
   liveStage,
   scene,
+  scenes = [],
 }: {
   sceneKey: string;
   sceneTitle: string;
@@ -225,6 +227,8 @@ export function MediaTimeline({
   stages: TimelineStage[];
   /** The stage the conversation is in now: the playhead follows it. */
   liveStage?: string;
+  /** The team's scenes from the sheet, for Copy media from… (their sheet and stages). */
+  scenes?: { id: string; number: string; name: string; sheetId: string; stages: string[] }[];
 }) {
   const count = stages.length;
   const clamp = (i: number) => Math.min(Math.max(count - 1, 0), Math.max(0, i));
@@ -825,9 +829,13 @@ export function MediaTimeline({
       {/* One line: the scene on the left; on the right the stage the playhead is on, then ◀ ▶ —
           kept low, so the tracks get the room. */}
       <div className="mb-1 flex items-center justify-between gap-3">
-        <p className="min-w-0 truncate font-display text-lg leading-tight text-ink" title={sceneTitle}>
-          Timeline <span className="font-body text-sm text-muted-ink">· {sceneTitle}</span>
-        </p>
+        <div className="flex min-w-0 items-center gap-2">
+          <p className="min-w-0 truncate font-display text-lg leading-tight text-ink" title={sceneTitle}>
+            Timeline <span className="font-body text-sm text-muted-ink">· {sceneTitle}</span>
+          </p>
+          {/* Another scene's media brought into this one (2026-11-18). */}
+          {scene && count > 0 && <SceneCopy scene={scene} stages={stages.map((s) => s.code)} scenes={scenes} />}
+        </div>
         {current && (
           <div className="flex min-w-0 shrink items-center gap-1">
             {soundProblem && (

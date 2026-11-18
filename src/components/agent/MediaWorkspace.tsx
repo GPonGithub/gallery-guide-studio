@@ -126,8 +126,8 @@ export function MediaWorkspace({
 }: {
   chatWidth: number;
   onChatResize: (width: number) => void;
-  /** The sheet's scenes, as buttons above the room — the timeline is the open scene's. */
-  scenes: { id: string; number: string; name: string }[];
+  /** The sheet's scenes, as buttons above the room — the timeline is the open scene's (its sheet and stages: Copy media from…). */
+  scenes: { id: string; number: string; name: string; sheetId: string; stages: string[] }[];
   currentSceneId: string | null;
   onSwitchScene: (id: string) => void;
   /** The scene buttons wait while the conversation is busy. */
@@ -251,7 +251,14 @@ export function MediaWorkspace({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-2 pt-2">
-        <MediaTimeline sceneKey={sceneKey} sceneTitle={sceneTitle} stages={stages} liveStage={liveStage} scene={scene} />
+        <MediaTimeline
+          sceneKey={sceneKey}
+          sceneTitle={sceneTitle}
+          stages={stages}
+          liveStage={liveStage}
+          scene={scene}
+          scenes={scenes}
+        />
       </div>
     </section>
   );

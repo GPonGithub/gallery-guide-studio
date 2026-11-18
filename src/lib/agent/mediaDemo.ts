@@ -80,6 +80,11 @@ export const useMediaDemo = () =>
 export const mediaDemoOn = () => demo !== null;
 /** Changes whenever the stored media folder and library have just been swapped (see `revision`). */
 export const useMediaFolderRevision = () => useSyncExternalStore(subscribe, () => revision, () => 0);
+/** The stored folder or library of the open scene changed from elsewhere (Copy media from…): read them again. */
+export function mediaFolderChanged() {
+  revision++;
+  changed();
+}
 
 const get = (key: string) => run<unknown>('media', 'readonly', (s) => s.get(key));
 const put = (key: string, value: unknown) =>

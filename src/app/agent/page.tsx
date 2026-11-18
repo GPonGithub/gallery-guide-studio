@@ -928,7 +928,14 @@ export default function AgentStudioPage() {
   // if the check can't be done, nothing from earlier scenes is used.
   const activePatient = saved ? (patients.find((p) => p.id === saved.activePatientId) ?? null) : null;
   /** The sheet's scenes as number buttons (in the Design Process and above the room in the media panel). */
-  const sheetSceneList = sheetScenes.map((p) => ({ id: p.id, number: p.sheet!.number, name: p.name }));
+  const sheetSceneList = sheetScenes.map((p) => ({
+    id: p.id,
+    number: p.sheet!.number,
+    name: p.name,
+    // For Copy media from… (the timeline): the scene's sheet and its stages in order.
+    sheetId: p.sheet!.sheetId,
+    stages: sortStages(p.flow.stages).map((s) => s.code),
+  }));
   const sceneNow: SceneRef | null = saved
     ? { id: saved.projectId ?? 'unsaved', number: saved.sceneSheet?.number ?? '', name: saved.projectName }
     : null;
