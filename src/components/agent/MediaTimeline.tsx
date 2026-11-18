@@ -280,8 +280,9 @@ export function MediaTimeline({
   }, [headCode]);
 
   const ruler = useRef<HTMLDivElement>(null);
-  // Zoom: the mouse wheel over the timeline widens the stages' columns (never narrower than fitting the
-  // width, 1×), keeping the spot under the pointer where it is; the timeline then scrolls sideways.
+  // The mouse wheel scrolls the tracks up and down. Zoom: Command+wheel (or a trackpad pinch) widens the
+  // stages' columns (never narrower than fitting the width, 1× — the view it opens with), keeping the spot
+  // under the pointer where it is; the timeline then scrolls sideways (2026-11-18: the plain wheel zoomed).
   const scroller = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState(1);
   const zoomAnchor = useRef<{ x: number; at: number } | null>(null);
@@ -292,8 +293,9 @@ export function MediaTimeline({
     const box = scroller.current;
     if (!box) return;
     const onWheel = (e: WheelEvent) => {
-      // Sideways trackpad swipes and Shift+wheel scroll sideways, as normal.
-      if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.deltaY === 0) return;
+      // Without Command (Ctrl is a trackpad pinch) the wheel scrolls as normal: up and down, and
+      // sideways for sideways swipes and Shift+wheel.
+      if (!(e.metaKey || e.ctrlKey) || e.deltaY === 0) return;
       e.preventDefault();
       const lines = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 400 : 1;
       const z = zoomNow.current;
@@ -889,7 +891,11 @@ export function MediaTimeline({
           ref={scroller}
           className="grid min-h-0 flex-1 grid-rows-[auto_auto] content-start overflow-y-auto overflow-x-auto"
           style={{ gridTemplateColumns: `${LABEL_COLUMN}px calc((100% - ${LABEL_COLUMN}px) * ${zoom})` }}
-          title={zoom > 1 ? `Zoomed ${zoom.toFixed(1)}× — roll the wheel back to zoom out, Shift+wheel to scroll sideways` : undefined}
+          title={
+            zoom > 1
+              ? `Zoomed ${zoom.toFixed(1)}× — Command+wheel back to zoom out, Shift+wheel to scroll sideways`
+              : 'Wheel to scroll up and down · Command+wheel to zoom in'
+          }
         >
           <div aria-hidden="true" className="sticky left-0 top-0 z-[55] bg-paper" />
 

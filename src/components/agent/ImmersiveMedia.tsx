@@ -929,6 +929,9 @@ function MediaList({
               ) : (
                 <Thumbnail asset={a} folder={folder} show={show && a.status === 'present'} root={list} onPlay={onPlay} />
               )}
+              {/* On its right: a green tick if it's used in the open scene (on its timeline or connected to an
+                  action), a red cross if not (2026-11-18). */}
+              {connect.scene && <InScene used={connected.has(a.id)} />}
               <div className="flex min-w-0 flex-1 flex-col font-body text-xs leading-snug text-ink">
                 <p className="font-label text-[10px] leading-none tracking-wide">
                   {a.id} · {KIND_LABEL[a.kind]}
@@ -1698,6 +1701,20 @@ function Thumbnail({
         </span>
       )}
     </button>
+  );
+}
+
+/** A small green tick (used in the open scene) or red cross (not used), beside a thumbnail. */
+function InScene({ used }: { used: boolean }) {
+  return (
+    <span
+      className={`-ml-2 self-center font-label text-sm font-bold leading-none ${used ? 'text-[#15803d]' : 'text-[#dc2626]'}`}
+      role="img"
+      aria-label={used ? 'Used in this scene' : 'Not used in this scene'}
+      title={used ? 'Used in this scene' : 'Not used in this scene'}
+    >
+      {used ? '\u2713' : '\u2715'}
+    </span>
   );
 }
 
