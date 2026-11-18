@@ -12,7 +12,7 @@ import {
   type Placement,
   type TimelineBar,
 } from './mediaFolder';
-import { areaName, PROJECTION_SHAPES, zoneOfArea, type ProjectionShape } from './projectionLayout';
+import { areaName, PROJECTION_SHAPES, type ProjectionShape } from './projectionLayout';
 
 /**
  * Placing pictures and video on the room drawing. A picture dropped on an area fills it; it can then
@@ -99,14 +99,14 @@ export function fillArea(area: number): Placement {
 }
 
 /**
- * A picture dropped on an area. Zone 2: it fills the rectangle around the outline (flat, as seen from
- * where the room is drawn). Zones 1 and 3: its four corners go on the face's own four corners, in
- * perspective — a picture made square-on for that wall (an opening cut for its panel, say) then lands
- * square on the real wall, and lines up with the drawing's outlines. It can still be moved or re-pinned.
+ * A picture dropped on an area: its four corners go on the face's own four corners, in perspective —
+ * a picture made square-on for that wall (an opening cut for its panel, say) then lands square on the
+ * real wall, and lines up with the drawing's outlines. It can still be moved or re-pinned.
+ * Zone 2 too since 2026-11-18: its drawing is in perspective as well, and a flat fill of the rectangle
+ * around an outline reached the projectors sheared (zone 2 · area 2 and the wait-times screen in area 3).
  */
 export function dropPlace(area: number): Placement {
   const place = fillArea(area);
-  if (zoneOfArea(area).id === 2) return place;
   const pin = cornersOf(area).map(([x, y]): [number, number] => [
     (x - (place.cx - place.w / 2)) / place.w,
     (y - (place.cy - place.h / 2)) / place.h,
@@ -414,10 +414,13 @@ export function pinCssMatrix(w: number, h: number, pin: [number, number][]): str
  * way up) — divide by the third value. The output fills the area's outline as drawn (in perspective),
  * so a picture spread over several areas lines up as it does on the drawing.
  */
-export function areaUvMatrix(area: number, place: Placement): number[] {
+export function areaUvMatrix(area: number, placed: Placement): number[] {
   const [tl, tr, br, bl] = cornersOf(area);
   // The unit square to the outline: (0,0) bottom-left … (0,1) top-left.
   const square = squareToQuad([bl, br, tr, tl]);
+  // A zone 2 picture dropped before 2026-11-18 (an unmoved, unpinned fill of the rectangle around the
+  // outline) goes out as it's dropped now: on the face's own corners, so it reaches the wall flat.
+  const place = !placed.pin && samePlace(placed, fillArea(area)) ? dropPlace(area) : placed;
   if (place.pin) {
     // Corner-pinned: the drawing to the picture is a perspective one — from its four corners on the
     // drawing (bottom-left = 0,0 … top-left = 0,1, v upwards) back to the unit square.

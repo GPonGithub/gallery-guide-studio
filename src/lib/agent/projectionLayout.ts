@@ -81,6 +81,8 @@ export const PROJECTION_SHAPES: ProjectionShape[] = [
     points: [[436.46, 203.43], [439.68, 266.21], [84.33, 342.58], [47.58, 31.3], [452.58, 68.42], [456.98, 201.9]],
     label: [101, 86],
     holes: [3],
+    // Its own corners: the bottom-right one is cut away, so it's where the floor line meets the right edge.
+    corners: [[47.58, 31.3], [452.58, 68.42], [458.96, 262.07], [84.33, 342.58]],
   },
   { area: 3, points: [[337.83, 247.08], [167.78, 273.52], [147.59, 125.29], [325.98, 134.45]], label: [240, 194] },
   // From "Immersive Space Projection Outlines_03.svg": panel 4 now reaches further down.
@@ -90,6 +92,8 @@ export const PROJECTION_SHAPES: ProjectionShape[] = [
     points: [[900.75, 256.57], [616.5, 259.8], [572.09, 197.62], [463.7, 200.85], [459.84, 65.99], [899.13, 67.61]],
     label: [502, 107],
     holes: [6],
+    // Its own corners: the bottom-left one is cut away, so it's where the floor line meets the left edge.
+    corners: [[459.84, 65.99], [899.13, 67.61], [900.75, 256.57], [465.44, 261.52]],
   },
   { area: 6, points: [[811.11, 256.57], [719.4, 256.78], [715.08, 123.67], [808.32, 123.67]], label: [766, 182] },
   { area: 7, points: [[1024.97, 382.35], [909.1, 381.82], [909.1, 49.84], [1023.89, 50.37]], label: [965, 183] },
@@ -107,6 +111,8 @@ export const PROJECTION_SHAPES: ProjectionShape[] = [
       [1339.17, 272.57], [1282.8, 257.49], [1290.74, 68.5], [1563.89, 2.6],
     ],
     label: [1416, 122],
+    // Its own corners (the cut-out is along the bottom edge).
+    corners: [[1290.74, 68.5], [1563.89, 2.6], [1534.51, 338.48], [1282.8, 257.49]],
   },
   { area: 11, points: [[1398.83, 295.72], [1344.55, 277.8], [1383.57, 218.75], [1441.82, 230.89]], label: [1389, 254], small: true },
   // Zone 1 (projector 5): the faces as its SVG draws them, moved into the shared space. The panels (14, 17)
