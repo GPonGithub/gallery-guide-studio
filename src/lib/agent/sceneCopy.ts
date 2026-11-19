@@ -122,7 +122,8 @@ export async function planSceneCopy(
     folderWarning = `This scene reads the folder “${toFolder.name}”, scene ${from.number} reads “${fromFolder.name}”. Files that aren’t in “${toFolder.name}” too won’t be found — choose “${fromFolder.name}” as this scene’s folder (Media Library) to use them.`;
   }
   const library: StoredLibrary = {
-    folderName: toLibrary?.folderName || fromLibrary?.folderName || folder?.name || '',
+    // The name of the folder this scene will read (TouchDesigner finds the files by it): its own, or the one given.
+    folderName: (toFolder ?? folder)?.name || toLibrary?.folderName || fromLibrary?.folderName || '',
     assets: [...(toLibrary?.assets ?? [])],
     refreshedAt: toLibrary?.refreshedAt ?? Date.now(),
   };

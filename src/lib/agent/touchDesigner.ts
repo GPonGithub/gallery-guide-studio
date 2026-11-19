@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from 'react';
 import { isMade, type MediaAsset } from './media';
-import { currentMediaScene, loadLibrary, onMediaSceneChange } from './mediaFolder';
+import { currentMediaScene, loadLibrary, onMediaSceneChange, savedMediaFolder, type StoredLibrary } from './mediaFolder';
 import { areaUvMatrix } from './roomPlacement';
 import type { Shown } from './mediaShow';
 import { onVoiceReading } from './voiceLevel';
@@ -210,13 +210,23 @@ let folderName = '';
 const withFolder = <T extends Record<string, unknown>>(message: T) =>
   folderName ? { ...message, folder: folderName, team: teamLabel(currentTeam()) } : message;
 
+/**
+ * The name of the folder the open scene reads: the folder itself, when it's kept, else the name its library
+ * was listed with (2026-11-18: a library could carry another folder's name — Copy media from… — and
+ * TouchDesigner then reported every file missing while the drawing, reading the folder itself, showed them).
+ */
+async function folderNameOf(library: StoredLibrary | null): Promise<string> {
+  const folder = await savedMediaFolder().catch(() => null);
+  return folder?.name || library?.folderName || '';
+}
+
 /** The open scene's media list (each scene has its own folder): sent on connecting, and when another scene opens. */
 async function sendMediaList() {
   // No scene open yet (just after a reload): nothing to send — and the folder's name, if a scene opening
   // already set it, is kept. It's sent when the scene opens (onMediaSceneChange, below).
   if (!currentMediaScene()) return;
   const library = await loadLibrary();
-  folderName = library?.folderName ?? '';
+  folderName = await folderNameOf(library);
   send({
     type: 'medialist',
     ...(folderName && { folder: folderName, team: teamLabel(currentTeam()) }),
@@ -232,7 +242,7 @@ async function sendMediaList() {
 if (typeof window !== 'undefined')
   onMediaSceneChange(() => {
     if (isOpen()) void sendMediaList();
-    else void loadLibrary().then((library) => (folderName = library?.folderName ?? ''));
+    else void loadLibrary().then(async (library) => (folderName = await folderNameOf(library)));
   });
 
 /** On connecting: hello, the projectors, the media list, a clean room, then what's on now (pictures, video, levels). */
