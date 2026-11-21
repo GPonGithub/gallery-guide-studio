@@ -11,7 +11,8 @@ import { DualMicPanel } from './DualMicPanel';
 import { ProjectorsPanel } from './ProjectorsPanel';
 import { TouchDesignerPanel } from './TouchDesignerPanel';
 import { ShowFilePanel } from './ShowFilePanel';
-import AiCharacterOrb from './AiCharacterOrb';
+import AiCharacter from './AiCharacter';
+import { characterColor, characterLook, characterValue } from '@/lib/agent/characterLook';
 import { useShowAutosave } from '@/lib/agent/showSave';
 import { buttonGhost, buttonOutline } from '@/lib/styles';
 import { parseSheetUrl } from '@/lib/agent/sheetScenes';
@@ -349,8 +350,13 @@ export function ImmersiveMedia({
       `${connected(links) ? 'Disconnect' : 'Connect'} ${assetId}`,
     );
   };
-  /** Adds a text, colour or AI character to the library, with the next ID (made in the app: no file). */
-  const addMade = async (kind: MadeKind, name: string, value: string) => {
+  /**
+   * Adds a text, colour, AI character or AI phone to the library, with the next ID (made in the app: no
+   * file). An AI phone is an AI character with the phone look (characterLook.ts).
+   */
+  const addMade = async (making: MadeKind, name: string, chosen: string) => {
+    const kind = making === 'phone' ? 'character' : making;
+    const value = making === 'phone' ? characterValue('phone', chosen) : chosen;
     const assets = library?.assets ?? [];
     const n = Math.max(0, ...assets.map((a) => Number(/^M-(\d+)$/i.exec(a.id)?.[1] ?? 0))) + 1;
     const item: MediaAsset = {
@@ -358,7 +364,13 @@ export function ImmersiveMedia({
       path: '',
       name:
         name.trim() ||
-        (kind === 'text' ? value.trim().split('\n')[0].slice(0, 40) : kind === 'character' ? 'AI Character' : value),
+        (kind === 'text'
+          ? value.trim().split('\n')[0].slice(0, 40)
+          : making === 'phone'
+            ? 'AI Phone'
+            : kind === 'character'
+              ? 'AI Character'
+              : value),
       kind,
       status: 'present',
       added: new Date().toLocaleDateString('en-CA'),
@@ -1003,7 +1015,10 @@ function MediaList({
                   )}
                 </p>
                 {a.kind === 'character' && (
-                  <CharacterColour value={a.value ?? ''} onChange={(v) => onMadeValue(a, v)} />
+                  <CharacterColour
+                    value={characterColor(a.value) ?? ''}
+                    onChange={(v) => onMadeValue(a, characterValue(characterLook(a.value), v))}
+                  />
                 )}
                 <button
                   onClick={() => {
@@ -1768,10 +1783,13 @@ function InScene({ used }: { used: boolean }) {
 /** A text or colour item's thumbnail: the words, white on black, or the colour itself — as the room shows it. */
 function MadeThumbnail({ asset }: { asset: MediaAsset }) {
   if (asset.kind === 'character') {
-    // The character itself, live: it moves whenever the chatbot speaks.
+    // The character itself, live: it moves whenever the chatbot speaks. A phone sits on a checkerboard,
+    // which shows where it's see-through.
     return (
-      <span className="block aspect-video w-[176px] shrink-0 overflow-hidden border border-ink bg-black">
-        <AiCharacterOrb color={asset.value || null} />
+      <span
+        className={`block aspect-video w-[176px] shrink-0 overflow-hidden border border-ink ${characterLook(asset.value) === 'phone' ? CHECKERBOARD : 'bg-black'}`}
+      >
+        <AiCharacter value={asset.value} />
       </span>
     );
   }
@@ -1827,8 +1845,11 @@ function CharacterColour({ value, onChange }: { value: string; onChange: (value:
   );
 }
 
-type MadeKind = 'text' | 'color' | 'character';
-const MAKE_LABEL: Record<MadeKind, string> = { text: 'Text', color: 'Colour', character: 'AI Character' };
+/** What + Make offers: an AI phone is an AI character on a phone's screen (kind 'character'). */
+type MadeKind = 'text' | 'color' | 'character' | 'phone';
+const MAKE_LABEL: Record<MadeKind, string> = { text: 'Text', color: 'Colour', character: 'AI Character', phone: 'AI Phone' };
+/** Grey and white squares behind a see-through item: where it's transparent. */
+const CHECKERBOARD = 'bg-[conic-gradient(#d4d4d4_25%,#fff_0_50%,#d4d4d4_0_75%,#fff_0)] bg-[length:16px_16px]';
 
 /** + Text / + Colour / + AI Character: a title, caption, colour wash or voice character for the room — no file needed. */
 function MakeItem({ onAdd }: { onAdd: (kind: MadeKind, name: string, value: string) => Promise<void> }) {
@@ -1842,12 +1863,12 @@ function MakeItem({ onAdd }: { onAdd: (kind: MadeKind, name: string, value: stri
   };
   const small = 'border border-ink px-2.5 py-1 font-label text-[10px] uppercase tracking-wide';
   const ready =
-    making === 'character' ? true : making === 'color' ? /^#[0-9a-f]{6}$/i.test(value) : value.trim() !== '';
+    making === 'character' || making === 'phone' ? true : making === 'color' ? /^#[0-9a-f]{6}$/i.test(value) : value.trim() !== '';
   return (
     <div className="flex flex-col gap-1.5" data-tour="media-make">
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="font-label text-[10px] uppercase tracking-wide text-muted-ink">Make</span>
-        {(['text', 'color', 'character'] as const).map((k) => (
+        {(['text', 'color', 'character', 'phone'] as const).map((k) => (
           <button
             key={k}
             onClick={() => open(k)}
@@ -1868,18 +1889,24 @@ function MakeItem({ onAdd }: { onAdd: (kind: MadeKind, name: string, value: stri
                 ? 'Name, e.g. Welcome title'
                 : making === 'character'
                   ? 'Name, e.g. Maya (blue)'
+                  : making === 'phone'
+                    ? 'Name, e.g. Maya on the phone'
                   : 'Name, e.g. Night blue'
             }
             aria-label="Name"
             className="border border-ink bg-paper px-2 py-1 font-body text-xs text-ink"
           />
-          {making === 'character' ? (
+          {making === 'character' || making === 'phone' ? (
             <span className="flex items-stretch gap-2">
-              <span className="block aspect-video w-[140px] shrink-0 overflow-hidden border border-ink bg-black">
-                <AiCharacterOrb color={value || null} />
+              <span
+                className={`block aspect-video w-[140px] shrink-0 overflow-hidden border border-ink ${making === 'phone' ? CHECKERBOARD : 'bg-black'}`}
+              >
+                <AiCharacter value={characterValue(making === 'phone' ? 'phone' : 'orb', value)} />
               </span>
               <span className="flex flex-col justify-center gap-1 font-body text-[11px] text-muted-ink">
-                Moves with the chatbot&rsquo;s voice.
+                {making === 'phone'
+                  ? 'On a phone’s screen, moving with the chatbot’s voice. See-through around the phone (black in the room).'
+                  : 'Moves with the chatbot’s voice.'}
                 <CharacterColour value={value} onChange={setValue} />
               </span>
             </span>

@@ -8,12 +8,13 @@
  */
 
 import { useCallback, useEffect, useRef } from 'react';
-import AiCharacterOrb from '@/components/agent/AiCharacterOrb';
+import AiCharacter from '@/components/agent/AiCharacter';
 import { currentVoiceReading, type VoiceReading } from '@/lib/agent/voiceLevel';
 
 const SILENT: VoiceReading = { level: 0, low: 0, mid: 0, high: 0 };
 
-export default function ShowOrb({ color, td }: { color: string | null; td: string | null }) {
+/** `value`: the character's look and colour, as its library item keeps them (characterLook.ts). */
+export default function ShowOrb({ value, td }: { value: string; td: string | null }) {
   const heard = useRef<{ r: VoiceReading; at: number }>({ r: SILENT, at: 0 });
 
   useEffect(() => {
@@ -71,5 +72,5 @@ export default function ShowOrb({ color, td }: { color: string | null; td: strin
     return there.level > here.level ? there : here;
   }, []);
 
-  return <AiCharacterOrb color={color} read={read} />;
+  return <AiCharacter value={value} read={read} />;
 }

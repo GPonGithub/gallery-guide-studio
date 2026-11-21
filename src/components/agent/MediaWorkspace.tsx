@@ -14,7 +14,7 @@ import {
 import { setZone, useZone } from '@/lib/agent/zones';
 import { dropUnbacked, hideArea, useShowing, type Shown } from '@/lib/agent/mediaShow';
 import type { MediaAsset } from '@/lib/agent/media';
-import AiCharacterOrb from './AiCharacterOrb';
+import AiCharacter from './AiCharacter';
 import {
   allowed,
   areaOfTrack,
@@ -416,7 +416,7 @@ function PlacedPicture({
     else if (kind === 'character')
       html = (
         <div style={{ ...fill, background: '#000' }}>
-          <AiCharacterOrb color={value || null} />
+          <AiCharacter value={value} />
         </div>
       );
     else if (kind === 'text') html = <div style={{ ...textStyle(place.w, place.h), background: '#000' }}>{value}</div>;
@@ -457,7 +457,7 @@ function PlacedPicture({
     body = (
       <foreignObject {...at}>
         <div style={{ width: '100%', height: '100%', background: '#000' }}>
-          <AiCharacterOrb color={value || null} />
+          <AiCharacter value={value} />
         </div>
       </foreignObject>
     );
@@ -1094,14 +1094,16 @@ function AreaMedia({ shape, shown }: { shape: ProjectionShape; shown: Shown }) {
       </rect>
     );
   }
-  // An AI character: the orb on black, moving with the chatbot's voice.
+  // An AI character: the orb (or the phone, black around it as in the room) on black, moving with the chatbot's voice.
   if (shown.kind === 'character') {
     return (
       <g>
         {title}
         <rect {...box} fill="#000" clipPath={clip} />
         <foreignObject {...box} clipPath={clip}>
-          <AiCharacterOrb color={shown.value || null} />
+          <div style={{ width: '100%', height: '100%' }}>
+            <AiCharacter value={shown.value} />
+          </div>
         </foreignObject>
       </g>
     );

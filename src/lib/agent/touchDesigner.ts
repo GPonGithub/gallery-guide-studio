@@ -1,5 +1,6 @@
 'use client';
 
+import { characterColor, characterLook } from './characterLook';
 import { useSyncExternalStore } from 'react';
 import { isMade, type MediaAsset } from './media';
 import { currentMediaScene, loadLibrary, onMediaSceneChange, savedMediaFolder, type StoredLibrary } from './mediaFolder';
@@ -317,10 +318,13 @@ export const visualMessage = (
  * The page TouchDesigner shows for an AI character: the orb in its colour, which connects back to
  * TouchDesigner's receiver to hear the voice (the voice plays here, in the Designer).
  */
-function characterUrl(color: string): string {
+function characterUrl(value: string): string {
   if (typeof window === 'undefined') return '';
   const q = new URLSearchParams({ td: tdSettings().address.trim() });
-  if (/^#[0-9a-f]{6}$/i.test(color)) q.set('color', color.slice(1));
+  const color = characterColor(value);
+  if (color) q.set('color', color.slice(1));
+  // The phone look: the orb on a phone's screen (black around it in the area).
+  if (characterLook(value) === 'phone') q.set('look', 'phone');
   return `${window.location.origin}/ai-character/show?${q}`;
 }
 
