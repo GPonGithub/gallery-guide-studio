@@ -94,7 +94,8 @@ export function SceneCopy({
 
   const ownCount = count(scene);
   return (
-    <div ref={box} className="relative shrink-0">
+    // Above the timeline's pinned ruler (z-50) and its corner (z-[55]), which hid the panel's top — scene 1.
+    <div ref={box} className="relative z-[70] shrink-0">
       <button
         onClick={() => {
           setOpen((o) => !o);
@@ -112,7 +113,7 @@ export function SceneCopy({
         <div
           role="dialog"
           aria-label="Copy media from another scene"
-          className="absolute left-0 top-full z-50 mt-1 w-[360px] border-2 border-ink bg-paper p-3 font-body text-xs text-ink shadow-lg"
+          className="absolute left-0 top-full z-[70] mt-1 w-[360px] border-2 border-ink bg-paper p-3 font-body text-xs text-ink shadow-lg"
         >
           <p className="mb-2 font-label text-[10px] uppercase tracking-widest text-muted-ink">
             Into scene {scene.number}

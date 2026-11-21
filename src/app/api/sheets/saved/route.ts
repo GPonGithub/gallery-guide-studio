@@ -1,4 +1,5 @@
 import { isScriptUrl } from '@/lib/agent/sheetScript';
+import { findScenesTab } from '@/lib/agent/sheetTab';
 
 export const maxDuration = 30;
 
@@ -30,18 +31,17 @@ export async function POST(req: Request) {
   if (body.action === 'clear' && !/^([B-Z]|\*)$/.test(body.column ?? '')) {
     return Response.json({ ok: false, error: 'Not a scene column.' }, { status: 400 });
   }
-  let res: Response;
-  try {
-    res = testing
-      ? await fetch(scriptUrl, { redirect: 'follow', cache: 'no-store', signal: AbortSignal.timeout(20_000) })
-      : await fetch(scriptUrl, {
+  const send = (gid: string | undefined) =>
+    testing
+      ? fetch(scriptUrl, { redirect: 'follow', cache: 'no-store', signal: AbortSignal.timeout(20_000) })
+      : fetch(scriptUrl, {
           method: 'POST',
           // Plain text: Apps Script reads the body the same way, and Google's redirect keeps working.
           headers: { 'Content-Type': 'text/plain;charset=utf-8' },
           body: JSON.stringify({
             action: body.action === 'clear' ? 'clear' : 'save',
             spreadsheetId: body.spreadsheetId,
-            gid: body.gid,
+            gid,
             // A clear names its column separately: a script from before clearing existed sees
             // no valid column, and refuses without writing anything.
             ...(body.action === 'clear' ? { column: 'clear', clearColumn: body.column } : { column: body.column }),
@@ -52,12 +52,23 @@ export async function POST(req: Request) {
           cache: 'no-store',
           signal: AbortSignal.timeout(20_000),
         });
+  let res: Response;
+  try {
+    res = await send(body.gid);
   } catch {
     return Response.json({ ok: false, error: 'Couldn’t reach the sheet’s script — check the internet connection.' }, { status: 502 });
   }
-  const text = await res.text();
+  let text = await res.text();
   try {
-    const data = JSON.parse(text) as { ok: boolean; error?: string; spreadsheetId?: string; name?: string; text?: string; cleared?: string[] };
+    let data = JSON.parse(text) as { ok: boolean; error?: string; spreadsheetId?: string; name?: string; text?: string; cleared?: string[] };
+    // The scenes' tab is gone (the scenes moved to another tab): write to the tab that has them now.
+    if (!testing && !data.ok && /tab wasn’t found/.test(data.error ?? '') && body.spreadsheetId && body.gid) {
+      const found = await findScenesTab(body.spreadsheetId, body.gid);
+      if (found) {
+        text = await (await send(found.gid)).text();
+        data = JSON.parse(text) as typeof data;
+      }
+    }
     // A script from before clearing existed answers a clear as if it were a save: say so instead.
     if (body.action === 'clear' && !Array.isArray(data.cleared) && (data.ok || /Not a scene column/.test(data.error ?? ''))) {
       return Response.json({

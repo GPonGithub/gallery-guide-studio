@@ -458,6 +458,16 @@ export async function keepSceneEdits(project: AgentProject, scene: SheetScene): 
 }
 
 /**
+ * The sheet's scenes moved to another tab (the old one deleted): every scene from that sheet, on the old
+ * tab, reads the new one from now on. Returns how many scenes were moved.
+ */
+export async function moveSheetTab(sheetId: string, from: string, to: string): Promise<number> {
+  const moved = (await listProjects()).filter((p) => p.sheet?.sheetId === sheetId && p.sheet.gid === from);
+  for (const p of moved) await putProject({ ...p, sheet: { ...p.sheet!, gid: to } });
+  return moved.length;
+}
+
+/**
  * Archives a scene, or brings it back — to the bottom of the list. Nothing
  * else about it changes.
  */

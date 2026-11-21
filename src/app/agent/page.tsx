@@ -97,6 +97,7 @@ import {
   applySheetScene,
   getProject,
   refreshOtherSheetScenes,
+  moveSheetTab,
   getProjectMusic,
   importSheetScenes,
   keepSceneEdits,
@@ -1195,8 +1196,10 @@ export default function AgentStudioPage() {
     if (listening) recognitionRef.current?.stop();
     // Everything playing stops at once, here and in TouchDesigner, not only once the update is done.
     stopSceneMedia();
+    // The conversation starts again at once — even if the sheet can't be read and the update stops
+    // there (it starts again once more if the update goes through).
+    restart();
     if (saved.sceneSheet || saved.brief.trim()) setUpdateRequest((n) => n + 1);
-    else restart();
     const sceneId = saved.projectId ?? 'unsaved';
     if (activePatient) void clearSceneMemory(activePatient.id, sceneId).then(() => setMemoryVersion((v) => v + 1));
     if (saved.sceneSheet) void clearSheetRow(saved.sceneSheet, saved.sceneSheet.column, sceneId);
@@ -1499,15 +1502,22 @@ export default function AgentStudioPage() {
   // if they've been edited here. Returns what generating should use; null for
   // a scene that isn't from a sheet, 'cancelled' if the edits are kept.
   const refreshSceneFromSheet = async (): Promise<{ brief: string; flow: AgentFlow; others: { updated: number; keptEdits: number } } | 'cancelled' | null> => {
-    const sheet = saved.sceneSheet;
+    let sheet = saved.sceneSheet;
     if (!sheet || !saved.projectId) return null;
     const res = await fetch('/api/sheets/scenes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url: `https://docs.google.com/spreadsheets/d/${sheet.sheetId}/edit#gid=${sheet.gid}` }),
     });
-    const data = (await res.json()) as { scenes: SheetScene[] } | { error: string };
+    const data = (await res.json()) as { scenes: SheetScene[]; gid?: string; movedFrom?: string } | { error: string };
     if ('error' in data) throw new Error(data.error);
+    // The scenes moved to another tab of the sheet (the old one is gone): every scene of it reads that one now.
+    if (data.movedFrom && data.gid && data.gid !== sheet.gid) {
+      await moveSheetTab(sheet.sheetId, data.movedFrom, data.gid);
+      sheet = { ...sheet, gid: data.gid };
+      const gid = data.gid;
+      setSaved((s) => (s?.sceneSheet ? { ...s, sceneSheet: { ...s.sceneSheet, gid } } : s));
+    }
     const scene = data.scenes.find((sc) => sc.number === sheet.number) ?? data.scenes.find((sc) => sc.column === sheet.column);
     if (!scene) throw new Error(`Scene ${sheet.number} isn’t in the sheet any more.`);
     // Media actions (row 8) reworded in the sheet: every scene's connections and timeline bars follow them.
