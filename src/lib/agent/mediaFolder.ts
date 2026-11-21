@@ -215,6 +215,73 @@ export async function setSceneMedia(scene: string, folder: MediaFolder, library:
   await saveLibrary(library, scene);
 }
 
+/** A scene whose list names a folder the browser can't read now: forgotten, or not allowed since Chrome restarted. */
+export type LostFolder = { scene: string; folderName: string; forgotten: boolean };
+
+/** Every scene of this team (this browser's database) with a media list but no folder it may read now. */
+export async function lostFolders(): Promise<LostFolder[]> {
+  const keys = await run<IDBValidKey[]>('media', 'readonly', (s) => s.getAllKeys()).catch(() => []);
+  const lost: LostFolder[] = [];
+  for (const key of keys) {
+    if (typeof key !== 'string' || !key.startsWith('library:')) continue;
+    const scene = key.slice('library:'.length);
+    const library = await loadLibrary(scene);
+    if (!library?.folderName) continue;
+    const folder = await savedMediaFolder(scene);
+    if (!folder) lost.push({ scene, folderName: library.folderName, forgotten: true });
+    else if ((await folder.queryPermission({ mode: 'read' }).catch(() => 'prompt')) !== 'granted')
+      lost.push({ scene, folderName: library.folderName, forgotten: false });
+  }
+  return lost;
+}
+
+/**
+ * Connects every scene in `lostFolders` again from one folder the person picks — the team's folder (e.g.
+ * "Team AE"), whose subfolders are the scenes' folders, or one scene's folder itself. Each scene gets the
+ * folder with its list's name: the picked one, or one inside it (two levels down at most). One pick and one
+ * Allow cover them all, since every folder is inside the one allowed. Returns what was connected and what wasn't.
+ */
+export async function reconnectFolders(): Promise<{ picked: string; connected: LostFolder[]; notFound: LostFolder[] } | null> {
+  const picker = (window as PickerWindow).showDirectoryPicker;
+  if (!picker) throw new Error('This browser can’t open a folder — use Chrome or Edge.');
+  // Asked first: the picker has to open straight from the click (the browser allows it only then).
+  let root: DirectoryHandle;
+  try {
+    root = await picker.call(window, { id: 'chatbot-designer-media', mode: 'read' });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return null;
+    throw err;
+  }
+  if (!(await allowed(root, true))) throw new Error(`The browser wasn’t allowed to read “${root.name}”.`);
+  const lost = await lostFolders();
+  // The folders by name: the picked one, its subfolders, theirs (the nearest wins on a clash).
+  const byName = new Map<string, DirectoryHandle>([[root.name, root]]);
+  let level: DirectoryHandle[] = [root];
+  for (let depth = 0; depth < 2; depth++) {
+    const next: DirectoryHandle[] = [];
+    for (const dir of level)
+      for await (const entry of dir.values())
+        if (entry.kind === 'directory' && !entry.name.startsWith('.') && !isOriginalsFolder(entry.name)) {
+          if (!byName.has(entry.name)) byName.set(entry.name, entry as DirectoryHandle);
+          next.push(entry as DirectoryHandle);
+        }
+    level = next;
+  }
+  const connected: LostFolder[] = [];
+  const notFound: LostFolder[] = [];
+  for (const item of lost) {
+    const folder = byName.get(item.folderName);
+    if (!folder) {
+      notFound.push(item);
+      continue;
+    }
+    await run('media', 'readwrite', (s) => s.put(folder, folderKey(item.scene)));
+    connected.push(item);
+  }
+  if (connected.length) folderAllowed();
+  return { picked: root.name, connected, notFound };
+}
+
 /**
  * A media file connected to one of a scene's media actions (row 8 of the
  * sheet) — e.g. a photograph of Maya to "Show picture of Maya when the nurse

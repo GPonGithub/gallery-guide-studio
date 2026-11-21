@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CollapsiblePanel } from './CollapsiblePanel';
 import { SpatialAudioPanel } from './SpatialAudioPanel';
 import { useSpatialPick } from '@/lib/agent/spatialAudio';
-import { DEMO_SCENE, DEMO_SHEET_ID, useMediaDemo, useMediaFolderRevision } from '@/lib/agent/mediaDemo';
+import { DEMO_SCENE, DEMO_SHEET_ID, mediaFolderChanged, useMediaDemo, useMediaFolderRevision } from '@/lib/agent/mediaDemo';
 import { MqttPanel } from './MqttPanel';
 import { DualMicPanel } from './DualMicPanel';
 import { ProjectorsPanel } from './ProjectorsPanel';
@@ -49,7 +49,9 @@ import {
   loadLibrary,
   mediaSceneKey,
   openMediaFile,
+  lostFolders,
   pickMediaFolder,
+  reconnectFolders,
   savedMediaFolder,
   saveLibrary,
   scanMediaFolder,
@@ -73,6 +75,7 @@ import {
   DRAG_SOUND,
   DRAG_VISUAL,
   type DraggedAsset,
+  type LostFolder,
   type MediaFolder,
   type MediaLink,
   type StoredLibrary,
@@ -216,6 +219,37 @@ export function ImmersiveMedia({
       gone = true;
     };
   }, [folderRevision, mediaKey]);
+
+  // Every scene (of this team) whose folder the browser forgot or may not read now — reconnected all at once.
+  const [lost, setLost] = useState<LostFolder[]>([]);
+  useEffect(() => {
+    let gone = false;
+    void lostFolders().then((l) => !gone && setLost(l));
+    return () => {
+      gone = true;
+    };
+  }, [folderRevision, mediaKey, folder, readable]);
+  const reconnectAll = async () => {
+    setNote(null);
+    try {
+      const done = await reconnectFolders();
+      if (!done) return;
+      const names = (list: LostFolder[]) => [...new Set(list.map((l) => l.folderName))].join(', ');
+      const scenes = (n: number) => `${n} scene${n === 1 ? '' : 's'}`;
+      setNote({
+        text: done.connected.length
+          ? `✓ ${scenes(done.connected.length)} connected again from “${done.picked}”: ${names(done.connected)}.${
+              done.notFound.length ? ` Not inside it: ${names(done.notFound)} — click again and choose the folder that holds ${done.notFound.length === 1 ? 'it' : 'them'}.` : ''
+            }`
+          : `None of the missing folders (${names(done.notFound)}) is inside “${done.picked}”. Choose the folder that holds them, e.g. your team’s folder.`,
+        problem: done.connected.length === 0 || done.notFound.length > 0,
+      });
+      setReadable(null);
+      mediaFolderChanged();
+    } catch (err) {
+      setNote({ text: err instanceof Error ? err.message : 'The folder couldn’t be read.', problem: true });
+    }
+  };
 
   // The Media Library open (or opened before this scene's folder had loaded): if the browser already lets
   // the app read the folder, the thumbnails show — no asking (Allow asks, from a click).
@@ -521,6 +555,19 @@ export function ImmersiveMedia({
             This browser has forgotten scene {sceneSheet.number}&rsquo;s media folder. Click <b>Choose Media Folder</b>{' '}
             and choose <b>{library.folderName}</b> again — its media, IDs and timeline connections carry on.
           </p>
+        )}
+        {/* One pick connects every scene again: the team's folder holds each scene's folder (found by name). */}
+        {lost.length > 0 && pickable && (
+          <div className="flex flex-wrap items-center gap-2 border-l-4 border-[#b91c1c] pl-2">
+            <p className="font-body text-xs text-ink">
+              {lost.length} scene{lost.length === 1 ? '' : 's'}&rsquo; media folder{lost.length === 1 ? ' isn’t' : 's aren’t'}{' '}
+              connected: <b>{[...new Set(lost.map((l) => l.folderName))].join(', ')}</b>. Click and choose the folder
+              that holds them (e.g. your team&rsquo;s folder), then <b>Allow on every visit</b>.
+            </p>
+            <button onClick={() => void reconnectAll()} disabled={busy} className={buttonOutline}>
+              Reconnect all scenes&rsquo; folders
+            </button>
+          </div>
         )}
         {folder && (
           <p className="font-label text-[10px] uppercase tracking-wide text-muted-ink">
