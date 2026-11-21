@@ -38,7 +38,8 @@ export function ProjectFileButtons() {
         `Open “${file.name}” (${teamLabel(currentTeam())}’s)?\n\n` +
           `It replaces everything ${teamLabel(currentTeam())} has in this browser — every scene, conversation, voice, music file, ` +
           'patient, media connection and setting. Export Project first if you want to keep what’s here.\n\n' +
-          'Your API keys stay as they are. Afterwards, choose the media folder again (Adding Immersive Media → 1).',
+          'The file’s API keys (Anthropic, ElevenLabs) are saved in this browser; if the file has none, the keys here stay. ' +
+          'Afterwards, choose the media folder again (Adding Immersive Media → 1).',
       );
       if (ok) await importProject(project, file.name);
     } catch (err) {
@@ -65,7 +66,7 @@ export function ProjectFileButtons() {
         onClick={() => void doExport()}
         disabled={exporting}
         className={half(exporting ? buttonBusy : buttonOutline)}
-        title="Download everything — scenes, conversations, voices, music, patients, media connections and settings — to carry on later or on another computer (API keys are left out)"
+        title="Download everything — scenes, conversations, voices, music, patients, media connections and settings — to carry on later or on another computer. The API keys go in too, so keep the file within the team"
       >
         {exporting && <Spinner />}
         {exporting ? 'Exporting…' : 'Export Project'}

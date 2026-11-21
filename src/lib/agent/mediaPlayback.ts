@@ -70,7 +70,7 @@ export async function sceneSounds(scene: SceneRef | null, kind: ActionKind): Pro
 }
 
 // Every sound the timeline plays follows the Music / Sounds panel, like the scene's music: its
-// Volume, and its Dip while the agent talks (easing down quickly, back up gently).
+// Volume, and its Dip while the agent / user talks (easing down quickly, back up gently).
 const DUCK_DOWN_MS = 400;
 const DUCK_UP_MS = 1200;
 const LEVEL_CHANGE_MS = 150;

@@ -206,6 +206,7 @@ async function startListening(): Promise<void> {
         // Meters: a loudness scale that shows speech well (about −50 dB to 0 dB).
         const level = (x: number) => Math.max(0, Math.min(1, (20 * Math.log10(x + 1e-6) + 50) / 50));
         setLive({ left: level(l), right: level(r) });
+        if (channels >= 2) hearTalking(at);
       }, SAMPLE_MS);
       setLive({
         state: channels < 2 ? 'mono' : 'on',
@@ -226,6 +227,8 @@ async function startListening(): Promise<void> {
 }
 
 function stopListening(off = true) {
+  setTalking(false);
+  talkRun = 0;
   if (timer) clearInterval(timer);
   timer = null;
   stream?.getTracks().forEach((t) => t.stop());
@@ -368,6 +371,55 @@ export function personOrRoom(from: number, to: number, balanceDb: number): { per
   const peak = db(side === 'left' ? pl : pr);
   return { person: balance >= balanceDb && peak >= PERSON_FLOOR_DB, side, balance, peak };
 }
+
+// --- someone talking now (music and sounds dip under them, as under the agent's voice) ---------------
+
+/** The last stretch looked at, how many samples in a row must show a person to start, and how long it holds after. */
+const TALK_WINDOW_MS = 160;
+const TALK_START_SAMPLES = 3;
+const TALK_HOLD_MS = 900;
+let talking = false;
+let talkRun = 0;
+let talkLastAt = 0;
+const talkListeners = new Set<(on: boolean) => void>();
+function setTalking(on: boolean) {
+  if (on === talking) return;
+  talking = on;
+  talkListeners.forEach((l) => l(on));
+}
+
+/**
+ * Each sample (stereo only): is a person talking into either clip-on mic right now? The same test as the
+ * music filter (personOrRoom): one side clearly louder than the other (by the panel's balance setting) and
+ * loud enough to be someone at the mic. Music and the agent's voice from the room's speakers reach both
+ * mics about equally, so they don't count — and the dip can't set itself off. A few samples in a row start
+ * it (a cough or a knock doesn't); it holds a little after they stop, so pauses between words don't pump.
+ */
+function hearTalking(at: number) {
+  const verdict = personOrRoom(at - TALK_WINDOW_MS, at, dualMicSettings().balanceDb);
+  if (verdict?.person) {
+    talkRun++;
+    talkLastAt = at;
+    if (talkRun >= TALK_START_SAMPLES) setTalking(true);
+  } else {
+    talkRun = 0;
+    if (talking && at - talkLastAt > TALK_HOLD_MS) setTalking(false);
+  }
+}
+
+/** Hears whenever someone starts or stops talking into either clip-on mic (dual microphones on, in stereo). */
+export function onPersonTalking(listener: (on: boolean) => void): () => void {
+  talkListeners.add(listener);
+  return () => {
+    talkListeners.delete(listener);
+  };
+}
+export const usePersonTalking = () =>
+  useSyncExternalStore(
+    (l) => onPersonTalking(l),
+    () => talking,
+    () => false,
+  );
 
 /** Whether the dual mics can judge person-or-music right now (on, listening in stereo, filter on). */
 export const canJudgeMusic = () => {

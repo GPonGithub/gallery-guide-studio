@@ -8,14 +8,18 @@ import { currentTeam, isTeamControlKey, teamFileTag, teamImportProblem, type Tea
  * scene and conversation, voices and music, patients and what their scenes saved, the media library,
  * connections and timeline, layout and settings — so work can carry on later or on another computer.
  *
- * Left out: API keys (a project file gets passed around; on import the keys already in this browser
- * stay), the media folder's permission (the browser can't move it — choose the folder again; IDs and
+ * API keys (Anthropic, ElevenLabs, Figma) are carried in the file (since 2026-11-21, so a project opens
+ * ready to use without typing them again): on import, the file's keys are saved in this browser; a key the
+ * file doesn't have keeps the one already here. Treat an exported file like a password — share it only
+ * with the team. The lab Mac's automatic backup (localBackup.ts) carries them the same way.
+ *
+ * Left out: the media folder's permission (the browser can't move it — choose the folder again; IDs and
  * connections carry over), and video thumbnails (made again as needed).
  */
 
 const FORMAT = 'chatbot-designer-project';
 const VERSION = 1;
-/** Settings fields that are API keys: blanked on export, kept from this browser on import. */
+/** Settings fields that are API keys: carried in the file; on import a blank one keeps this browser's. */
 const isKeyField = (name: string) => /apikey$/i.test(name);
 /** Database entries not carried: the folders' permissions (one per scene), video thumbnails, a tour demo's backup. */
 const skipEntry = (store: string, key: IDBValidKey) =>
@@ -72,7 +76,7 @@ function decode(value: Encoded): unknown {
   return value;
 }
 
-/** A settings value with its API-key fields blanked (or, with `keep`, filled from `keep`). */
+/** A settings value from a project file, its blank API-key fields filled from `keep` (this browser's keys). */
 function withKeys(raw: string, keep?: Record<string, string>): string {
   try {
     const data = JSON.parse(raw) as unknown;
@@ -80,8 +84,9 @@ function withKeys(raw: string, keep?: Record<string, string>): string {
     let touched = false;
     const out = { ...(data as Record<string, unknown>) };
     for (const name of Object.keys(out)) {
-      if (!isKeyField(name)) continue;
-      out[name] = keep?.[name] ?? '';
+      if (!isKeyField(name) || (typeof out[name] === 'string' && out[name])) continue;
+      if (!keep?.[name]) continue;
+      out[name] = keep[name];
       touched = true;
     }
     return touched ? JSON.stringify(out) : raw;
@@ -110,7 +115,7 @@ function currentKeys(): Record<string, Record<string, string>> {
 
 // --- export ---------------------------------------------------------------
 
-/** Everything this team has in this browser, as a project file (API keys blanked). */
+/** Everything this team has in this browser, as a project file (API keys included). */
 export async function buildProjectFile(): Promise<ProjectFile> {
   const file: ProjectFile = {
     format: FORMAT,
@@ -123,7 +128,7 @@ export async function buildProjectFile(): Promise<ProjectFile> {
   // This team's settings only (localStorage is kept per team — see team.ts).
   for (let i = 0; i < localStorage.length; i++) {
     const name = localStorage.key(i);
-    if (name && !isTeamControlKey(name)) file.localStorage[name] = withKeys(localStorage.getItem(name) ?? '');
+    if (name && !isTeamControlKey(name)) file.localStorage[name] = localStorage.getItem(name) ?? '';
   }
   const db = await openDb();
   try {
@@ -174,8 +179,8 @@ export async function readProjectFile(f: File): Promise<ProjectFile> {
 }
 
 /**
- * Replaces everything this team has in this browser with the project, keeping this browser's API keys,
- * then reloads the page.
+ * Replaces everything this team has in this browser with the project, then reloads the page. The file's
+ * API keys are saved in this browser; where the file has none (an older export), this browser's stay.
  */
 export async function importProject(project: ProjectFile, fileName = ''): Promise<void> {
   // Only ever into the team it was exported from (see teamImportProblem).

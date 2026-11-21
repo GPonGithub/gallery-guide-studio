@@ -7,7 +7,9 @@ import { onTDReady, send, tdOutputSize } from './touchDesigner';
 /**
  * The scene label on the wall: a small strip in the top-left corner of zone 1 · area 2 (area 13, the
  * right wall on projector 5). Left to right: a microphone symbol (green = the mic is listening, red and
- * crossed out = off), the scene's number and its title.
+ * crossed out = off), the scene's number and its title. Below it, every stage of the scene from left to
+ * right (its code and name), the one on now highlighted and the ones already passed dimmed, so the
+ * room can see what's coming up.
  *
  * It's drawn here as a see-through PNG the size of an area's picture and sent to TouchDesigner
  * ({"type":"label"}), which lays it over whatever media that area shows. Sent again only when it
@@ -15,7 +17,16 @@ import { onTDReady, send, tdOutputSize } from './touchDesigner';
  */
 
 export const LABEL_AREA = 13;
-export type SceneLabel = { micOn: boolean; number: string; title: string };
+export type LabelStage = { code: string; name: string };
+export type SceneLabel = {
+  micOn: boolean;
+  number: string;
+  title: string;
+  /** The scene's stages in order. */
+  stages: LabelStage[];
+  /** The stage on now: a stage's code, END once the conversation has ended, or '' (none). */
+  current: string;
+};
 
 const ON_KEY = 'scene-label-on';
 let on = true;
@@ -94,7 +105,7 @@ const WALL = PROJECTION_SHAPES.find((s) => s.area === LABEL_AREA)?.inches ?? [80
 
 /*
  * Sizes on the wall, in tenths of an inch. Area 14 (the panel) starts 14.9 in below the wall's top,
- * so the strip (1.5 in down, 3.4 in tall) stays clear of it.
+ * so the strip (1.5 in down, 3.4 in tall) and the stage row under it (to about 8.6 in down) stay clear of it.
  */
 const MARGIN = 15;
 const HEIGHT = 34;
@@ -104,6 +115,13 @@ const NUMBER_FONT = 22;
 const TITLE_FONT = 19;
 const GAP = 10;
 const MAX_TITLE = 560;
+const ROW_GAP = 6;
+const ROW_HEIGHT = 31;
+const ROW_PAD = 4;
+const PILL_HEIGHT = 23;
+const PILL_PAD = 8;
+const PILL_GAP = 16;
+const STAGE_FONT = 15;
 const FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
 
 /** The label as a PNG (base64, no data: prefix), width x height, see-through except the strip. */
@@ -165,7 +183,94 @@ export function drawLabel(label: SceneLabel, width: number, height: number): str
     ctx.font = `400 ${TITLE_FONT}px ${FONT}`;
     ctx.fillText(shownTitle, x, mid + 1);
   }
+  drawStages(ctx, label, x0, y0 + HEIGHT + ROW_GAP);
   return canvas.toDataURL('image/png').replace(/^data:image\/png;base64,/, '');
+}
+
+/**
+ * The stages, left to right, as pills on a dark row: "1 · Greeting". The stage on now is white with dark
+ * letters; those already passed are dimmed; those to come are plain. Names are shortened (all alike) until
+ * the row fits the wall; if even that isn't enough, only the codes show.
+ */
+function drawStages(ctx: CanvasRenderingContext2D, label: SceneLabel, x0: number, y0: number) {
+  const stages = label.stages.filter((s) => s.code.trim());
+  if (!stages.length) return;
+  const room = WALL[0] * 10 - 2 * MARGIN - 2 * ROW_PAD;
+  const at = label.current === 'END' ? stages.length : stages.findIndex((s) => s.code === label.current);
+  const bold = `700 ${STAGE_FONT}px ${FONT}`;
+  const plain = `400 ${STAGE_FONT}px ${FONT}`;
+  const textOf = (s: LabelStage, max: number) => {
+    const code = s.code.trim();
+    ctx.font = bold;
+    const codeW = ctx.measureText(code).width;
+    const name = readable(s.name);
+    if (!name || max <= 0) return { code, name: '', codeW, nameW: 0 };
+    ctx.font = plain;
+    const shown = fit(ctx, name, max);
+    const tooShort = shown.length < 4;
+    return { code, name: tooShort ? '' : shown, codeW, nameW: tooShort ? 0 : ctx.measureText(` · ${shown}`).width };
+  };
+  const pillW = (t: ReturnType<typeof textOf>) => PILL_PAD * 2 + t.codeW + t.nameW;
+  // The stage on now keeps its whole name (up to half the row); the others share what's left.
+  const layout = (max: number) => stages.map((s, i) => textOf(s, i === at ? room / 2 : max));
+  const total = (pills: ReturnType<typeof textOf>[]) =>
+    pills.reduce((sum, t) => sum + pillW(t), 0) + PILL_GAP * (pills.length - 1);
+  let max = 400;
+  let pills = layout(max);
+  while (total(pills) > room && max > 0) {
+    max = Math.max(0, max - 10);
+    pills = layout(max);
+  }
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+  roundRect(ctx, x0, y0, Math.min(total(pills), room) + ROW_PAD * 2, ROW_HEIGHT, ROW_HEIGHT / 2);
+  ctx.fill();
+
+  const mid = y0 + ROW_HEIGHT / 2;
+  let x = x0 + ROW_PAD;
+  pills.forEach((t, i) => {
+    const w = pillW(t);
+    const now = i === at;
+    const passed = i < at;
+    if (now) {
+      ctx.fillStyle = '#ffffff';
+      roundRect(ctx, x, mid - PILL_HEIGHT / 2, w, PILL_HEIGHT, PILL_HEIGHT / 2);
+      ctx.fill();
+    } else if (!passed) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.lineWidth = 1.2;
+      roundRect(ctx, x + 0.6, mid - PILL_HEIGHT / 2 + 0.6, w - 1.2, PILL_HEIGHT - 1.2, PILL_HEIGHT / 2);
+      ctx.stroke();
+    }
+    const ink = now ? '#000000' : passed ? 'rgba(255, 255, 255, 0.4)' : '#ffffff';
+    ctx.fillStyle = ink;
+    ctx.font = bold;
+    ctx.fillText(t.code, x + PILL_PAD, mid + 1);
+    if (t.name) {
+      ctx.font = plain;
+      ctx.fillText(` · ${t.name}`, x + PILL_PAD + t.codeW, mid + 1);
+    }
+    // A small arrow to the next stage.
+    if (i < pills.length - 1) {
+      const ax = x + w + PILL_GAP / 2;
+      ctx.strokeStyle = i < at ? 'rgba(255, 255, 255, 0.4)' : 'rgba(255, 255, 255, 0.75)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(ax - 2, mid - 4);
+      ctx.lineTo(ax + 2, mid);
+      ctx.lineTo(ax - 2, mid + 4);
+      ctx.stroke();
+    }
+    x += w + PILL_GAP;
+  });
+}
+
+/** A name written like "GREET_AND_RATE" reads "Greet and rate" on the wall; others stay as written. */
+function readable(name: string): string {
+  const n = name.trim();
+  if (!/^[A-Z0-9_ ]+$/.test(n) || !/[A-Z]/.test(n)) return n;
+  const words = n.replace(/_+/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 /** A white microphone centred on (cx, cy), about 16 units tall; crossed out when off. */

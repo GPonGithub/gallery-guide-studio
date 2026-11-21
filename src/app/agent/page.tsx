@@ -3,7 +3,7 @@
 // First: splits this browser's storage by student team before anything reads it (see lib/team.ts).
 import '@/lib/team';
 import { noCopy } from '@/lib/noCopy';
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { DesignPanel, type SheetImportOutcome, type SheetSync } from '@/components/agent/DesignPanel';
 import { MasterEditor, StageEditor } from '@/components/agent/FlowEditor';
 import { OpenMic, type OpenMicStatus, type UtteranceTiming } from '@/components/agent/OpenMic';
@@ -13,6 +13,7 @@ import { startStreamedClip, type StreamedClip } from '@/components/agent/streame
 import { BackgroundMusic } from '@/components/agent/backgroundMusic';
 import { ZoneButtons } from '@/components/agent/ZoneButtons';
 import { SoundControls } from '@/components/agent/SoundControls';
+import { setVolumeScene } from '@/lib/agent/masterVolume';
 import { MusicPanel } from '@/components/agent/MusicPanel';
 import { RecordConversation } from '@/components/agent/RecordConversation';
 import { beginRecording, endRecording, useRecordSettings } from '@/lib/agent/conversationRecorder';
@@ -26,10 +27,10 @@ import { ONBOARDING_STEPS } from '@/components/agent/onboardingSteps';
 import { DEMO_SCENE_NAMES, sceneDemoActions } from '@/components/agent/sceneDemo';
 import { LAYOUT_DEMO_ACTIONS } from '@/components/agent/layoutDemo';
 import { DEMO_SCENE, DEMO_STAGES, endMediaDemo, useMediaDemo } from '@/lib/agent/mediaDemo';
-import { forgetMarker, markerArrived, replayMarker, setMarkerProblem } from '@/lib/agent/markerPlay';
+import { forgetMarker, markerArrived, replayMarker, setMarkerProblem, useMarkerStage } from '@/lib/agent/markerPlay';
 import { send as sendToTD } from '@/lib/agent/touchDesigner';
 import { isPress, useMqttMessages } from '@/lib/agent/mqttEvents';
-import { dualSpeakers, judgeHeard, markSpeechStart, personLabel, setSceneTextSource } from '@/lib/agent/dualMic';
+import { dualSpeakers, judgeHeard, markSpeechStart, personLabel, setSceneTextSource, usePersonTalking } from '@/lib/agent/dualMic';
 import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -630,9 +631,30 @@ export default function AgentStudioPage() {
   // The scene label on the wall (zone 1 · area 2): mic on or off, the scene's number and title.
   const labelNumber = saved?.sceneSheet?.number ?? '';
   const labelTitle = saved?.projectName ?? '';
+  // Every stage, left to right, with the one on now highlighted: the timeline marker's stage (what the
+  // room is showing) or the conversation's, whichever moved last; END once the conversation has ended.
+  const labelStageList = saved?.flow.stages;
+  const labelStages = useMemo(
+    () => sortStages(labelStageList ?? []).map((s) => ({ code: s.code, name: s.name })),
+    [labelStageList],
+  );
+  const markerStage = useMarkerStage();
+  const liveStageCode = session ? (session.ended ? 'END' : session.stageCode) : '';
+  const labelSeen = useRef({ marker: markerStage, live: liveStageCode, current: liveStageCode });
   useEffect(() => {
-    setSceneLabel({ micOn: openMicOn || listening, number: labelNumber, title: labelTitle });
-  }, [openMicOn, listening, labelNumber, labelTitle]);
+    const seen = labelSeen.current;
+    if (liveStageCode !== seen.live) seen.current = liveStageCode;
+    if (markerStage && markerStage !== seen.marker) seen.current = markerStage;
+    seen.live = liveStageCode;
+    seen.marker = markerStage;
+    setSceneLabel({
+      micOn: openMicOn || listening,
+      number: labelNumber,
+      title: labelTitle,
+      stages: labelStages,
+      current: seen.current,
+    });
+  }, [openMicOn, listening, labelNumber, labelTitle, labelStages, markerStage, liveStageCode]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   // The reply being spoken sentence by sentence (see speechQueue.ts).
   const queueRef = useRef<SpeechQueue | null>(null);
@@ -744,14 +766,18 @@ export default function AgentStudioPage() {
   // While "Try the dip" is running, the agent finishing speaking mustn't cut it short (and vice versa).
   const speakingRef = useRef(false);
   const tryingDipRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Someone talking into either of the two clip-on mics (dual microphones, dualMic.ts): the music and
+  // sounds dip under them just as under the agent's voice, by the same "Dip while the agent / user talks".
+  const personTalking = usePersonTalking();
   useEffect(() => {
-    speakingRef.current = speaking;
+    const dip = speaking || personTalking;
+    speakingRef.current = dip;
     if (!tryingDipRef.current) {
-      musicRef.current?.duck(speaking);
-      // The timeline's sounds dip under the voice too.
-      duckSounds(speaking);
+      musicRef.current?.duck(dip);
+      // The timeline's sounds dip too (here and in TouchDesigner).
+      duckSounds(dip);
     }
-  }, [speaking]);
+  }, [speaking, personTalking]);
   // Undo and redo for the media work (bars, connections, when they play): ⌘Z undoes; ⌘⇧Z — or ⌘X, as
   // asked for — redoes (Ctrl on Windows). In a text box they're left to the box's own undo and cut.
   useEffect(() => {
@@ -810,6 +836,8 @@ export default function AgentStudioPage() {
   useEffect(() => stopLoops, [saved?.projectId]);
   // …and the room empties.
   useEffect(() => clearVisuals, [saved?.projectId]);
+  // The master volume is kept per scene (masterVolume.ts): the open scene's own level comes back.
+  useEffect(() => setVolumeScene(saved?.projectId ?? null), [saved?.projectId]);
   // Once the call has ended and the goodbye has been spoken, the music fades out.
   useEffect(() => {
     if (session?.ended && !speaking) musicRef.current?.stop();

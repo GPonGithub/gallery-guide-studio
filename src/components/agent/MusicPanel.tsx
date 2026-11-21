@@ -174,11 +174,11 @@ export function MusicPanel({
               hint="Every sound the timeline plays (the scene’s media actions), here and in TouchDesigner: 10 is the files at full, 5 is half. Each sound’s bar has its own slider on top of this (up to 400%)."
             />
             <Slider
-              label="Dip while the agent talks"
+              label="Dip while the agent / user talks"
               value={dip}
               readout={`${dip.toFixed(1)} · at ${Math.round(dipToShare(dip) * 100)}%`}
               onChange={onDipChange}
-              hint="How far the music and sounds drop under the agent’s voice. 0 = no dip, 5 = half volume, 10 = silent. It eases down as the agent starts and back up after. Around 3–5 keeps it audible under the voice."
+              hint="How far the music and sounds drop while the agent talks, or while someone talks into either of the two clip-on microphones (8 · Dual microphones, on). 0 = no dip, 5 = half volume, 10 = silent. It eases down as they start and back up after. Around 3–5 keeps it audible under the voice."
             />
             <button
               onClick={onTryDip}

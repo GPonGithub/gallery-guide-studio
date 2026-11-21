@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { buttonOutline, fieldInput } from '@/lib/styles';
+import { useEffect } from 'react';
+import { buttonOutline } from '@/lib/styles';
+import { setSceneLabelOn, useSceneLabelOn } from '@/lib/agent/sceneLabel';
 import { send, useTDStatus } from '@/lib/agent/touchDesigner';
 import { useZone } from '@/lib/agent/zones';
 
@@ -10,16 +11,18 @@ const SCRIPT_URL = '/touchdesigner/projector_output.py';
 const small = buttonOutline.replace('px-4 py-2', 'px-2.5 py-1.5');
 
 /**
- * Adding Immersive Media, section 5: which projector is which. TouchDesigner's
- * projector windows (projector_output.py) each show one part of the picture;
- * with their numbers up, the student says what number each projector in the
- * room is showing, and TouchDesigner swaps their screens so each shows its own.
+ * Adding Immersive Media, section 5: TouchDesigner's projector windows (projector_output.py), their
+ * ID numbers, and the Kantan Mapper for fitting shapes to the walls. (The per-projector "what each
+ * projector shows" switches were taken out on 2026-11-21: swapping screens from here never worked;
+ * Claude/TouchDesigner/fix_projector_screens_auto.py on the lab Mac does that job.)
  */
 export function ProjectorsPanel() {
   const status = useTDStatus();
   const connected = status.state === 'connected';
   const projectors = connected ? status.projectors : undefined;
   const count = projectors?.count ?? 0;
+  // The scene label on zone 1 · area 2 (the same switch as 4 · TouchDesigner's button; see sceneLabel.ts).
+  const labelOn = useSceneLabelOn();
   // The zone whose drawing is open (the Zone 1 / 2 / 3 buttons): zones 1 and 3 are on projectors 5 and 6,
   // mapped by their own Kantan Mapper ('p56').
   const zone = useZone();
@@ -28,22 +31,11 @@ export function ProjectorsPanel() {
   useEffect(() => {
     if (connected) send({ type: 'projectors', action: 'status' });
   }, [connected]);
-  // shows[r - 1]: the number projector r (as labelled in the room) is showing now.
-  const [shows, setShows] = useState<number[]>([]);
-  const current = Array.from({ length: count }, (_, i) => shows[i] ?? i + 1);
-  const repeated = current.filter((n, i) => current.indexOf(n) !== i);
-  const changed = current.some((n, i) => n !== i + 1);
-
-  const apply = () => {
-    if (send({ type: 'projectors', action: 'assign', shows: current })) setShows([]);
-  };
-
   return (
     <div className="flex flex-col gap-3">
       <p className="font-body text-xs italic text-muted-ink">
-        Each projector shows one part of the picture. Check that every projector in the room gets the part meant for
-        it — its own number — and swap them here if not. Nothing in the room or the computer&rsquo;s display settings
-        needs moving.
+        Each projector shows one part of the picture. Open the projector windows and show their IDs to check that
+        every projector in the room shows its own number.
       </p>
       <ol className="ml-4 list-decimal font-body text-xs text-ink">
         <li>
@@ -57,11 +49,7 @@ export function ProjectorsPanel() {
           Click <b>Show projector IDs</b>. Each projector shows &ldquo;PROJECTOR&nbsp;1&rdquo;, &ldquo;PROJECTOR&nbsp;2&rdquo;…
         </li>
         <li>
-          For each projector in the room (by the number it&rsquo;s labelled with), choose the number it&rsquo;s showing,
-          then click <b>Apply</b>. Every projector should now show its own number.
-        </li>
-        <li>
-          Click <b>Hide projector IDs</b> and save the TouchDesigner project, so it remembers.
+          Click <b>Hide projector IDs</b> when you&rsquo;re done.
         </li>
       </ol>
 
@@ -90,7 +78,8 @@ export function ProjectorsPanel() {
         </p>
       ) : (
         <>
-          <div className="flex flex-wrap items-center gap-1.5">
+          {/* items-stretch: the buttons in the row are all as tall as the tallest. */}
+          <div className="flex flex-wrap items-stretch gap-1.5">
             <button
               onClick={() => send({ type: 'projectors', action: 'identify', on: !projectors.identify })}
               className={`${small} w-[150px]`}
@@ -105,60 +94,17 @@ export function ProjectorsPanel() {
             >
               {projectors.open ? 'Close projector windows' : 'Open projector windows'}
             </button>
-            <span className="font-body text-xs text-muted-ink">
+            <span className="self-center font-body text-xs text-muted-ink">
               {count} projector{count === 1 ? '' : 's'} · {projectors.open ? `${projectors.open} open` : 'windows closed'}
             </span>
           </div>
 
-          <fieldset className="flex flex-col gap-2 border border-hair p-2">
-            <legend className="px-1 font-label text-[10px] uppercase tracking-wide text-muted-ink">
-              What each projector shows
-            </legend>
-            <div className="grid grid-cols-[auto_auto] items-center justify-start gap-x-2 gap-y-1.5">
-              {current.map((n, i) => (
-                <label key={i} className="contents font-body text-xs text-ink">
-                  <span>Projector {i + 1} shows</span>
-                  <select
-                    value={n}
-                    onChange={(e) => {
-                      const next = [...current];
-                      next[i] = Number(e.target.value);
-                      setShows(next);
-                    }}
-                    aria-label={`Number projector ${i + 1} shows`}
-                    className={`${fieldInput} ${repeated.includes(n) ? 'border-[#b91c1c]' : ''}`}
-                  >
-                    {current.map((_, k) => (
-                      <option key={k} value={k + 1}>
-                        PROJECTOR {k + 1}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ))}
-            </div>
-            {repeated.length > 0 && (
-              <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">
-                Each number shows on one projector only — check the ones marked.
-              </p>
-            )}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button onClick={apply} disabled={!changed || repeated.length > 0} className={small}>
-                Apply
-              </button>
-              {changed && (
-                <button onClick={() => setShows([])} className={small}>
-                  Reset
-                </button>
-              )}
-            </div>
-          </fieldset>
         </>
       )}
 
       {connected && (
         <div className="flex flex-col gap-1.5">
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-stretch gap-1.5">
             <button
               onClick={() => {
                 // Each zone's projectors have their own Kantan Mapper: the open zone's editor comes up, the other closes.
@@ -185,6 +131,13 @@ export function ProjectorsPanel() {
               }
             >
               {status.areaNumbers === false ? 'Show numbers' : 'Hide numbers'}
+            </button>
+            <button
+              onClick={() => setSceneLabelOn(!labelOn)}
+              className={`${small} w-[150px]`}
+              title="The label in the top-left corner of zone 1 · area 2: microphone on or off, the scene's number and title, and its stages"
+            >
+              {labelOn ? 'Hide scene label' : 'Show scene label'}
             </button>
             <button
               onClick={() => {

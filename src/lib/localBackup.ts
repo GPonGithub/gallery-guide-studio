@@ -7,7 +7,7 @@ import { currentTeam } from './team';
 
 /**
  * A copy of everything the app keeps in this browser, saved on this computer as work changes — the
- * same file as Export Project (API keys and folder permissions left out), written by
+ * same file as Export Project (API keys included, folder permissions left out), written by
  * /api/local-backup into the app's folder.
  *
  * Why: some browsers forget their storage. The studio Mac's Chrome is managed with ephemeral profiles,

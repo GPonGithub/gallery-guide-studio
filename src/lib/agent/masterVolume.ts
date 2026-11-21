@@ -6,17 +6,40 @@ import { useSyncExternalStore } from 'react';
  * The master volume (top bar, beside the zone buttons): one level, 0–1, over everything the app plays —
  * the agent's voice, the background music and the timeline's sounds. Each Web Audio graph ends in a
  * master gain node (masterOutput) instead of going straight to the speakers; Record conversation listens
- * before it, so a recording isn't turned down with the room. Remembered in this browser.
+ * before it, so a recording isn't turned down with the room.
+ *
+ * Each scene keeps its own level (SCENES_KEY, by scene id); the page says which scene is open with
+ * setVolumeScene. A scene that has never been given a level starts at the team's level from before
+ * levels were kept per scene (KEY), or full volume. Like every setting, this is kept per team
+ * (localStorage is split by team — see team.ts), so the three teams work the same way.
  */
 
 const KEY = 'gallery-guide-master-volume';
-let level = 1;
-try {
-  const stored = Number(window.localStorage.getItem(KEY));
-  if (window.localStorage.getItem(KEY) !== null && Number.isFinite(stored)) level = Math.max(0, Math.min(1, stored));
-} catch {
-  // No storage (private window, or on the server): full volume.
+const SCENES_KEY = 'gallery-guide-master-volume-scenes';
+const clamp = (v: number) => Math.max(0, Math.min(1, v));
+
+function readDefault(): number {
+  try {
+    const raw = window.localStorage.getItem(KEY);
+    const stored = Number(raw);
+    if (raw !== null && Number.isFinite(stored)) return clamp(stored);
+  } catch {
+    // No storage (private window, or on the server).
+  }
+  return 1;
 }
+function readScenes(): Record<string, number> {
+  try {
+    const all = JSON.parse(window.localStorage.getItem(SCENES_KEY) ?? '{}') as unknown;
+    return all && typeof all === 'object' ? (all as Record<string, number>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The open scene ('unsaved' before one is saved). */
+let scene = 'unsaved';
+let level = readDefault();
 
 const listeners = new Set<() => void>();
 const gains = new Map<BaseAudioContext, GainNode>();
@@ -46,12 +69,20 @@ export function setSoundOff(value: boolean) {
 }
 
 export function setMasterVolume(value: number) {
-  level = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+  level = Number.isFinite(value) ? clamp(value) : 1;
   try {
-    window.localStorage.setItem(KEY, String(level));
+    window.localStorage.setItem(SCENES_KEY, JSON.stringify({ ...readScenes(), [scene]: level }));
   } catch {
     // Not remembered.
   }
+  apply();
+}
+
+/** The open scene changed: its own level comes back (or the team's starting level, if it has none). */
+export function setVolumeScene(id: string | null) {
+  scene = id ?? 'unsaved';
+  const kept = Number(readScenes()[scene]);
+  level = Number.isFinite(kept) ? clamp(kept) : readDefault();
   apply();
 }
 
