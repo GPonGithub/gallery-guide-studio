@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { MediaAsset } from '@/lib/agent/media';
-import { barsOf, updateMediaLinks, useMediaLinks, type MediaLink } from '@/lib/agent/mediaFolder';
+import { barsOf, isVoice, updateMediaLinks, useMediaLinks, type MediaLink } from '@/lib/agent/mediaFolder';
 import {
   clampSoundVolume,
   livePan,
@@ -39,6 +39,11 @@ import { isChatbot, previewChatbotPan } from '@/lib/agent/chatbotVoice';
 // chatbot (where its voice comes from while it shows).
 const isSound = (l: MediaLink) => audible(l) || isChatbot(l);
 const nameOf = (l: MediaLink) => l.assetName ?? l.assetId;
+/** A voice bar by its stages: "Voice, stages 1–2". */
+const voiceName = (l: MediaLink) => {
+  const b = barsOf(l)[0];
+  return b ? `Voice, ${b.from === b.to ? `stage ${b.from}` : `stages ${b.from}–${b.to}`}` : 'Voice';
+};
 
 /**
  * 6 · Spatialized audio: the room seen from above, a speaker in each corner, and a dot for where the
@@ -85,7 +90,7 @@ export function SpatialAudioPanel({
     return (
       <p className="font-body text-xs italic text-muted-ink">
         No sounds on this scene&rsquo;s timeline yet. Drag a sound from the Media Library onto a ♪ sound track (a
-        video with sound, or a chatbot, on the timeline shows here too).
+        video with sound, a chatbot, or a bar on the Voice row shows here too).
       </p>
     );
 
@@ -94,7 +99,8 @@ export function SpatialAudioPanel({
       <p className="font-body text-xs italic text-muted-ink">
         Where in the room each sound is heard. Drag the dot towards a speaker to hear it only there; in the middle, all
         four speakers play it evenly. Click a sound&rsquo;s bar on the timeline to choose it here. For a chatbot, this
-        is where its voice comes from while it shows.
+        is where its voice comes from while it shows; for a bar on the Voice row, where the voice comes from on its
+        stages.
       </p>
       <label className="flex items-center gap-2 font-body text-xs text-ink">
         Sound
@@ -109,7 +115,7 @@ export function SpatialAudioPanel({
           {!chosen && <option value="">Choose a sound…</option>}
           {sounds.map((l, i) => (
             <option key={l.assetId} value={i}>
-              {isChatbot(l) ? `💬 ${nameOf(l)} (chatbot voice)` : nameOf(l)}
+              {isVoice(l) ? `🗣 ${voiceName(l)}` : isChatbot(l) ? `💬 ${nameOf(l)} (chatbot voice)` : nameOf(l)}
             </option>
           ))}
         </select>
@@ -449,7 +455,12 @@ function RoomSquare({ link, assets }: { link: MediaLink; assets: MediaAsset[] })
           Use the room&rsquo;s speakers
         </button>
       )}
-      {chatbot && (
+      {isVoice(link) ? (
+        <p className="font-body text-xs text-muted-ink">
+          The voice comes from here while the marker is on this voice bar&rsquo;s stages ({voiceName(link)}), at its
+          bar&rsquo;s volume — even with a chatbot showing. Talk to it to hear where it is.
+        </p>
+      ) : chatbot && (
         <p className="font-body text-xs text-muted-ink">
           The chatbot&rsquo;s voice comes from here whenever this chatbot is showing in the room, at its bar&rsquo;s
           volume. Talk to it to hear where it is.

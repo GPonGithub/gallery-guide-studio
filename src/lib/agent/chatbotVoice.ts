@@ -1,7 +1,8 @@
 'use client';
 
 import { kindOf } from './media';
-import { currentMediaLinks, currentMediaScene, subscribeMediaLinks, type MediaLink } from './mediaFolder';
+import { barsOf, currentMediaLinks, currentMediaScene, isVoice, subscribeMediaLinks, type MediaLink } from './mediaFolder';
+import { markerHere, onMarkerMove } from './markerPlay';
 import { clampSoundVolume, setVoicePlacement } from './mediaPlayback';
 import { currentShowing, onShowingChange } from './mediaShow';
 import { panOf, type Pan } from './spatialAudio';
@@ -11,9 +12,34 @@ import { panOf, type Pan } from './spatialAudio';
  * comes from that chatbot's place in the room (set in Spatialized Audio by clicking its bar, and
  * remembered like a sound's) at its bar's volume, 0–400%. With none showing, the voice plays evenly on
  * every speaker at its usual level. If two are showing, the first one placed decides.
+ *
+ * The timeline's Voice row comes first: while the marker is on a stage one of its voice bars covers, the
+ * voice comes from that bar's place at its volume, chatbot or not (2026-11-21).
  */
 
-export const isChatbot = (link: MediaLink) => (link.assetKind ?? kindOf(link.assetName ?? '')) === 'character';
+/** A chatbot's bar, or a voice bar: either places the voice in the room (clicking it opens Spatialized Audio). */
+export const isChatbot = (link: MediaLink) =>
+  isVoice(link) || (link.assetKind ?? kindOf(link.assetName ?? '')) === 'character';
+
+/** The voice bar on the marker's stage (the first, if two overlap), or none. */
+function voiceBarNow(links: MediaLink[]): MediaLink | null {
+  const here = markerHere();
+  if (!here?.code) return null;
+  const order = here.stages.map((s) => s.code);
+  const at = order.indexOf(here.code);
+  if (at < 0) return null;
+  return (
+    links.find(
+      (l) =>
+        isVoice(l) &&
+        barsOf(l).some((b) => {
+          const from = order.indexOf(b.from);
+          const to = order.indexOf(b.to);
+          return from >= 0 && from <= at && at <= (to < 0 ? from : to);
+        }),
+    ) ?? null
+  );
+}
 
 // Live changes while a slider or the dot is being dragged (not saved yet), per chatbot.
 const movingVolume = new Map<string, number>();
@@ -30,6 +56,11 @@ function sceneLinks(): MediaLink[] {
 }
 
 function update() {
+  const voice = voiceBarNow(sceneLinks());
+  if (voice) {
+    const volume = movingVolume.get(voice.assetId) ?? clampSoundVolume(voice.volume);
+    return setVoicePlacement(movingPan.get(voice.assetId) ?? panOf(voice.assetId), volume);
+  }
   const shown = currentShowing().find((s) => s.kind === 'character');
   if (!shown) return setVoicePlacement(null, 1);
   const links = sceneLinks().filter((l) => l.assetId === shown.assetId);
@@ -46,6 +77,7 @@ export function startChatbotVoice() {
   started = true;
   onShowingChange(update);
   subscribeMediaLinks(update);
+  onMarkerMove(update);
   update();
 }
 

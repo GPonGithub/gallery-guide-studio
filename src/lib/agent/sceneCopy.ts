@@ -5,6 +5,8 @@ import {
   areaOfTrack,
   barsOf,
   currentMediaLinks,
+  isVoice,
+  nextVoiceId,
   loadLibrary,
   MARKER_ACTION,
   mediaSceneKey,
@@ -130,9 +132,9 @@ export async function planSceneCopy(
 
   const left: string[] = [];
   const name = (l: MediaLink) => l.assetName ?? l.assetId;
-  // What comes across: marker media, and media whose action this scene has too.
+  // What comes across: marker media, the Voice row's bars, and media whose action this scene has too.
   const carried = source.filter((l) => {
-    if (l.action === MARKER_ACTION || actions?.includes(l.action)) return true;
+    if (l.action === MARKER_ACTION || isVoice(l) || actions?.includes(l.action)) return true;
     left.push(
       actions
         ? `${name(l)} — connected to “${l.action}”, which this scene doesn’t have`
@@ -189,7 +191,8 @@ export async function planSceneCopy(
 
   const copies: MediaLink[] = [];
   for (const l of carried) {
-    const id = assetFor(l.assetId);
+    // A voice bar has no file: it takes the next free voice ID here.
+    const id = isVoice(l) ? nextVoiceId([...(mode === 'add' ? own : []), ...copies]) : assetFor(l.assetId);
     if (!id) {
       left.push(`${name(l)} — no longer in scene ${from.number}’s Media Library`);
       continue;

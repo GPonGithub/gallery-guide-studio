@@ -26,7 +26,7 @@ import { hideVisualExcept } from '@/lib/agent/mediaShow';
 import { ALL_AREAS, areaName, areaNumber, ZONES, zoneById, zoneOfArea, type ZoneId } from '@/lib/agent/projectionLayout';
 import { setZone, toggleZoneOpen, useZone, useZonesOpen } from '@/lib/agent/zones';
 import { setHighlightedArea } from '@/lib/agent/areaHighlight';
-import { pickSpatialSound } from '@/lib/agent/spatialAudio';
+import { panOf, pickSpatialSound, type Pan } from '@/lib/agent/spatialAudio';
 import { isChatbot, previewChatbotVolume } from '@/lib/agent/chatbotVoice';
 import { audible, checkVideoSound, useVideoSoundResults } from '@/lib/agent/videoSound';
 import {
@@ -54,6 +54,10 @@ import {
   useSceneActions,
   isConnected,
   isMarker,
+  isVoice,
+  nextVoiceId,
+  VOICE_ACTION,
+  VOICE_TRACK,
   MARKER_ACTION,
   MARKER_LABEL,
   DRAG_SOUND,
@@ -134,6 +138,16 @@ const SOUND_TRACKS: Track[] = zoneSounds(2);
 /** Where new pictures and video go: the areas' own tracks first (zone 2's, then zones 1 and 3), then their extra ones. */
 const PLACE_AREAS = [...zoneById(2).areas, ...ALL_AREAS.filter((a) => zoneOfArea(a).id !== 2)];
 const PLACE_TRACKS: Track[] = [...PLACE_AREAS, ...PLACE_AREAS.flatMap((a) => extraTracks(a))];
+/** The Voice row and its bars: violet, apart from sounds (green) and pictures (blue). */
+const VOICE_TEXT = 'text-[#6741d9]';
+const VOICE_ROW = 'border-[#6741d9]/60 bg-[#6741d9]/10';
+/** Where a voice bar's voice is, in words: "Middle", "Front left"… */
+function placeInWords(pan: Pan): string {
+  const across = pan.x < -0.33 ? 'left' : pan.x > 0.33 ? 'right' : '';
+  const depth = pan.y > 0.33 ? 'front' : pan.y < -0.33 ? 'back' : '';
+  const words = [depth, across].filter(Boolean).join(' ');
+  return words ? words[0].toUpperCase() + words.slice(1) : 'Middle';
+}
 /** A timeline row's height (px): fixed, so folding zones open and closed never fattens or thins the bars. */
 const ROW_HEIGHT = 52;
 const SOUNDS_OPEN_KEY = 'timeline-sounds-open';
@@ -422,10 +436,14 @@ export function MediaTimeline({
   /** The sound tracks showing: the open zones' (a sound's bar is dragged among these). */
   const soundRows: Track[] = ZONES.flatMap((z) => (zonesOpen.includes(z.id) ? zoneSoundRows(z.id) : []));
   // Each zone: its heading, then (folded open) its areas and its own sound tracks.
-  const trackRows: Row[] = ZONES.flatMap((z): Row[] => [
-    zoneRow(z.id),
-    ...(zonesOpen.includes(z.id) ? [...z.areas.flatMap(areaRows), ...zoneSoundRows(z.id)] : []),
-  ]);
+  // The Voice row on top (the chatbot's voice, placed stage by stage), then each zone.
+  const trackRows: Row[] = [
+    VOICE_TRACK,
+    ...ZONES.flatMap((z): Row[] => [
+      zoneRow(z.id),
+      ...(zonesOpen.includes(z.id) ? [...z.areas.flatMap(areaRows), ...zoneSoundRows(z.id)] : []),
+    ]),
+  ];
   /**
    * The row a track shows on: its own, or — its group closed — its area's (or its zone's ♪) row; its
    * zone folded shut: the zone's heading.
@@ -465,13 +483,14 @@ export function MediaTimeline({
   useEffect(() => {
     if (!scene || count === 0) return;
     const ours = (l: MediaLink) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number;
-    if (!mine.some((l) => !l.bar || l.barsKind !== kindNow(l))) return;
+    // Voice bars are laid out by hand only (they have no action to read).
+    if (!mine.some((l) => !isVoice(l) && (!l.bar || l.barsKind !== kindNow(l)))) return;
     updateMediaLinks((all) => {
       const placed: { track: Track; from: number; to: number }[] = all
         .filter(ours)
         .flatMap((l) => barsOf(l).map((b) => ({ track: b.track, ...span(b) })));
       return all.map((l) => {
-        if (!ours(l)) return l;
+        if (!ours(l) || isVoice(l)) return l;
         const kind = kindNow(l);
         if (l.bar && l.barsKind === kind) return l;
         // Laid out before this was kept: take it as it is.
@@ -552,7 +571,8 @@ export function MediaTimeline({
     // A picture or video bar: the drawing above shows its area's zone, with the area highlighted.
     showTrackArea(bar.track);
     const start = { track: bar.track, ...span(bar) };
-    const copy = mode === 'move' && e.altKey;
+    // A voice bar isn't duplicated (each has its own place in the room): click the row for another.
+    const copy = mode === 'move' && e.altKey && bar.track !== VOICE_TRACK;
     setDrag({ key: barKey(l, i), index: i, mode, copy, x: e.clientX, y: e.clientY, start, now: start });
   };
   const follow = (e: React.PointerEvent, l: MediaLink, i: number) => {
@@ -569,7 +589,7 @@ export function MediaTimeline({
       let track = start.track;
       // Pictures and video move among the projection tracks shown (an area's extra ones too, if open);
       // sounds among the open sound tracks.
-      const group = isSoundTrack(track) ? soundRows : projectionRows;
+      const group = track === VOICE_TRACK ? [VOICE_TRACK] : isSoundTrack(track) ? soundRows : projectionRows;
       const shown = visibleTrack(track);
       const pos = isTrack(shown) ? group.indexOf(shown) : -1;
       // Its zone folded shut: it keeps its track (it only moves along the stages).
@@ -597,7 +617,7 @@ export function MediaTimeline({
     // where its voice comes from.)
     if (!moved && drag.mode === 'move' && !copy && (audible(l) || isChatbot(l))) pickSpatialSound(l);
     // An end clicked (not dragged): its fade in (left) or fade out (right) turns on or off.
-    if (!moved && drag.mode !== 'move' && original) {
+    if (!moved && drag.mode !== 'move' && original && !isVoice(l)) {
       const which = drag.mode === 'from' ? 'fadeIn' : 'fadeOut';
       const on = !(which === 'fadeIn' ? fadesIn(original) : fadesOut(original));
       updateMediaLinks(
@@ -669,7 +689,9 @@ export function MediaTimeline({
     const sound = e.dataTransfer.types.includes(DRAG_SOUND);
     if (!sound && !e.dataTransfer.types.includes(DRAG_VISUAL)) return;
     const here = dropAt(e);
-    const ok = Boolean(here && scene && (sound ? isSoundTrack(here.track) : !isSoundTrack(here.track)));
+    const ok = Boolean(
+      here && scene && here.track !== VOICE_TRACK && (sound ? isSoundTrack(here.track) : !isSoundTrack(here.track)),
+    );
     if (ok) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'copy';
@@ -690,7 +712,7 @@ export function MediaTimeline({
     } catch {
       return;
     }
-    if ((item.kind === 'sound') !== isSoundTrack(here.track)) return;
+    if (here.track === VOICE_TRACK || (item.kind === 'sound') !== isSoundTrack(here.track)) return;
     const bar: Bar = { track: here.track, from: stages[here.stage].code, to: stages[here.stage].code };
     const ours = (l: MediaLink) => l.sheetId === scene.sheetId && l.sceneNumber === scene.number;
     // A picture, video, colour or character dropped on an area's row plays on marker arrival straight away
@@ -716,6 +738,26 @@ export function MediaTimeline({
       };
       return [...all, { ...link, barsKind: timingOf(link).kind }];
     }, `Place ${item.id}`);
+  };
+
+  // The Voice row clicked where it's empty: a voice bar on that stage (drag its ends to cover more), placed
+  // in the middle of the room at full volume until it's clicked (Spatialized Audio) or its slider moved.
+  const addVoiceBar = (stage: number) => {
+    if (!scene || count === 0) return;
+    const taken = mine.some((l) => isVoice(l) && barsOf(l).some((b) => span(b).from <= stage && stage <= span(b).to));
+    if (taken) return;
+    const code = stages[stage].code;
+    const made: MediaLink = {
+      assetId: nextVoiceId(mine),
+      sheetId: scene.sheetId,
+      sceneNumber: scene.number,
+      sceneName: sceneTitle.replace(/^Scene\s+\S+\s+·\s+/, ''),
+      action: VOICE_ACTION,
+      assetName: 'Voice',
+      bar: { track: VOICE_TRACK, from: code, to: code },
+    };
+    updateMediaLinks((all) => [...all, made], `Add a voice bar on stage ${code}`);
+    pickSpatialSound(made);
   };
 
   // A bar's ▼: the scene's actions (row 8, as the Media Library last read them) — picking one connects
@@ -1018,6 +1060,16 @@ export function MediaTimeline({
                   Z{zoneOfRow(t)}
                   <OpenArrow open={zonesOpen.includes(zoneOfRow(t)!)} />
                 </button>
+              ) : t === VOICE_TRACK ? (
+                // The chatbot's voice: click the row's empty stages to add voice bars.
+                <span
+                  key={t}
+                  data-tour="timeline-voice"
+                  title="The voice: click an empty stage on this row to place the chatbot's voice there (no chatbot needed)"
+                  className={`flex items-center justify-center font-label text-[9px] uppercase tracking-wide ${VOICE_TEXT}`}
+                >
+                  Voice
+                </span>
               ) : isSoundTrack(t) && laneOf(t) === 1 ? (
                 <button
                   key={t}
@@ -1080,6 +1132,11 @@ export function MediaTimeline({
               const row = Math.floor((e.clientY - box.top) / (box.height / trackRows.length));
               const t = trackRows[row];
               if (t === undefined) return;
+              if (t === VOICE_TRACK) {
+                setHighlightedArea(null);
+                if (count > 0) addVoiceBar(Math.max(0, Math.min(count - 1, Math.floor((e.clientX - box.left) / (box.width / count)))));
+                return;
+              }
               if (isTrack(t)) {
                 showTrackArea(t);
                 return;
@@ -1120,6 +1177,18 @@ export function MediaTimeline({
                 // A zone's heading: a band across the tracks (its bars show here while it's folded shut).
                 <div key={t} className="relative bg-ink/10" aria-label={`Zone ${zoneOfRow(t)}`}>
                   <div className="absolute inset-x-0 top-0 h-px bg-ink/60" />
+                </div>
+              ) : t === VOICE_TRACK ? (
+                <div
+                  key={t}
+                  className="relative cursor-copy"
+                  aria-label="Voice track: click an empty stage to place the voice there"
+                  title="Click an empty stage to place the chatbot's voice there"
+                >
+                  {Array.from({ length: count + 1 }, (_, i) => (
+                    <div key={i} className="absolute inset-y-0 w-px bg-ink/15" style={{ left: at(i) }} />
+                  ))}
+                  <div className={`absolute inset-x-0 bottom-[2.5px] top-[2.5px] border border-dashed ${VOICE_ROW}`} />
                 </div>
               ) : (
               <div
@@ -1180,7 +1249,14 @@ export function MediaTimeline({
                 const asset = assets.get(l.assetId);
                 // What it is, under when it plays: a colour by its code, anything else by its name.
                 const what = asset?.kind === 'color' && asset.value ? asset.value : (l.assetName ?? l.assetId);
-                const label = (
+                const voice = isVoice(l);
+                const label = voice ? (
+                  // A voice bar: the voice, and where in the room it comes from on these stages.
+                  <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-1">
+                    <span className="truncate font-body text-[13px] leading-none">🗣 Voice</span>
+                    <span className="truncate font-body text-[11px] leading-none opacity-80">{placeInWords(panOf(l.assetId))}</span>
+                  </span>
+                ) : (
                   <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5 px-1">
                     <span className="truncate font-body text-[13px] leading-none">
                       {isMarker(l) ? (
@@ -1205,6 +1281,25 @@ export function MediaTimeline({
                 const NOTCH = 12;                                     // px per second
                 const END = 16;                                       // the end handle's width
                 const handle = (end: 'from' | 'to') => {
+                  // A voice bar's ends only stretch it (the voice doesn't fade).
+                  if (voice)
+                    return (
+                      <span
+                        data-bar-end={end}
+                        title="Drag to stretch it over more stages"
+                        onPointerDown={(e) => grab(e, l, i, end)}
+                        onPointerMove={(e) => {
+                          e.stopPropagation();
+                          follow(e, l, i);
+                        }}
+                        onPointerUp={(e) => {
+                          e.stopPropagation();
+                          letGo(l, i);
+                        }}
+                        className={`absolute inset-y-0 z-20 w-4 cursor-ew-resize bg-ink/20 ${end === 'from' ? 'left-0 border-r' : 'right-0 border-l'} border-paper/50`}
+                        aria-hidden="true"
+                      />
+                    );
                   const saved = end === 'from' ? fadeInSeconds(bar) : fadeOutSeconds(bar);
                   const sliding = fadeDrag && fadeDrag.key === key && fadeDrag.end === end ? fadeDrag : null;
                   const secs = sliding ? sliding.now : saved;
@@ -1332,12 +1427,18 @@ export function MediaTimeline({
                     onPointerMove={(e) => follow(e, l, i)}
                     onPointerUp={() => letGo(l, i)}
                     onPointerCancel={() => setDrag(null)}
-                    title={`${l.action || 'Not connected to an action yet'}\n${l.assetId}${l.assetName ? ` ${l.assetName}` : ''} · ${stagesText(place)} — drag to move, drag an end to stretch, Option-drag to duplicate, ▼ to connect it to an action`}
-                    // Sounds are green; pictures, video, text, colour and characters blue.
+                    title={
+                      voice
+                        ? `The voice on ${stagesText(place)}: ${placeInWords(panOf(l.assetId))} — click to place it in the room (Spatialized Audio), drag to move, drag an end to stretch`
+                        : `${l.action || 'Not connected to an action yet'}\n${l.assetId}${l.assetName ? ` ${l.assetName}` : ''} · ${stagesText(place)} — drag to move, drag an end to stretch, Option-drag to duplicate, ▼ to connect it to an action`
+                    }
+                    // Sounds are green; pictures, video, text, colour and characters blue; the voice violet.
                     className={`absolute z-10 flex touch-none select-none items-center overflow-hidden border px-5 text-paper shadow-sm ${
-                      isSoundTrack(bar.track) ? 'border-[#15803d]' : 'border-[#3c5eac]'
+                      voice ? 'border-[#6741d9]' : isSoundTrack(bar.track) ? 'border-[#15803d]' : 'border-[#3c5eac]'
                     } ${
-                      isConnected(l)
+                      voice
+                        ? 'bg-[#6741d9]'
+                        : isConnected(l)
                         ? isSoundTrack(bar.track)
                           ? 'bg-[#15803d]'
                           : 'bg-[#3c5eac]'
@@ -1362,9 +1463,10 @@ export function MediaTimeline({
                       />
                     ))}
                     {handle('from')}
-                    <BarThumb link={l} asset={asset} folder={folder} />
+                    {!voice && <BarThumb link={l} asset={asset} folder={folder} />}
                     {label}
-                    {(audible(l) || isChatbot(l)) && <BarVolume link={l} chatbot={isChatbot(l)} />}
+                    {(audible(l) || isChatbot(l)) && <BarVolume link={l} chatbot={isChatbot(l)} voice={voice} />}
+                    {!voice && (
                     <button
                       // Not a drag: pressing it mustn't pick the bar up.
                       onPointerDown={(e) => e.stopPropagation()}
@@ -1380,6 +1482,7 @@ export function MediaTimeline({
                     >
                       <DropdownArrow open={picking === key} className="text-paper" />
                     </button>
+                    )}
                     <button
                       // Not a drag: pressing it mustn't pick the bar up.
                       onPointerDown={(e) => e.stopPropagation()}
@@ -1388,9 +1491,11 @@ export function MediaTimeline({
                         e.stopPropagation();
                         remove(l, i);
                       }}
-                      aria-label={`Delete this bar (${l.action})`}
+                      aria-label={voice ? 'Delete this voice bar' : `Delete this bar (${l.action})`}
                       title={
-                        barsOf(l).length > 1
+                        voice
+                          ? 'Delete this voice bar — the voice plays as usual on these stages again'
+                          : barsOf(l).length > 1
                           ? 'Delete this bar'
                           : 'Delete this bar — its file is disconnected from the action (connect it again in the Media Library)'
                       }
@@ -1506,7 +1611,7 @@ function OpenArrow({ open }: { open: boolean }) {
  * moves (here and in TouchDesigner); letting go saves it on the bar's connection, as one Undo step.
  * A chatbot's bar has the same slider for its voice while it's showing (chatbotVoice.ts), without the loop button.
  */
-function BarVolume({ link, chatbot = false }: { link: MediaLink; chatbot?: boolean }) {
+function BarVolume({ link, chatbot = false, voice = false }: { link: MediaLink; chatbot?: boolean; voice?: boolean }) {
   const saved = clampSoundVolume(link.volume);
   const [moving, setMoving] = useState<number | null>(null);
   const value = moving ?? saved;
@@ -1535,7 +1640,9 @@ function BarVolume({ link, chatbot = false }: { link: MediaLink; chatbot?: boole
       // Gives way first on a short bar, so its ▼ and × stay in reach.
       className="flex h-full min-w-0 shrink items-center gap-1 overflow-hidden px-1"
       title={
-        chatbot
+        voice
+          ? `Voice volume ${percent}% on this bar's stages — from silent to 400% (a limiter keeps it from distorting). Click the bar to place the voice in the room.`
+          : chatbot
           ? `Voice volume ${percent}% while this chatbot shows — from silent to 400% (a limiter keeps it from distorting). Click the bar to place its voice in the room.`
           : `Volume ${percent}% — from silent to 400% (100% is the file as it is; above that a limiter keeps it from distorting)`
       }

@@ -336,7 +336,7 @@ export type MediaLink = {
  * first, then 'sound-2'…) — and the stages it spans, by code.
  */
 export type TimelineBar = {
-  track: number | `${number}-${number}` | 'sound' | `sound-${number}`;
+  track: number | `${number}-${number}` | 'sound' | `sound-${number}` | 'voice';
   from: string;
   to: string;
   /**
@@ -410,6 +410,22 @@ export const isConnected = (link: MediaLink) => link.action.trim() !== '';
  * down (or stops) when the marker leaves. See markerPlay.ts.
  */
 export const MARKER_ACTION = '@marker-arrival';
+
+/**
+ * The chatbot's voice on the timeline's Voice row: each voice bar is its own connection (`VOICE-1`,
+ * `VOICE-2`…, no file) with its own place in the room (Spatialized Audio) and volume. While the marker is
+ * on one of its stages the voice comes from there (chatbotVoice.ts) — whether or not a chatbot shows.
+ */
+export const VOICE_ACTION = '@voice';
+export const VOICE_TRACK = 'voice' as const;
+export const isVoice = (link: Pick<MediaLink, 'action'>) => link.action === VOICE_ACTION;
+/** The next free voice bar ID in a scene's connections. */
+export function nextVoiceId(links: MediaLink[]): string {
+  const used = new Set(links.filter(isVoice).map((l) => l.assetId));
+  let n = 1;
+  while (used.has(`VOICE-${n}`)) n++;
+  return `VOICE-${n}`;
+}
 export const MARKER_LABEL = 'On marker arrival';
 export const isMarker = (link: MediaLink) => link.action === MARKER_ACTION;
 /** An action as people read it (the reserved marker one by its label). */

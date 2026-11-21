@@ -48,6 +48,12 @@ export function markerIsAt(scene: SceneRef | null, stages: { code: string }[], c
   here = { scene, stages, code };
   hereListeners.forEach((l) => l());
 }
+/** Where the marker is now: its scene's stages (in order) and the code of the one it's on. */
+export const markerHere = () => here;
+/** Calls `listener` each time the marker moves (or its scene or stages change). */
+export function onMarkerMove(listener: () => void) {
+  hereListeners.add(listener);
+}
 /** The stage the timeline's marker is on (a picture dropped on the room drawing is placed there). */
 export const useMarkerStage = () =>
   useSyncExternalStore(
