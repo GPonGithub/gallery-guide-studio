@@ -8,12 +8,18 @@ import { clampSoundVolume, playSound } from './mediaPlayback';
 /**
  * The start button's two sounds, per scene (Adding Immersive Media, section 7): one when a press starts
  * the conversation, one when the next press stops it. Each is a sound from the scene's Media Library, with its
- * own volume (silent to 400%, as on the timeline; 100% when not set), kept by its ID under
- * `buttonSounds:<scene>` in this browser's media store — so backups and exports carry it.
+ * own volume (silent to 400%, as on the timeline; 100% when not set), played forwards or backwards. Kept by
+ * its ID under `buttonSounds:<scene>` in this browser's media store — so backups and exports carry it.
  */
 
 export type ButtonToggle = 'start' | 'stop';
-export type ButtonSounds = { start?: string; stop?: string; volumes?: { start?: number; stop?: number } };
+export type ButtonSounds = {
+  start?: string;
+  stop?: string;
+  volumes?: { start?: number; stop?: number };
+  /** Played backwards. */
+  reversed?: { start?: boolean; stop?: boolean };
+};
 
 const key = (scene: string) => `buttonSounds:${scene}`;
 const listeners = new Set<() => void>();
@@ -46,6 +52,17 @@ export async function setButtonVolume(scene: string, toggle: ButtonToggle, volum
 /** One toggle's volume: 1 unless set. */
 export const buttonVolumeOf = (sounds: ButtonSounds, toggle: ButtonToggle) => clampSoundVolume(sounds.volumes?.[toggle]);
 
+/** Plays one toggle's sound backwards, or forwards again. */
+export async function setButtonReversed(scene: string, toggle: ButtonToggle, reversed: boolean): Promise<void> {
+  const next = { ...(await loadButtonSounds(scene)) };
+  const all = { ...next.reversed };
+  if (reversed) all[toggle] = true;
+  else delete all[toggle];
+  next.reversed = all;
+  await run('media', 'readwrite', (s) => s.put(next, key(scene)));
+  listeners.forEach((l) => l());
+}
+
 /** The scene's two sounds, read again whenever one is changed. */
 export function useButtonSounds(scene: string | null): ButtonSounds {
   const [sounds, setSounds] = useState<ButtonSounds>({});
@@ -74,5 +91,5 @@ export async function playButtonSound(toggle: ButtonToggle, ask = false): Promis
   if (!id) return;
   const asset = (await loadLibrary(scene))?.assets.find((a) => a.id === id && a.kind === 'sound');
   if (!asset) throw new Error(`The start button’s ${toggle} sound (${id}) isn’t in this scene’s Media Library any more.`);
-  await playSound(asset, ask, buttonVolumeOf(sounds, toggle));
+  await playSound(asset, ask, buttonVolumeOf(sounds, toggle), 0, !!sounds.reversed?.[toggle]);
 }

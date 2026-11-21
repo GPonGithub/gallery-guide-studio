@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from 'react';
 import { dipToShare } from '@/components/agent/backgroundMusic';
 import type { ActionKind, ActionTiming, EveryWhen, MediaAsset } from './media';
+import { reversedSound } from './audioReverse';
 import { soundsHere, tdLevels, tdSound, tdSoundLoop, tdSoundPan, tdSoundVolume } from './touchDesigner';
 import { voiceAnalyser } from './voiceLevel';
 import { recordTap } from './recordTap';
@@ -729,15 +730,22 @@ export async function playSound(
   volume = soundVolumeOf(asset.id),
   /** Its bar fades in: eased up from silence over this many seconds. */
   fade = 0,
+  /**
+   * Played backwards (the start button's sounds, section 7): made in this browser, so it always plays
+   * here — TouchDesigner, which plays the file itself, isn't asked to.
+   */
+  reverse = false,
 ): Promise<'ended' | 'stopped' | 'waited'> {
   const folder = await savedMediaFolder();
   if (!folder) throw new Error('No media folder has been chosen.');
   if (!(await allowed(folder, ask))) {
     throw new Error('The browser needs permission to read the media folder — open the Media Library and click Allow.');
   }
-  const url = URL.createObjectURL(await openMediaFile(folder, asset.path));
+  const file = await openMediaFile(folder, asset.path);
+  const url = URL.createObjectURL(reverse ? await reversedSound(file) : file);
   const audio = new Audio(url);
   follow(audio, asset.id, volume, fade);
+  if (reverse) audio.muted = false;
   return new Promise((resolve, reject) => {
     let over = false;
     const timer = setTimeout(() => resolve('waited'), LONGEST_WAIT);
@@ -756,7 +764,7 @@ export async function playSound(
       assetId: asset.id,
       stop: (out = 0) => {
         if (over) return;
-        tdSound('stop', asset, false, 1, undefined, out);
+        if (!reverse) tdSound('stop', asset, false, 1, undefined, out);
         if (out <= 0) {
           audio.pause();
           return finish(undefined, 'stopped');
@@ -775,7 +783,8 @@ export async function playSound(
     audio.onerror = () => finish(new Error(`“${asset.name}” couldn’t be played.`));
     playing.add(entry);
     changed();
-    tdSound('play', asset, false, clampSoundVolume(volume), speakerGains(livePan(asset.id) ?? panOf(asset.id)), fade);
+    if (!reverse)
+      tdSound('play', asset, false, clampSoundVolume(volume), speakerGains(livePan(asset.id) ?? panOf(asset.id)), fade);
     audio.play().catch((err: unknown) => finish(err ?? new Error('couldn’t start')));
   });
 }

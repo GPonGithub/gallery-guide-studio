@@ -3,11 +3,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import { buttonOutline, fieldInput } from '@/lib/styles';
 import { isPress } from '@/lib/agent/mqttEvents';
-import { buttonVolumeOf, setButtonSound, setButtonVolume, useButtonSounds, type ButtonToggle } from '@/lib/agent/buttonSounds';
+import {
+  buttonVolumeOf,
+  setButtonReversed,
+  setButtonSound,
+  setButtonVolume,
+  useButtonSounds,
+  type ButtonToggle,
+} from '@/lib/agent/buttonSounds';
 import { MAX_SOUND_VOLUME, playSound } from '@/lib/agent/mediaPlayback';
 import type { MediaAsset } from '@/lib/agent/media';
 
 const small = buttonOutline.replace('px-4 py-2', 'px-2.5 py-1.5');
+/**
+ * The reverse toggle: off, an outline button that only greys on hover (not the usual black, which would look
+ * the same as on); on, black with a white icon, hover or not — so a click always shows.
+ */
+const toggleOff = small.replace('hover:bg-ink hover:text-paper', 'hover:bg-muted hover:text-ink');
+const toggleOn = small.replace('bg-paper', 'bg-ink').replace(' text-ink ', ' text-paper ');
 
 type Message = { topic: string; payload: unknown; at: number; retained: boolean };
 type Status = { url: string; state: 'connecting' | 'connected' | 'offline' | 'error'; address?: string; error?: string };
@@ -40,6 +53,25 @@ const W4_DEVICES = [
   { name: 'w4-02', label: 'W4-02', color: '#e8590c' },
 ];
 const W4_PRESS = /^\/cca\/r140\/button\/(w4-0[12])\/([1-4])$/;
+
+/** Reverse: a sound wave with an arrow under it pointing back, right to left. */
+function ReverseIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2 6v0M4.5 4v4M7 2.5v7M9.5 4.5v3M12 3.5v5M14 5.5v1" />
+      <path d="M14 13H3M5.5 10.5 3 13l2.5 2.5" />
+    </svg>
+  );
+}
+
+/** Play: a solid triangle pointing right. */
+function PlayIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+      <path d="M4.5 2.5v11l9-5.5z" />
+    </svg>
+  );
+}
 
 /** How long an indicator stays lit after a press. */
 const LIT_MS = 1500;
@@ -74,10 +106,19 @@ export function MqttPanel({ scene, assets }: { scene: string | null; assets: Med
     if (v === undefined || !scene) return;
     void setButtonVolume(scene, toggle, v).then(() => setMoving((m) => ({ ...m, [toggle]: undefined })));
   };
+  // A reverse click shows at once (before it's saved and read back).
+  const [flipped, setFlipped] = useState<Partial<Record<ButtonToggle, boolean>>>({});
+  const reversedOf = (toggle: ButtonToggle) => flipped[toggle] ?? !!buttonSounds.reversed?.[toggle];
+  const flip = (toggle: ButtonToggle) => {
+    if (!scene) return;
+    const on = !reversedOf(toggle);
+    setFlipped((f) => ({ ...f, [toggle]: on }));
+    void setButtonReversed(scene, toggle, on).finally(() => setFlipped((f) => ({ ...f, [toggle]: undefined })));
+  };
   const tryOut = (toggle: ButtonToggle) => {
     const asset = sounds.find((a) => a.id === buttonSounds[toggle]);
     setSoundNote(null);
-    if (asset) void playSound(asset, true, volumeOf(toggle)).catch((err) => setSoundNote(err instanceof Error ? err.message : 'It couldn’t be played.'));
+    if (asset) void playSound(asset, true, volumeOf(toggle), 0, reversedOf(toggle)).catch((err) => setSoundNote(err instanceof Error ? err.message : 'It couldn’t be played.'));
   };
 
   useEffect(() => {
@@ -203,6 +244,7 @@ export function MqttPanel({ scene, assets }: { scene: string | null; assets: Med
             const gone = chosen && !sounds.some((a) => a.id === chosen);
             const volume = volumeOf(toggle);
             const percent = Math.round(volume * 100);
+            const reversed = reversedOf(toggle);
             return (
               <div key={toggle} className="flex flex-wrap items-center gap-2">
                 <span className="w-48 font-body text-xs text-ink">{label}</span>
@@ -220,8 +262,23 @@ export function MqttPanel({ scene, assets }: { scene: string | null; assets: Med
                     </option>
                   ))}
                 </select>
-                <button className={small} onClick={() => tryOut(toggle)} disabled={!chosen || !!gone} title="Play it here, at this volume">
-                  ▶
+                <button
+                  className={reversed ? toggleOn : toggleOff}
+                  onClick={() => flip(toggle)}
+                  aria-pressed={reversed}
+                  aria-label={`Play the ${toggle} sound backwards`}
+                  title={reversed ? 'Plays backwards — click to play it forwards again' : 'Play it backwards'}
+                >
+                  <ReverseIcon />
+                </button>
+                <button
+                  className={small}
+                  onClick={() => tryOut(toggle)}
+                  disabled={!chosen || !!gone}
+                  aria-label={`Play the ${toggle} sound here`}
+                  title={`Play it here, at this volume${reversed ? ', backwards' : ''}`}
+                >
+                  <PlayIcon />
                 </button>
                 <span
                   className="flex items-center gap-1"
