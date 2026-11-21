@@ -45,6 +45,7 @@ import {
   loopOf,
   openMediaFile,
   savedMediaFolder,
+  useFolderAllowed,
   timingOf,
   useActionReadings,
   updateMediaLinks,
@@ -338,6 +339,8 @@ export function MediaTimeline({
   // The library's items and the media folder, for each bar's thumbnail — read again when the bars'
   // items change, or the tour swaps the folder (see mediaDemo.ts).
   const folderRevision = useMediaFolderRevision();
+  // Chrome allowing the folder again (first click after a restart): the thumbnails are read again.
+  const folderAllowedCount = useFolderAllowed();
   const barItems = mine.map((l) => l.assetId).join('|');
   const [folder, setFolder] = useState<MediaFolder | null>(null);
   const [assets, setAssets] = useState<Map<string, MediaAsset>>(() => new Map());
@@ -345,12 +348,13 @@ export function MediaTimeline({
   const mediaKey = scene ? mediaSceneKey(scene) : null;
   useEffect(() => {
     let gone = false;
+    // A fresh copy of the folder each time, so every bar's thumbnail tries again.
     void savedMediaFolder(mediaKey).then((f) => !gone && setFolder(f));
     void loadLibrary(mediaKey).then((lib) => !gone && setAssets(new Map((lib?.assets ?? []).map((a) => [a.id, a]))));
     return () => {
       gone = true;
     };
-  }, [folderRevision, barItems, mediaKey]);
+  }, [folderRevision, folderAllowedCount, barItems, mediaKey]);
   // Videos with a sound track get a volume slider and open Spatialized Audio, as sounds do: find out which.
   useVideoSoundResults();
   useEffect(() => {

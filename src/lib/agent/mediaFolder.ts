@@ -114,8 +114,28 @@ export async function savedMediaFolder(scene = currentMediaScene()): Promise<Med
 /** Whether the app may read the folder now — asking if `ask` (only from a click: the browser needs one). */
 export async function allowed(folder: MediaFolder, ask: boolean): Promise<boolean> {
   if ((await folder.queryPermission({ mode: 'read' })) === 'granted') return true;
-  return ask && (await folder.requestPermission({ mode: 'read' })) === 'granted';
+  const granted = ask && (await folder.requestPermission({ mode: 'read' })) === 'granted';
+  if (granted) folderAllowed();
+  return granted;
 }
+
+// Counts the times Chrome has just allowed a folder again (after a restart it asks on the first click), so what
+// read the folder too early — the timeline's thumbnails — reads it again.
+let allowedCount = 0;
+const allowedListeners = new Set<() => void>();
+function folderAllowed() {
+  allowedCount++;
+  allowedListeners.forEach((l) => l());
+}
+export const useFolderAllowed = () =>
+  useSyncExternalStore(
+    (l) => {
+      allowedListeners.add(l);
+      return () => allowedListeners.delete(l);
+    },
+    () => allowedCount,
+    () => 0,
+  );
 
 /** Where a converted video's original is kept (see videoConvert.ts) — not part of the library. */
 export const ORIGINALS_FOLDER = 'Originals before H.264';
