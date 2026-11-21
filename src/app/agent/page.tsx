@@ -30,6 +30,7 @@ import { DEMO_SCENE, DEMO_STAGES, endMediaDemo, useMediaDemo } from '@/lib/agent
 import { forgetMarker, markerArrived, replayMarker, setMarkerProblem, useMarkerStage } from '@/lib/agent/markerPlay';
 import { send as sendToTD } from '@/lib/agent/touchDesigner';
 import { isPress, useMqttMessages } from '@/lib/agent/mqttEvents';
+import { playButtonSound } from '@/lib/agent/buttonSounds';
 import { dualSpeakers, judgeHeard, markSpeechStart, personLabel, setSceneTextSource, usePersonTalking } from '@/lib/agent/dualMic';
 import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
@@ -581,14 +582,33 @@ export default function AgentStudioPage() {
   // The room's sb-02 button (MQTT, via the Zigbee Pi): each press turns the open mic on or off,
   // the same as clicking its 🎙️ button.
   const MIC_BUTTON = 'sb-02';
-  // sb-03 (and W4-01's button 3) begins the conversation, the same as clicking "Agent speaks first" —
-  // only while that button is showing (no conversation yet, nothing under way).
+  // sb-03 (and W4-01's button 3) toggles the conversation: a press begins it, the same as clicking "Agent
+  // speaks first" (while that button is showing: no conversation yet, nothing under way); the next press
+  // stops it — the voice, the reply being written, the mic and the scene's media — and clears it, ready to
+  // begin again. Each plays the scene's start or stop sound, if section 7 gives it one.
   const START_BUTTON = 'sb-03';
   const SCENE_SWITCH = 'w4-01';
   useMqttMessages((message) => {
     // (Runs on a later message, so everything it uses below is declared by then.)
+    const soundProblem = (err: unknown) =>
+      setError(err instanceof Error ? err.message : 'The start button’s sound couldn’t be played.');
     const begin = () => {
-      if (messages.length === 0 && !busy && firstStage) openCall();
+      if (messages.length > 0 || busy) return stopConversation();
+      if (!firstStage) return;
+      openCall();
+      void playButtonSound('start').catch(soundProblem);
+    };
+    const stopConversation = () => {
+      // The reply under way (or written early, in the open mic's pause) is dropped: nothing lands after this.
+      turnIdRef.current++;
+      earlyTurnRef.current?.controller.abort();
+      earlyTurnRef.current = null;
+      setBusy(false);
+      recognitionRef.current?.stop();
+      setOpenMicOn(false);
+      restart();
+      // After restart: it stops every sound, which would cut this one off.
+      void playButtonSound('stop').catch(soundProblem);
     };
     const toggleOpenMic = () => {
       const on = !openMicOn;

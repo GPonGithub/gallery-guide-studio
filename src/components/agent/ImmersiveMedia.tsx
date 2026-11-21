@@ -650,7 +650,7 @@ export function ImmersiveMedia({
       </CollapsiblePanel>
 
       <CollapsiblePanel title="7 · Room buttons & sensors (MQTT)" tourId="media-7">
-        <MqttPanel />
+        <MqttPanel scene={mediaKey} assets={assets} />
       </CollapsiblePanel>
 
       <CollapsiblePanel title="8 · Dual microphones" tourId="media-8">

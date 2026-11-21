@@ -3,6 +3,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { buttonOutline, fieldInput } from '@/lib/styles';
 import { isPress } from '@/lib/agent/mqttEvents';
+import { buttonVolumeOf, setButtonSound, setButtonVolume, useButtonSounds, type ButtonToggle } from '@/lib/agent/buttonSounds';
+import { MAX_SOUND_VOLUME, playSound } from '@/lib/agent/mediaPlayback';
+import type { MediaAsset } from '@/lib/agent/media';
 
 const small = buttonOutline.replace('px-4 py-2', 'px-2.5 py-1.5');
 
@@ -49,7 +52,7 @@ const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: '2-digi
  * server holds the connection (lib/mqttBroker.ts); this shows each device's
  * state and every press or turn as it arrives.
  */
-export function MqttPanel() {
+export function MqttPanel({ scene, assets }: { scene: string | null; assets: MediaAsset[] }) {
   const [hosted, setHosted] = useState<boolean | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [latest, setLatest] = useState<Record<string, Message>>({});
@@ -58,6 +61,24 @@ export function MqttPanel() {
   // sb-01…sb-10: how many presses, when the last was, and which are lit right now.
   const [presses, setPresses] = useState<Record<string, { count: number; at: number }>>({});
   const [lit, setLit] = useState<Record<string, number>>({});
+
+  // The start button's two sounds for the open scene, from its Media Library.
+  const buttonSounds = useButtonSounds(scene);
+  const sounds = assets.filter((a) => a.kind === 'sound' && a.status === 'present');
+  const [soundNote, setSoundNote] = useState<string | null>(null);
+  // A volume slider being moved (saved when let go), per toggle.
+  const [moving, setMoving] = useState<Partial<Record<ButtonToggle, number>>>({});
+  const volumeOf = (toggle: ButtonToggle) => moving[toggle] ?? buttonVolumeOf(buttonSounds, toggle);
+  const saveVolume = (toggle: ButtonToggle) => {
+    const v = moving[toggle];
+    if (v === undefined || !scene) return;
+    void setButtonVolume(scene, toggle, v).then(() => setMoving((m) => ({ ...m, [toggle]: undefined })));
+  };
+  const tryOut = (toggle: ButtonToggle) => {
+    const asset = sounds.find((a) => a.id === buttonSounds[toggle]);
+    setSoundNote(null);
+    if (asset) void playSound(asset, true, volumeOf(toggle)).catch((err) => setSoundNote(err instanceof Error ? err.message : 'It couldn’t be played.'));
+  };
 
   useEffect(() => {
     fetch('/api/hosting')
@@ -163,6 +184,77 @@ export function MqttPanel() {
         <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: light.color }} />
         {light.text}
       </p>
+
+      {/* The start button toggles: a press starts the conversation, the next stops it — each with its own sound. */}
+      <div className="flex flex-col gap-2 border border-hair p-2">
+        <p className="font-label text-[11px] uppercase tracking-widest text-muted-ink">Start button sounds (sb-03 · W4-01 button 3)</p>
+        <p className="font-body text-xs italic text-muted-ink">
+          A press starts the conversation; the next press stops it, ready to start again. Each can play a sound
+          from this scene&rsquo;s Media Library.
+        </p>
+        {!scene ? (
+          <p className="font-body text-xs italic text-muted-ink">Open a scene from your Google Sheet to choose its sounds.</p>
+        ) : (
+          ([
+            ['start', '1 · Starts the conversation'],
+            ['stop', '2 · Stops the conversation'],
+          ] as [ButtonToggle, string][]).map(([toggle, label]) => {
+            const chosen = buttonSounds[toggle];
+            const gone = chosen && !sounds.some((a) => a.id === chosen);
+            const volume = volumeOf(toggle);
+            const percent = Math.round(volume * 100);
+            return (
+              <div key={toggle} className="flex flex-wrap items-center gap-2">
+                <span className="w-48 font-body text-xs text-ink">{label}</span>
+                <select
+                  className={`${fieldInput} min-w-[200px] flex-1`}
+                  value={chosen ?? ''}
+                  onChange={(e) => void setButtonSound(scene, toggle, e.target.value || null)}
+                  aria-label={`Sound when the start button ${toggle === 'start' ? 'starts' : 'stops'} the conversation`}
+                >
+                  <option value="">No sound</option>
+                  {gone && <option value={chosen}>{chosen} — no longer in the library</option>}
+                  {sounds.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.id} · {a.name}
+                    </option>
+                  ))}
+                </select>
+                <button className={small} onClick={() => tryOut(toggle)} disabled={!chosen || !!gone} title="Play it here, at this volume">
+                  ▶
+                </button>
+                <span
+                  className="flex items-center gap-1"
+                  title={`Volume ${percent}% — from silent to 400% (100% is the file as it is; above that a limiter keeps it from distorting)`}
+                >
+                  <span className="font-body text-[11px] leading-none" aria-hidden="true">
+                    {volume === 0 ? '🔇' : '🔊'}
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={MAX_SOUND_VOLUME}
+                    step={0.05}
+                    value={volume}
+                    onChange={(e) => setMoving((m) => ({ ...m, [toggle]: Number(e.target.value) }))}
+                    onPointerUp={() => saveVolume(toggle)}
+                    onKeyUp={() => saveVolume(toggle)}
+                    onBlur={() => saveVolume(toggle)}
+                    aria-label={`Volume of the ${toggle} sound`}
+                    aria-valuetext={`${percent}%`}
+                    className="h-1 w-24 cursor-pointer accent-ink"
+                  />
+                  <span className="w-9 text-right font-body text-[11px] tabular-nums leading-none text-ink">{percent}%</span>
+                </span>
+              </div>
+            );
+          })
+        )}
+        {scene && sounds.length === 0 && (
+          <p className="font-body text-xs italic text-muted-ink">No sounds in this scene&rsquo;s Media Library yet (sections 1–2).</p>
+        )}
+        {soundNote && <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-xs text-ink">{soundNote}</p>}
+      </div>
 
       <div className="flex flex-wrap gap-6">
         {W4_DEVICES.map(({ name, label, color }) => {
