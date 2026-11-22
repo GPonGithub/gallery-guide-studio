@@ -205,7 +205,8 @@ async function analyse(
     // Another scene altogether (row 12): whatever its condition describes, said in any words, by anyone speaking.
     ...jumps.map(
       (j, i) =>
-        `J${i + 1}: → leave this scene for scene ${j.scene} (${j.name}) — when ${j.when} (in any words, said by whoever is speaking)`,
+        `J${i + 1}: → leave this scene for scene ${j.scene} (${j.name}) — when ${j.when} (any quoted words are only an ` +
+          'example: take it whenever the caller says anything that means the same, in any words, whoever is speaking)',
     ),
   ].join('\n');
 

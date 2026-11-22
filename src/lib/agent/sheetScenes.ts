@@ -22,9 +22,10 @@
  *   row 11 People in this scene — the people the agent talks with, one per line,
  *          "Name: role" (e.g. "Dave: The nurse"). Dual microphones puts the first on
  *          the left microphone and the second on the right
- *   row 12 Jump to another scene — one per line, "Scene 4: when the patient says they
- *          feel like they're going to die". When the caller says something like it, the
- *          conversation goes straight to that scene instead of carrying on here
+ *   row 12 Jump to another scene — one per line, in the student's own words, naming the
+ *          scene anywhere: "When the patient says "I feel like I'm dying," jump to scene 4".
+ *          When the caller says something like it, the conversation goes straight to that
+ *          scene instead of carrying on here (see readJumps)
  *
  * Whatever the "All scenes" column says in rows 3–6, 8 and 12 is given to every scene,
  * ahead of the scene's own. A column with nothing in rows 2–6 is skipped, and
@@ -62,6 +63,8 @@ export type SheetScene = {
   people: { name: string; role: string }[];
   /** Jump to another scene (row 12): which scene, and when — the "All scenes" ones first, never to itself. */
   jumps: { scene: string; when: string }[];
+  /** Row 12 lines that name no scene to go to — they do nothing, and the studio says so. */
+  jumpsSkipped: string[];
 };
 
 /** Row 11's lines, "Name: role" (or "Name - role", or just a name) — in order. */
@@ -77,16 +80,36 @@ export function peopleLines(text: string): { name: string; role: string }[] {
 }
 
 /**
- * Row 12's lines, "Scene 4: when …" (or "4 - when …", "Scene 4 when …") — the scene's number as row 1 gives it,
- * and when to go there. A line naming no scene is left out.
+ * Row 12's lines, written however a student would: "Scene 4: when …", "When the patient says, "I feel like I'm
+ * dying," jump to scene 4", "If they faint → scene 5", "4 - they ask for a nurse". The scene is found anywhere
+ * in the line ("scene 4", or a number at the start); the rest, with "jump/go to scene 4" taken out, is when.
+ * A line naming no scene is kept in `skipped`, so the studio can say why it does nothing.
  */
-export function jumpLines(text: string): { scene: string; when: string }[] {
-  return actionLines(text).flatMap((line) => {
-    const m = /^(?:scene\s*)?(\d+[A-Za-z]?)\b\s*(?::|[-–—]|\|)?\s*(.+)$/i.exec(line);
-    const when = m?.[2].replace(/^(?:when|if)\s+/i, '').trim();
-    return m && when ? [{ scene: m[1].toUpperCase(), when }] : [];
-  });
+const JUMP_WORDS =
+  /\s*[,;:—–-]?\s*(?:and\s+)?(?:then\s+)?(?:(?:please\s+)?(?:jump|go|move|switch|skip|cut|change|head|transition|take\s+(?:them|him|her|the\s+\w+)|send\s+(?:them|him|her|the\s+\w+))\s+(?:straight\s+|directly\s+|right\s+|immediately\s+)?(?:on\s+|over\s+|ahead\s+)?(?:to|into)\s+|(?:→|->|=>)\s*)?scene\s*(\d+[A-Za-z]?)\b\s*[:.,;—–-]?\s*/i;
+const LEADING_NUMBER = /^(\d+[A-Za-z]?)\b\s*(?::|[-–—]|\||→|->|=>)?\s*/;
+
+export function readJumps(text: string): { jumps: { scene: string; when: string }[]; skipped: string[] } {
+  const jumps: { scene: string; when: string }[] = [];
+  const skipped: string[] = [];
+  for (const line of actionLines(text)) {
+    const named = JUMP_WORDS.exec(line);
+    const numbered = named ? null : LEADING_NUMBER.exec(line);
+    const scene = named?.[1] ?? numbered?.[1];
+    const rest = named ? `${line.slice(0, named.index)} ${line.slice(named.index + named[0].length)}` : line.slice(numbered?.[0].length ?? 0);
+    const when = rest
+      .replace(/\s+/g, ' ')
+      .replace(/^[\s,;:.—–-]+|[\s,;:—–-]+$/g, '')
+      .replace(/^(?:when|whenever|if|once)\s+/i, '')
+      .trim();
+    if (scene && when) jumps.push({ scene: scene.toUpperCase(), when });
+    else skipped.push(line);
+  }
+  return { jumps, skipped };
 }
+
+/** Row 12's jumps (see readJumps). */
+export const jumpLines = (text: string) => readJumps(text).jumps;
 
 /** A cell's lines, each one action — blank lines and leading bullets ("-", "•", "1.") dropped. */
 export const actionLines = (text: string) =>
@@ -184,6 +207,7 @@ export function mapSheetScenes(grid: string[][]): SheetScene[] {
       persona: cell(ROW.persona, col),
       people: peopleLines(cell(ROW.people, col)),
       jumps: [...sharedJumps, ...jumpLines(cell(ROW.jumps, col))].filter((j) => j.scene !== number.toUpperCase()),
+      jumpsSkipped: readJumps(cell(ROW.jumps, col)).skipped,
     };
   });
 }

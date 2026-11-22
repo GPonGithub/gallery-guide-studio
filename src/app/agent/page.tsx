@@ -590,6 +590,7 @@ export default function AgentStudioPage() {
   // The open scene's ways to other scenes (row 12), a jump waiting for its reply to be heard, and the scene
   // a jump has just opened (it starts by itself).
   const [sceneJumps, setSceneJumps] = useState<SheetScene['jumps']>([]);
+  const [jumpsSkipped, setJumpsSkipped] = useState<string[]>([]);
   const [pendingJump, setPendingJump] = useState<{ jump: SceneJump; said: string; from: string } | null>(null);
   const autoStartRef = useRef<string | null>(null);
   const goToSceneRef = useRef<((p: { jump: SceneJump; said: string; from: string }) => Promise<void>) | null>(null);
@@ -1097,6 +1098,7 @@ export default function AgentStudioPage() {
   useEffect(() => {
     if (!jumpSheet) {
       setSceneJumps([]); // eslint-disable-line react-hooks/set-state-in-effect -- no sheet, no jumps
+      setJumpsSkipped([]);
       return;
     }
     let stale = false;
@@ -1109,7 +1111,9 @@ export default function AgentStudioPage() {
         });
         const data = (await res.json()) as { scenes?: SheetScene[] };
         const mine = data.scenes?.find((sc) => sc.number.toUpperCase() === jumpSheet.number.toUpperCase());
-        if (!stale) setSceneJumps(mine?.jumps ?? []);
+        if (stale) return;
+        setSceneJumps(mine?.jumps ?? []);
+        setJumpsSkipped(mine?.jumpsSkipped ?? []);
       } catch {
         if (!stale) setSceneJumps([]);
       }
@@ -3152,6 +3156,12 @@ export default function AgentStudioPage() {
                       : `Scene ${j.scene} (row 12) isn’t in the studio — no jump`,
                   )
                   .join(' · ')}
+              </p>
+            )}
+            {jumpsSkipped.length > 0 && !session.ended && (
+              <p className="text-center font-body text-xs text-[#b45309]">
+                Row 12 names no scene to jump to here, so it does nothing:{' '}
+                {jumpsSkipped.map((l) => `“${l}”`).join(' · ')}. Add the scene, e.g. “…, jump to scene 4”.
               </p>
             )}
             {session.cameFrom && (
