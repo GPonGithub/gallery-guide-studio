@@ -18,6 +18,7 @@ import {
   type RememberedItem,
   type RoomMedia,
   type Exit,
+  type SceneJump,
   type SessionState,
   type Stage,
   type TurnRequest,
@@ -130,8 +131,8 @@ function exitLabel(flow: AgentFlow, exit: Exit): string {
 
 // --- 1. ANALYSE ------------------------------------------------------------
 
-// What the analysis proposes. `exit.id` is S1, S2… (this stage's exits) or
-// G1, G2… (global ones), as numbered in the prompt.
+// What the analysis proposes. `exit.id` is S1, S2… (this stage's exits), G1, G2… (global ones), L1, L2…
+// (a later stage's) or J1, J2… (another scene, row 12 of the sheet), as numbered in the prompt.
 export type Analysis = {
   slots: { name: string; value: string }[];
   /** For the patient's later scenes ("Information saved from the scene"). */
@@ -156,8 +157,8 @@ export function parseAnalysis(text: string): Analysis {
     const line = raw.trim().replace(/^[-*•`\s]+/, '').replace(/[*`\s]+$/, '');
     const set = /^SET\s+([\w.-]+)\s*[=:]\s*(.+)$/i.exec(line);
     const save = /^SAVE\s+(.+?)\s*[=:]\s*(.+)$/i.exec(line);
-    const exit = /^EXIT\b[\s:=→-]*([SGL]\d+)\b/i.exec(line);
-    const copiedExit = /^([SGL]\d+)\b/i.exec(line);
+    const exit = /^EXIT\b[\s:=→-]*([SGLJ]\d+)\b/i.exec(line);
+    const copiedExit = /^([SGLJ]\d+)\b/i.exec(line);
     if (set) analysis.slots.push({ name: set[1], value: unquote(set[2]) });
     else if (save) analysis.saves.push({ label: unquote(save[1]).toLowerCase(), value: unquote(save[2]) });
     else if (exit) analysis.exit ??= { id: exit[1].toUpperCase() };
@@ -179,6 +180,7 @@ async function analyse(
   memory: RememberedItem[],
   savedHere: { label: string; value: string }[],
   media: RoomMedia[],
+  jumps: SceneJump[],
   abortSignal?: AbortSignal,
 ): Promise<Analysis> {
   const value = (name: string) => state.slots[name] ?? '(not yet)';
@@ -200,6 +202,11 @@ async function analyse(
     ...flow.globalExits.map((e, i) => `G${i + 1}: → ${exitLabel(flow, e)} — when ${e.when}`),
     // A later stage's own exits: the caller can ask for them now, skipping the stages in between.
     ...lookAheadExits(flow, stage).map((e, i) => `L${i + 1}: → ${exitLabel(flow, e)} — when ${e.when}`),
+    // Another scene altogether (row 12): whatever its condition describes, said in any words, by anyone speaking.
+    ...jumps.map(
+      (j, i) =>
+        `J${i + 1}: → leave this scene for scene ${j.scene} (${j.name}) — when ${j.when} (in any words, said by whoever is speaking)`,
+    ),
   ].join('\n');
 
   const { text } = await generateText({
@@ -303,6 +310,7 @@ class Turn {
     private flow: AgentFlow,
     public state: SessionState,
     private holdCues = false,
+    private jumps: SceneJump[] = [],
   ) {}
 
   stage(): Stage | undefined {
@@ -353,6 +361,15 @@ class Turn {
     for (const cue of allCues) if (cue.on === 'slot' && cue.slot === name) this.fireCue(cue, `slot ${name}`);
   }
 
+  /** Leaves this scene for another one (row 12): this conversation ends here, and the app opens that scene. */
+  jumpTo(jump: SceneJump) {
+    const from = this.stage();
+    if (from) this.fireStageCues(from, 'exit');
+    this.state.ended = true;
+    this.state.jumpTo = jump;
+    this.events.push({ type: 'end', reason: `going to scene ${jump.scene} (${jump.name}) — ${jump.when}` });
+  }
+
   moveTo(exit: Exit, reason: string) {
     const from = this.stage();
     if (from) this.fireStageCues(from, 'exit');
@@ -396,8 +413,15 @@ class Turn {
 
     // An intent exit (including global ones like "emergency") wins over completion.
     if (analysis.exit) {
-      const match = /^([SGL])(\d+)$/i.exec(analysis.exit.id.trim());
+      const match = /^([SGLJ])(\d+)$/i.exec(analysis.exit.id.trim());
       const kind = match?.[1].toUpperCase();
+      if (kind === 'J') {
+        const jump = this.jumps[Number(match![2]) - 1];
+        if (jump) {
+          this.jumpTo(jump);
+          return;
+        }
+      }
       const list =
         kind === 'G' ? this.flow.globalExits : kind === 'L' ? lookAheadExits(this.flow, stage) : stage.exits;
       const exit = match ? list[Number(match[2]) - 1] : undefined;
@@ -508,10 +532,21 @@ function responderSystem(
         "not even from general knowledge. If the caller raises it, say kindly that it isn't something you can go into here.",
     missing.length > 0 &&
       `STILL NEEDED FOR THIS GOAL:\n${missing.map((s) => `- ${s.description}${s.required ? '' : ' (only if relevant)'}`).join('\n')}`,
-    state.ended
-      ? 'THE CONVERSATION IS ENDING NOW. Wrap up warmly in one or two sentences (confirm anything just agreed) and ' +
-        'say goodbye. Ask no new questions.'
-      : `STEERING: ${STEERING[stage.steering]}`,
+    state.jumpTo
+      ? `WHAT THE CALLER JUST SAID MOVES THINGS ON RIGHT NOW (${state.jumpTo.when}). Answer it directly in one short ` +
+        'sentence, in character, so they know they have been heard and something is being done. Don\'t say goodbye, ' +
+        'ask no questions, and don\'t describe what happens next.'
+      : state.ended
+        ? 'THE CONVERSATION IS ENDING NOW. Wrap up warmly in one or two sentences (confirm anything just agreed) and ' +
+          'say goodbye. Ask no new questions.'
+        : `STEERING: ${STEERING[stage.steering]}`,
+    state.cameFrom &&
+      !state.ended &&
+      state.turnsInStage === 0 &&
+      state.completedStages.length === 0 &&
+      `THIS SCENE HAS JUST BEGUN, STRAIGHT FROM AN EARLIER SCENE ("${state.cameFrom.name}"), because there the caller ` +
+        `said: "${state.cameFrom.said}" (${state.cameFrom.when}). Your first words respond to that directly, then ` +
+        'carry on with this scene\'s goal.',
     !state.ended &&
       state.offTopicStreak >= OFF_TOPIC_ESCALATE &&
       `The caller has been off topic ${state.offTopicStreak} turns in a row. Tell them plainly what you can help ` +
@@ -713,7 +748,7 @@ export function speculate(flow: AgentFlow, stage: Stage, state: SessionState) {
 }
 
 export async function runTurnStream(
-  { flow, state: incoming, history, userText, anthropicApiKey, holdCues, memory = [], savedHere, media = [], fastReplies, speakers }: TurnRequest,
+  { flow, state: incoming, history, userText, anthropicApiKey, holdCues, memory = [], savedHere, media = [], fastReplies, speakers, jumps = [] }: TurnRequest,
   abortSignal: AbortSignal | undefined,
   emit: (event: TurnStreamEvent) => void,
 ): Promise<void> {
@@ -723,7 +758,7 @@ export async function runTurnStream(
   const timings: string[] = fastReplies ? ['fast replies (Haiku 5.5)'] : [];
   const startedAt = Date.now();
   const state: SessionState = structuredClone(incoming);
-  const turn = new Turn(flow, state, holdCues);
+  const turn = new Turn(flow, state, holdCues, jumps);
   turn.onCue = (cue) => emit({ type: 'cue', cue });
 
   const startStage = turn.stage();
@@ -791,8 +826,14 @@ export async function runTurnStream(
     const streakBefore = state.offTopicStreak;
     const slotsBefore = { ...state.slots };
     try {
-      const analysis = await timed(timings, 'analyse', analyse(fast, flow, startStage, state, history, userText, memory, savedHere ?? [], media, abortSignal));
+      const analysis = await timed(timings, 'analyse', analyse(fast, flow, startStage, state, history, userText, memory, savedHere ?? [], media, jumps, abortSignal));
       turn.apply(analysis);
+      // Row 12, in the [wait] log: which jumps were on offer, and whether this turn took one.
+      if (jumps.length > 0)
+        timings.push(
+          `jumps offered: ${jumps.map((j, i) => `J${i + 1} → scene ${j.scene}`).join(', ')} · ` +
+            (state.jumpTo ? `TOOK scene ${state.jumpTo.scene}` : `analysis chose ${analysis.exit?.id ?? 'no exit'}`),
+        );
     } catch (err) {
       turn.events.push({ type: 'rejected', text: `Analysis failed (${err instanceof Error ? err.message : 'error'}) — replying without it.` });
     }
@@ -804,7 +845,8 @@ export async function runTurnStream(
     // The reply written ahead fits if the conversation went where it guessed and nothing the caller just gave
     // belongs to the new stage (its prompt was built before the analysis recorded it). The reason it moved can
     // differ (words vs goal met): that only changes the one line saying where it came from.
-    const target = state.ended ? END : state.stageCode;
+    // A jump to another scene is never one of the replies written ahead (a goodbye is the wrong reply for it).
+    const target = state.jumpTo ? '' : state.ended ? END : state.stageCode;
     const newSlots = Object.keys(state.slots).filter((k) => state.slots[k] !== slotsBefore[k]);
     const fits = (guess: (typeof ahead)[number]) =>
       guess.to === target &&

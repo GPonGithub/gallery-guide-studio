@@ -140,7 +140,17 @@ export type SessionState = {
    * performs them. Chosen when the conversation starts.
    */
   expressive?: boolean;
+  /**
+   * The caller said something that sends the conversation to another scene (the sheet's row 12, "Jump to
+   * another scene"): this scene has ended, and the app opens that one and starts it.
+   */
+  jumpTo?: SceneJump;
+  /** This conversation began with a jump from another scene: what the caller said there, so it opens on it. */
+  cameFrom?: { scene: string; name: string; said: string; when: string };
 };
+
+/** A way to another scene (row 12 of the sheet): the scene's number, its name, and when to go there. */
+export type SceneJump = { scene: string; name: string; when: string };
 
 // 'pending' = held back while the turn wasn't confirmed yet (see TurnRequest.holdCues);
 // 'sending' = on its way to TouchDesigner; 'logged' = no TouchDesigner address set.
@@ -209,6 +219,8 @@ export type TurnRequest = {
    * along with it instead of saying it can't.
    */
   media?: RoomMedia[];
+  /** Other scenes the caller's words can send the conversation to (row 12), each one in the studio. */
+  jumps?: SceneJump[];
 };
 
 /** A media action the room can carry out, and whether its picture, video or sound is showing (or playing) now. */

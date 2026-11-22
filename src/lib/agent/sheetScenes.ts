@@ -22,8 +22,11 @@
  *   row 11 People in this scene — the people the agent talks with, one per line,
  *          "Name: role" (e.g. "Dave: The nurse"). Dual microphones puts the first on
  *          the left microphone and the second on the right
+ *   row 12 Jump to another scene — one per line, "Scene 4: when the patient says they
+ *          feel like they're going to die". When the caller says something like it, the
+ *          conversation goes straight to that scene instead of carrying on here
  *
- * Whatever the "All scenes" column says in rows 3–6 and 8 is given to every scene,
+ * Whatever the "All scenes" column says in rows 3–6, 8 and 12 is given to every scene,
  * ahead of the scene's own. A column with nothing in rows 2–6 is skipped, and
  * so is anything past the 20th scene column, counting the empty ones: students
  * can keep notes there.
@@ -33,7 +36,7 @@
 export const FIRST_SCENE_COLUMN = 'B';
 export const LAST_SCENE_COLUMN = 'Z';
 const MAX_SCENES = 20;
-const ROW = { number: 1, name: 2, describe: 3, knowledge: 4, save: 5, cannotUse: 6, mediaActions: 8, persona: 10, people: 11 } as const;
+const ROW = { number: 1, name: 2, describe: 3, knowledge: 4, save: 5, cannotUse: 6, mediaActions: 8, persona: 10, people: 11, jumps: 12 } as const;
 const SHARED_COLUMN = /\ball\s*scenes\b/i;
 
 /** One scene as read from the sheet. */
@@ -57,6 +60,8 @@ export type SheetScene = {
   persona: string;
   /** People in this scene (row 11): who the agent talks with, in order (Dual microphones: left, then right). */
   people: { name: string; role: string }[];
+  /** Jump to another scene (row 12): which scene, and when — the "All scenes" ones first, never to itself. */
+  jumps: { scene: string; when: string }[];
 };
 
 /** Row 11's lines, "Name: role" (or "Name - role", or just a name) — in order. */
@@ -69,6 +74,18 @@ export function peopleLines(text: string): { name: string; role: string }[] {
       return { name, role };
     })
     .filter((p) => p.name && p.name.length <= 60);
+}
+
+/**
+ * Row 12's lines, "Scene 4: when …" (or "4 - when …", "Scene 4 when …") — the scene's number as row 1 gives it,
+ * and when to go there. A line naming no scene is left out.
+ */
+export function jumpLines(text: string): { scene: string; when: string }[] {
+  return actionLines(text).flatMap((line) => {
+    const m = /^(?:scene\s*)?(\d+[A-Za-z]?)\b\s*(?::|[-–—]|\|)?\s*(.+)$/i.exec(line);
+    const when = m?.[2].replace(/^(?:when|if)\s+/i, '').trim();
+    return m && when ? [{ scene: m[1].toUpperCase(), when }] : [];
+  });
 }
 
 /** A cell's lines, each one action — blank lines and leading bullets ("-", "•", "1.") dropped. */
@@ -137,12 +154,14 @@ export function mapSheetScenes(grid: string[][]): SheetScene[] {
   // The "All scenes" column(s): given to every scene.
   const shared = new Map<number, string[]>(contentRows.map((r) => [r, []]));
   const sharedActions: string[] = [];
+  const sharedJumps: { scene: string; when: string }[] = [];
   const sceneColumns: number[] = [];
   let place = 0;
   for (let col = first; col <= last; col++) {
     if (SHARED_COLUMN.test(cell(ROW.number, col))) {
       for (const r of contentRows) if (cell(r, col)) shared.get(r)!.push(cell(r, col));
       sharedActions.push(...actionLines(cell(ROW.mediaActions, col)));
+      sharedJumps.push(...jumpLines(cell(ROW.jumps, col)));
     } else if (++place <= MAX_SCENES && [ROW.name, ...contentRows].some((r) => cell(r, col))) {
       sceneColumns.push(col);
     }
@@ -164,6 +183,7 @@ export function mapSheetScenes(grid: string[][]): SheetScene[] {
       mediaActions: [...sharedActions, ...actionLines(cell(ROW.mediaActions, col))],
       persona: cell(ROW.persona, col),
       people: peopleLines(cell(ROW.people, col)),
+      jumps: [...sharedJumps, ...jumpLines(cell(ROW.jumps, col))].filter((j) => j.scene !== number.toUpperCase()),
     };
   });
 }

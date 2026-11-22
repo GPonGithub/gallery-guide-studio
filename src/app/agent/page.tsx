@@ -135,7 +135,7 @@ import { ProjectsMenu, saveProjectRequest, type CurrentProject } from '@/compone
 import type { AgentProject, ProjectMusic, ProjectVoice, SheetSource } from '@/lib/agent/projectStore';
 import { Inspector, type TurnLog } from '@/components/agent/Inspector';
 import { blankStage, emptyFlow, initialState, sampleFlow, sortStages, startStage } from '@/lib/agent/flow';
-import type { AgentEvent, AgentFlow, ChatTurn, CueEvent, CueStatus, RoomMedia, SessionState, Stage, TurnResponse } from '@/lib/agent/types';
+import type { AgentEvent, AgentFlow, ChatTurn, CueEvent, CueStatus, RoomMedia, SceneJump, SessionState, Stage, TurnResponse } from '@/lib/agent/types';
 import { ACTION_KINDS, CONTROL_FADE_SECONDS, MAX_CONTROL_FADE_SECONDS, type EveryWhen } from '@/lib/agent/media';
 import { buttonBusyCompact, buttonIcon, buttonOutline, buttonOutlineCompact, buttonPrimary, toolbarButtonWidth, buttonSaved, buttonUnsaved, fieldInput, fieldLabel } from '@/lib/styles';
 import { ProgressLine } from '@/components/agent/ProgressLine';
@@ -327,6 +327,31 @@ const sceneVoiceIn = (s: Saved, voice: ProjectVoice) => {
     voiceExpressive: voice.expressive ?? false,
   };
 };
+/**
+ * The open mic heard the agent's own voice from the speakers: what it heard repeats five words in a row (or
+ * the whole of a shorter line) from one of the agent's last few replies. A safety net for when the mic isn't
+ * paused while the agent speaks: everything up to the last of the agent's words is cut off, and only what
+ * comes after — the person — is kept. '' = it was all the agent.
+ */
+const normWord = (w: string) => w.toLowerCase().replace(/[^a-z0-9']+/g, '');
+const wordsOf = (text: string) => text.replace(/\[[^\]]*\]/g, ' ').split(/\s+/).map(normWord).filter(Boolean);
+const withoutAgentEcho = (heard: string, messages: ChatTurn[]): string => {
+  const tokens = heard.trim().split(/\s+/).filter(Boolean);
+  const said = tokens.map(normWord);
+  let cut = 0;
+  for (const m of messages.filter((t) => t.role === 'assistant').slice(-3)) {
+    const words = wordsOf(m.text);
+    const run = Math.min(5, words.length);
+    if (run < 3) continue;
+    for (let i = 0; i + run <= words.length; i++) {
+      const gram = words.slice(i, i + run);
+      for (let j = 0; j + run <= said.length; j++)
+        if (gram.every((w, k) => said[j + k] === w)) cut = Math.max(cut, j + run);
+    }
+  }
+  return cut === 0 ? heard : tokens.slice(cut).join(' ');
+};
+
 const contentOf = (s: Saved): ProjectContent => ({ flow: s.flow, brief: s.brief, boardUrl: s.boardUrl, voice: voiceOf(s), music: musicOf(s) });
 
 // Keys sorted, so the same settings compare equal whatever order they were written in.
@@ -562,6 +587,13 @@ export default function AgentStudioPage() {
   const memoryChecks = useRef(new Map<string, Promise<MemoryCheck>>());
   const [memoryCheck, setMemoryCheck] = useState<{ key: string; result: MemoryCheck } | null>(null);
   const [sheetScenesVersion, setSheetScenesVersion] = useState(0);
+  // The open scene's ways to other scenes (row 12), a jump waiting for its reply to be heard, and the scene
+  // a jump has just opened (it starts by itself).
+  const [sceneJumps, setSceneJumps] = useState<SheetScene['jumps']>([]);
+  const [pendingJump, setPendingJump] = useState<{ jump: SceneJump; said: string; from: string } | null>(null);
+  const autoStartRef = useRef<string | null>(null);
+  const goToSceneRef = useRef<((p: { jump: SceneJump; said: string; from: string }) => Promise<void>) | null>(null);
+  const startCallRef = useRef<(() => void) | null>(null);
   const cueStatusRef = useRef(new Map<string, CueStatus>());
   const [openMicOn, setOpenMicOn] = useState(false);
   const [openMicStatus, setOpenMicStatus] = useState<OpenMicStatus>('off');
@@ -1058,8 +1090,54 @@ export default function AgentStudioPage() {
     setSaved((s) => (s ? { ...s, savedTimeline: timelineSnapshotOf(timelineOf(mediaLinks, s.sceneSheet)) } : s));
   }, [timelineUnknown, mediaLinks]);
 
+  // Jump to another scene (the sheet's row 12), read straight from the sheet like row 11's people — so a change
+  // there counts from the next time the scene is opened, without Refresh this scene.
+  const jumpSheet = saved?.sceneSheet ?? null;
+  const jumpSheetKey = jumpSheet ? `${jumpSheet.sheetId}|${jumpSheet.gid}|${jumpSheet.number}` : '';
+  useEffect(() => {
+    if (!jumpSheet) {
+      setSceneJumps([]); // eslint-disable-line react-hooks/set-state-in-effect -- no sheet, no jumps
+      return;
+    }
+    let stale = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/sheets/scenes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: `https://docs.google.com/spreadsheets/d/${jumpSheet.sheetId}/edit#gid=${jumpSheet.gid}` }),
+        });
+        const data = (await res.json()) as { scenes?: SheetScene[] };
+        const mine = data.scenes?.find((sc) => sc.number.toUpperCase() === jumpSheet.number.toUpperCase());
+        if (!stale) setSceneJumps(mine?.jumps ?? []);
+      } catch {
+        if (!stale) setSceneJumps([]);
+      }
+    })();
+    return () => {
+      stale = true;
+    };
+  }, [jumpSheetKey]); // eslint-disable-line react-hooks/exhaustive-deps -- the key stands for the sheet, tab and scene
+
+  // A turn that jumped: once its last words have been heard, the other scene opens (see goToScene below)…
+  useEffect(() => {
+    if (pendingJump && !busy && !speaking) void goToSceneRef.current?.(pendingJump);
+  }, [pendingJump, busy, speaking]);
+  // …and, once it's in, starts by itself.
+  useEffect(() => {
+    if (!autoStartRef.current || saved?.projectId !== autoStartRef.current || busy) return;
+    if (!session?.cameFrom || session.ended || messages.length > 0) return;
+    autoStartRef.current = null;
+    startCallRef.current?.();
+  }, [saved?.projectId, session, messages.length, busy]);
+
   if (!saved || !session) return null;
   const flow = saved.flow;
+  // This scene's jumps whose scene is in the studio, with that scene's name (for the agent and the chat).
+  const jumpsHere: SceneJump[] = sceneJumps.flatMap((j) => {
+    const target = sheetScenes.find((p) => p.sheet!.number.toUpperCase() === j.scene);
+    return target ? [{ scene: j.scene, name: target.name, when: j.when }] : [];
+  });
 
   const setFlow = (next: AgentFlow) => setSaved((s) => (s ? { ...s, flow: next } : s));
 
@@ -1848,6 +1926,7 @@ export default function AgentStudioPage() {
           // Dual microphones: the two people, so the agent answers whoever spoke.
           speakers: dualSpeakers() ? { left: personLabel('left'), right: personLabel('right') } : undefined,
           memory: allowed.map(toRemembered),
+          jumps: jumpsHere,
           savedHere: savedInScene(activePatient, sceneNow?.id ?? null).map((it) => ({ label: displayLabel(it.label), value: it.value })),
           media,
         }),
@@ -2412,6 +2491,9 @@ export default function AgentStudioPage() {
         data = await stream.done;
       }
       endsCall = Boolean(data.state.ended);
+      // Going to another scene: it opens once this reply has been heard.
+      if (data.state.jumpTo && !superseded())
+        setPendingJump({ jump: data.state.jumpTo, said: userText ?? '', from: saved.projectName });
       queue?.finish();
       // Nothing to say out loud (or no voice): the reply is "heard" now.
       if (!queue || queue.idle) {
@@ -2466,6 +2548,27 @@ export default function AgentStudioPage() {
     if (saved.anthropicApiKey.trim()) musicRef.current?.start();
     void sendTurn(null);
   };
+  startCallRef.current = openCall;
+
+  // The caller's words sent the conversation to another scene (row 12): that scene opens, saved first if this
+  // one has changes, with a fresh conversation that knows what was said — and starts by itself (see above).
+  const goToScene = async ({ jump, said, from }: { jump: SceneJump; said: string; from: string }) => {
+    setPendingJump(null);
+    const target = sheetScenes.find((p) => p.sheet!.number.toUpperCase() === jump.scene);
+    if (!target) {
+      setError(`This scene jumps to scene ${jump.scene}, but scene ${jump.scene} isn’t in the studio. Generate it from the sheet first.`);
+      return;
+    }
+    if (dirty && !(await saveNow())) return;
+    openScene(target);
+    setStartAt('');
+    setSession({ ...initialState(target.flow), cameFrom: { scene: jump.scene, name: from, said, when: jump.when } });
+    setMessages([]);
+    setLog([]);
+    setError(null);
+    autoStartRef.current = target.id;
+  };
+  goToSceneRef.current = goToScene;
 
   const submit = () => {
     const text = input.trim();
@@ -3025,14 +3128,35 @@ export default function AgentStudioPage() {
             {ignoredNote && !busy && (
               // Heard but not sent, so the agent stays quiet: say why, so it doesn't look like it ignored you.
               <p className="text-center font-body text-xs text-[#b45309]">
-                Not sent to the agent: &ldquo;{ignoredNote.text}&rdquo; ({ignoredNote.why}). Say it again, or lower
-                that mic&rsquo;s &ldquo;Ignore under&rdquo; in Dual microphones.
+                Not sent to the agent: &ldquo;{ignoredNote.text}&rdquo; ({ignoredNote.why}).
+                {ignoredNote.why.includes('own voice')
+                  ? ' Turn the speakers down or move the mic away from them if this keeps happening.'
+                  : ' Say it again, or lower that mic’s “Ignore under” in Dual microphones.'}
               </p>
             )}
             {busy && <p className="font-label text-[11px] uppercase tracking-widest text-muted-ink">Agent is thinking…</p>}
             {session.ended && (
               <p className="text-center font-label text-[11px] uppercase tracking-widest text-muted-ink">
-                Conversation ended — press Restart to go again
+                {session.jumpTo
+                  ? `Going to scene ${session.jumpTo.scene} · ${session.jumpTo.name}…`
+                  : 'Conversation ended — press Restart to go again'}
+              </p>
+            )}
+            {/* Row 12: the ways this scene can go to another one (or why one can't). */}
+            {sceneJumps.length > 0 && !session.ended && (
+              <p className="text-center font-label text-[11px] uppercase tracking-widest text-muted-ink">
+                {sceneJumps
+                  .map((j) =>
+                    jumpsHere.some((h) => h.scene === j.scene)
+                      ? `Jumps to scene ${j.scene} when ${j.when}`
+                      : `Scene ${j.scene} (row 12) isn’t in the studio — no jump`,
+                  )
+                  .join(' · ')}
+              </p>
+            )}
+            {session.cameFrom && (
+              <p className="text-center font-label text-[11px] uppercase tracking-widest text-muted-ink">
+                Came from &ldquo;{session.cameFrom.name}&rdquo; — {session.cameFrom.when}
               </p>
             )}
             {error && <p className="border-l-4 border-[#b91c1c] pl-2 font-body text-sm text-ink">{error}</p>}
@@ -3109,7 +3233,13 @@ export default function AgentStudioPage() {
             <OpenMic
               on={openMicOn}
               // Speak to interrupt: the mic listens through the agent's voice for the caller talking over it.
-              paused={(busy && !speaking) || session.ended || (speaking && !saved.interruptByVoice)}
+              // A scene a jump has just opened stays paused until its own opening line starts.
+              paused={
+                (busy && !speaking) ||
+                session.ended ||
+                (speaking && !saved.interruptByVoice) ||
+                (Boolean(session.cameFrom) && messages.length === 0)
+              }
               agentSpeaking={speaking && saved.interruptByVoice}
               agentText={messages.at(-1)?.role === 'assistant' ? messages.at(-1)!.text : ''}
               onBargeIn={() => void interrupt()}
@@ -3130,6 +3260,15 @@ export default function AgentStudioPage() {
               onUtterance={(heard, timing) => {
                 sentenceStartedRef.current = false;
                 setInput('');
+                // The agent's own voice, heard through the speakers, is cut off: only the person's words go on.
+                const raw = heard;
+                heard = withoutAgentEcho(raw, messages);
+                if (heard !== raw) console.info(`[mic] cut the agent's own voice: "${raw}" → "${heard}"`);
+                if (!heard) {
+                  takeEarlyTurn(raw);
+                  setIgnoredNote({ text: raw, why: 'it was the agent’s own voice from the speakers' });
+                  return;
+                }
                 // Dual microphones: "Dave (nurse): …" — whoever's side was louder while it was said; or
                 // nothing at all when the music filter hears it as the room's music (lyrics), not a person.
                 const text = judgeHeard(heard, timing.lastHeardAt, false);
@@ -3141,7 +3280,9 @@ export default function AgentStudioPage() {
                 setIgnoredNote(null);
                 void sendTurn(text, takeEarlyTurn(text), timing);
               }}
-              onPhraseFinal={(heard) => {
+              onPhraseFinal={(phrase) => {
+                const heard = withoutAgentEcho(phrase, messages);
+                if (!heard) return;
                 const text = judgeHeard(heard, undefined, false);
                 if (text !== null) startEarlyTurn(text);
               }}

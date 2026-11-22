@@ -15,8 +15,10 @@ type SpeechRecognitionLike = {
   lang: string;
   start: () => void;
   stop: () => void;
+  abort: () => void;
   onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
   onend: (() => void) | null;
+  onstart: (() => void) | null;
   onerror: ((e: { error: string }) => void) | null;
 };
 
@@ -110,6 +112,15 @@ export function OpenMic({
   const lastSentRef = useRef<{ text: string; at: number }>({ text: '', at: 0 });
   const startedAtRef = useRef(0);
   const rapidFailsRef = useRef(0);
+  // Chrome ignores a stop that comes before a session has really started (onstart) — the session then can't be
+  // stopped at all, and hears the agent. So a stop asked for too early waits for the start.
+  const startedRef = useRef(false);
+  const stopWhenStartedRef = useRef(false);
+  const stopSession = () => {
+    if (!recognitionRef.current) return;
+    if (startedRef.current) recognitionRef.current.abort();
+    else stopWhenStartedRef.current = true;
+  };
   const [restartTick, setRestartTick] = useState(0);
 
   // Latest props for callbacks fired by the recognition engine later on.
@@ -136,7 +147,7 @@ export function OpenMic({
     }
     firstResultRef.current = resultCountRef.current;
     // Stopping ends the session; it starts again by itself (onend), with nothing carried over.
-    if (finished) recognitionRef.current?.stop();
+    if (finished) stopSession();
   }, [agentSpeaking]);
 
   const clearSilenceTimer = () => {
@@ -145,19 +156,28 @@ export function OpenMic({
   };
 
   useEffect(() => {
+    // Diagnostics (the app server's log shows them): why the mic is or isn't listening.
+    console.info(`[mic] on=${on} paused=${paused} session=${recognitionRef.current ? 'yes' : 'none'}`);
     if (!on) {
       clearSilenceTimer();
-      recognitionRef.current?.stop();
+      stopSession();
       latest.current.onStatus('off');
       return;
     }
     if (paused) {
       clearSilenceTimer();
-      recognitionRef.current?.stop();
+      stopSession();
       latest.current.onStatus('paused');
       return;
     }
-    if (recognitionRef.current) return;
+    if (recognitionRef.current) {
+      // A session still running from before the pause (it hasn't ended yet): only what it hears from now on
+      // counts — never anything from while the agent was speaking.
+      firstResultRef.current = resultCountRef.current;
+      transcriptRef.current = '';
+      heardSpeechRef.current = false;
+      return;
+    }
 
     const SR =
       (window as unknown as { SpeechRecognition?: Ctor; webkitSpeechRecognition?: Ctor }).SpeechRecognition ??
@@ -177,8 +197,24 @@ export function OpenMic({
     firstResultRef.current = 0;
     resultCountRef.current = 0;
 
+    recognition.onstart = () => {
+      if (recognitionRef.current !== recognition) return;
+      startedRef.current = true;
+      if (stopWhenStartedRef.current || !latest.current.on || latest.current.paused) {
+        stopWhenStartedRef.current = false;
+        recognition.abort();
+      }
+    };
+
     recognition.onresult = (e) => {
-      resultCountRef.current = e.results.length;
+      if (recognitionRef.current === recognition) resultCountRef.current = e.results.length;
+      // Paused (the agent is thinking or speaking, or the call has ended), turned off, or no longer the mic's
+      // own listening session: whatever this hears is the agent's voice or the room, never the caller's
+      // words — and a session left running would carry it into the caller's next sentence. Stop it.
+      if (recognitionRef.current !== recognition || !latest.current.on || latest.current.paused) {
+        recognition.abort();
+        return;
+      }
       // While the agent speaks: listen only for the caller talking over it. The first phrase with their
       // own words in it interrupts the agent, and from there on it's what they're saying.
       if (latest.current.agentSpeaking) {
@@ -246,6 +282,13 @@ export function OpenMic({
     };
 
     recognition.onend = () => {
+      // An older session ending late (after a newer one started) must not forget the newer one — it would
+      // then never be stopped when the agent speaks, and would hear it.
+      if (recognitionRef.current !== recognition) {
+        console.info('[mic] an old session ended');
+        return;
+      }
+      console.info('[mic] session ended');
       recognitionRef.current = null;
       clearSilenceTimer();
       const lived = Date.now() - startedAtRef.current;
@@ -263,11 +306,14 @@ export function OpenMic({
     };
 
     recognitionRef.current = recognition;
+    startedRef.current = false;
+    stopWhenStartedRef.current = false;
     startedAtRef.current = Date.now();
     latest.current.onStatus('starting');
     try {
       recognition.start();
       latest.current.onStatus('listening');
+      console.info('[mic] new session started');
     } catch {
       recognitionRef.current = null;
       setTimeout(() => setRestartTick((t) => t + 1), RESTART_DELAY_MS);
