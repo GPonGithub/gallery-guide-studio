@@ -31,7 +31,7 @@ import { forgetMarker, markerArrived, replayMarker, setMarkerProblem, useMarkerS
 import { send as sendToTD } from '@/lib/agent/touchDesigner';
 import { isPress, useMqttMessages } from '@/lib/agent/mqttEvents';
 import { playButtonSound } from '@/lib/agent/buttonSounds';
-import { dualSpeakers, judgeHeard, markSpeechStart, personLabel, setSceneTextSource, usePersonTalking } from '@/lib/agent/dualMic';
+import { dualSpeakers, judgeHeard, lastIgnored, markSpeechStart, personLabel, setSceneTextSource, usePersonTalking } from '@/lib/agent/dualMic';
 import { MEDIA_TOUR_STEPS, mediaTourActions } from '@/components/agent/mediaTour';
 import { clampDesignWidth, DESIGN_WIDTH, DesignResizeHandle, loadDesignWidth, saveDesignWidth } from '@/components/agent/DesignResizeHandle';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -718,6 +718,10 @@ export default function AgentStudioPage() {
     if (queued && queueRef.current?.expressive) queued.playbackRate = settings.speed;
   }, [saved]);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  // The open mic's sentence has started (its first words came in): dual microphones measures from here.
+  const sentenceStartedRef = useRef(false);
+  // The last thing the open mic heard but didn't send (dual microphones: too quiet, or music), shown in the chat.
+  const [ignoredNote, setIgnoredNote] = useState<{ text: string; why: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   // Background music: starts when the agent is asked to open the call, dips
@@ -2245,6 +2249,7 @@ export default function AgentStudioPage() {
     const cut = () => interruptedRef.current?.turn === turn;
     const superseded = () => turnIdRef.current !== turn;
     setError(null);
+    setIgnoredNote(null);
     setBusy(true);
     stopAudio();
     const withCaller: ChatTurn[] = [...history, ...(userText ? [{ role: 'user' as const, text: userText }] : [])];
@@ -3017,6 +3022,13 @@ export default function AgentStudioPage() {
               .map((p) => (
                 <MediaMarker key={p.id} played={p} />
               ))}
+            {ignoredNote && !busy && (
+              // Heard but not sent, so the agent stays quiet: say why, so it doesn't look like it ignored you.
+              <p className="text-center font-body text-xs text-[#b45309]">
+                Not sent to the agent: &ldquo;{ignoredNote.text}&rdquo; ({ignoredNote.why}). Say it again, or lower
+                that mic&rsquo;s &ldquo;Ignore under&rdquo; in Dual microphones.
+              </p>
+            )}
             {busy && <p className="font-label text-[11px] uppercase tracking-widest text-muted-ink">Agent is thinking…</p>}
             {session.ended && (
               <p className="text-center font-label text-[11px] uppercase tracking-widest text-muted-ink">
@@ -3027,14 +3039,19 @@ export default function AgentStudioPage() {
             <div ref={bottomRef} />
           </div>
 
-          <CueMonitor
-            latest={cueLog.at(-1) ?? null}
-            count={cueLog.length}
-            tdUrl={flow.tdUrl}
-            hosted={hosting?.hosted ?? false}
-            timing={flow.tdTiming ?? 'spoken'}
-            onTimingChange={(tdTiming) => setFlow({ ...flow, tdTiming })}
-          />
+          {/* Only when the scene sends its cues somewhere (Master card → TouchDesigner address). The room's
+              media reaches TouchDesigner on its own connection (touchDesigner.ts), so without an address
+              this window would only ever say "not sent". */}
+          {flow.tdUrl.trim() && (
+            <CueMonitor
+              latest={cueLog.at(-1) ?? null}
+              count={cueLog.length}
+              tdUrl={flow.tdUrl}
+              hosted={hosting?.hosted ?? false}
+              timing={flow.tdTiming ?? 'spoken'}
+              onTimingChange={(tdTiming) => setFlow({ ...flow, tdTiming })}
+            />
+          )}
 
           {openMicOn && (
             <div className="flex items-center gap-2 border-t-2 border-ink px-3 pt-2 font-label text-[10px] uppercase tracking-widest text-muted-ink">
@@ -3102,16 +3119,26 @@ export default function AgentStudioPage() {
                 setOpenMicOn(on);
                 if (on) setError(null);
               }}
-              onTranscript={setInput}
+              onTranscript={(text) => {
+                // The first words of a sentence: dual microphones measures each side's loudness from here.
+                // (The "hearing" status comes only after three words or a finished phrase, which for a
+                // short reply like "sure, go ahead" is after it was said, so it measured the silence.)
+                if (text && !sentenceStartedRef.current) markSpeechStart();
+                sentenceStartedRef.current = Boolean(text);
+                setInput(text);
+              }}
               onUtterance={(heard, timing) => {
+                sentenceStartedRef.current = false;
                 setInput('');
                 // Dual microphones: "Dave (nurse): …" — whoever's side was louder while it was said; or
                 // nothing at all when the music filter hears it as the room's music (lyrics), not a person.
                 const text = judgeHeard(heard, timing.lastHeardAt, false);
                 if (text === null) {
                   takeEarlyTurn(heard); // lets go of any reply started for it
+                  setIgnoredNote({ text: heard, why: lastIgnored()?.why ?? 'see Dual microphones' });
                   return;
                 }
+                setIgnoredNote(null);
                 void sendTurn(text, takeEarlyTurn(text), timing);
               }}
               onPhraseFinal={(heard) => {
@@ -3119,8 +3146,7 @@ export default function AgentStudioPage() {
                 if (text !== null) startEarlyTurn(text);
               }}
               onStatus={(status) => {
-                // A new sentence starts being heard: dual microphones measures each side from here.
-                if (status === 'hearing' && openMicStatus !== 'hearing') markSpeechStart();
+                // Dual microphones starts measuring at the sentence's first words (onTranscript), not here.
                 setOpenMicStatus(status);
               }}
               onError={setError}

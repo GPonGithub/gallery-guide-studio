@@ -27,12 +27,30 @@ export type DualMicSettings = {
   musicFilter: boolean;
   /** How much louder (dB) a person must be on their own mic than on the other one to count. */
   balanceDb: number;
+  /**
+   * Each mic's minimum loudness (dBFS, the sentence's loudest moment on the mic it was loudest on): quieter
+   * than this is someone near the wearer, not the wearer — dropped. Works with one mic in use or both.
+   */
+  minDb: { left: number; right: number };
 };
 
 const KEY = 'gallery-guide-dual-mic';
 const EMPTY: Person = { name: '', role: '' };
 export const DEFAULT_BALANCE_DB = 6;
-const DEFAULTS: DualMicSettings = { on: false, deviceId: '', left: EMPTY, right: EMPTY, musicFilter: true, balanceDb: DEFAULT_BALANCE_DB };
+/** Below this (dBFS) nothing near a clip-on mic said anything: each mic's minimum loudness to begin with. */
+export const DEFAULT_MIN_DB = -45;
+/** The meters' scale (and the minimum loudness sliders'): −50 dB to 0 dB. */
+export const METER_FLOOR_DB = -50;
+const DEFAULT_MIN = { left: DEFAULT_MIN_DB, right: DEFAULT_MIN_DB };
+const DEFAULTS: DualMicSettings = {
+  on: false,
+  deviceId: '',
+  left: EMPTY,
+  right: EMPTY,
+  musicFilter: true,
+  balanceDb: DEFAULT_BALANCE_DB,
+  minDb: DEFAULT_MIN,
+};
 /** The DJI Mic's receiver, as macOS names it — chosen by itself when no input has been picked. */
 export const DJI_INPUT = /wireless\s*mic\s*rx|dji/i;
 
@@ -56,7 +74,13 @@ function load() {
     const raw = window.localStorage.getItem(KEY);
     if (raw) {
       const s = JSON.parse(raw) as Partial<DualMicSettings>;
-      settings = { ...DEFAULTS, ...s, left: { ...EMPTY, ...s.left }, right: { ...EMPTY, ...s.right } };
+      settings = {
+        ...DEFAULTS,
+        ...s,
+        left: { ...EMPTY, ...s.left },
+        right: { ...EMPTY, ...s.right },
+        minDb: { ...DEFAULT_MIN, ...s.minDb },
+      };
     }
   } catch {
     // Unreadable: the defaults.
@@ -127,10 +151,12 @@ type Live = {
   /** The side heard for the last sentence, and when. */
   lastSide: Side | null;
   lastAt: number;
-  /** The last sentence the music filter dropped, and why (for the panel). */
+  /** The last sentence dropped (music, or too quiet), and why (for the panel). */
   ignored: { text: string; at: number; why: string } | null;
+  /** The last sentence heard: the mic it was loudest on and its loudest moment (dBFS), for setting the minimums. */
+  heard: { side: Side; peak: number; at: number } | null;
 };
-let live: Live = { state: 'off', device: '', left: 0, right: 0, lastSide: null, lastAt: 0, ignored: null };
+let live: Live = { state: 'off', device: '', left: 0, right: 0, lastSide: null, lastAt: 0, ignored: null, heard: null };
 const liveListeners = new Set<() => void>();
 const setLive = (change: Partial<Live>) => {
   live = { ...live, ...change };
@@ -204,7 +230,7 @@ async function startListening(): Promise<void> {
         samples.push({ at, l, r });
         while (samples.length && samples[0].at < at - KEEP_MS) samples.shift();
         // Meters: a loudness scale that shows speech well (about −50 dB to 0 dB).
-        const level = (x: number) => Math.max(0, Math.min(1, (20 * Math.log10(x + 1e-6) + 50) / 50));
+        const level = (x: number) => Math.max(0, Math.min(1, (20 * Math.log10(x + 1e-6) - METER_FLOOR_DB) / -METER_FLOOR_DB));
         setLive({ left: level(l), right: level(r) });
         if (channels >= 2) hearTalking(at);
       }, SAMPLE_MS);
@@ -280,12 +306,23 @@ export function markSpeechStart() {
 }
 
 /**
+ * At least this far back from a sentence's last word is measured. Chrome often reports a short phrase
+ * ("sure, go ahead") only once it has been said, so its start mark can come after the voice itself.
+ */
+const LOOK_BACK_MS = 2500;
+/** The stretch a sentence heard up to `to` is measured over: from its start (at least LOOK_BACK_MS back), at most 20 s. */
+const sentenceSpan = (to: number) => Math.max(Math.min(speechFrom || to, to - LOOK_BACK_MS), to - 20_000);
+
+/** The last sentence dropped (too quiet, or music), with why — for the chat to say so. */
+export const lastIgnored = () => live.ignored;
+
+/**
  * Who said the words heard up to `lastHeardAt` (performance.now(); now when not given): the side louder
  * since the open mic started hearing them (at most the last 20 seconds). Remembered for the panel.
  */
 export function whoSpoke(lastHeardAt?: number): Side | null {
   const to = lastHeardAt || performance.now();
-  const from = Math.max(speechFrom || to - 6000, to - 20_000);
+  const from = sentenceSpan(to);
   const side = sideBetween(from, to);
   if (side) setLive({ lastSide: side, lastAt: Date.now() });
   return side;
@@ -343,17 +380,14 @@ export async function scenePeople(
 
 // --- music filter: a person, or the room's speakers? ---------------------------------------------------
 
-/** Below this (dBFS, the louder side's loudest moment) nothing near a clip-on mic said anything. */
-const PERSON_FLOOR_DB = -45;
 const db = (x: number) => 20 * Math.log10(x + 1e-9);
 
 /**
- * Whether the sound between `from` and `to` was a person at a clip-on mic or the room (music from the
- * speakers reaches both mics about equally; a wearer's voice is far louder on their own). `balanceDb`:
- * how much louder the louder side must be. Null when it can't be told (not listening in stereo).
+ * The sound between `from` and `to`: the side with more of it, how many dB more (balance), and that
+ * side's loudest moment (dBFS). Null when nothing was sampled (not listening).
  */
-export function personOrRoom(from: number, to: number, balanceDb: number): { person: boolean; side: Side; balance: number; peak: number } | null {
-  if (live.state !== 'on') return null;
+function measure(from: number, to: number): { side: Side; balance: number; peak: number } | null {
+  if (live.state !== 'on' && live.state !== 'mono') return null;
   const span = samples.filter((x) => x.at >= from && x.at <= to + SAMPLE_MS);
   if (span.length === 0) return null;
   let el = 0;
@@ -369,7 +403,23 @@ export function personOrRoom(from: number, to: number, balanceDb: number): { per
   const side: Side = el >= er ? 'left' : 'right';
   const balance = 10 * Math.log10((Math.max(el, er) + 1e-12) / (Math.min(el, er) + 1e-12));
   const peak = db(side === 'left' ? pl : pr);
-  return { person: balance >= balanceDb && peak >= PERSON_FLOOR_DB, side, balance, peak };
+  return { side, balance, peak };
+}
+
+/** Whether a sound measured on `side` at `peak` dBFS reaches that mic's minimum loudness. */
+const loudEnough = (side: Side, peak: number) => peak >= dualMicSettings().minDb[side];
+
+/**
+ * Whether the sound between `from` and `to` was a person at a clip-on mic or the room (music from the
+ * speakers reaches both mics about equally; a wearer's voice is far louder on their own) or someone
+ * nearby (quieter than that mic's minimum loudness). `balanceDb`: how much louder the louder side must
+ * be. Null when it can't be told (not listening in stereo).
+ */
+export function personOrRoom(from: number, to: number, balanceDb: number): { person: boolean; side: Side; balance: number; peak: number } | null {
+  if (live.state !== 'on') return null;
+  const m = measure(from, to);
+  if (!m) return null;
+  return { person: m.balance >= balanceDb && loudEnough(m.side, m.peak), ...m };
 }
 
 // --- someone talking now (music and sounds dip under them, as under the agent's voice) ---------------
@@ -438,14 +488,27 @@ export const canJudgeMusic = () => {
 export function judgeHeard(text: string, lastHeardAt: number | undefined, songPlaying: boolean): string | null {
   const s = dualMicSettings();
   const to = lastHeardAt || performance.now();
-  const from = Math.max(speechFrom || to - 6000, to - 20_000);
+  const from = sentenceSpan(to);
+  // Each mic's minimum loudness: quieter is someone talking to the wearer, not the wearer (one mic or both).
+  const m = s.on ? measure(from, to) : null;
+  if (m) {
+    setLive({ heard: { side: m.side, peak: m.peak, at: Date.now() } });
+    if (!loudEnough(m.side, m.peak)) {
+      const mic = m.side === 'left' ? 'left' : 'right';
+      setLive({
+        ignored: {
+          text,
+          at: Date.now(),
+          why: `too quiet on the ${mic} mic: ${Math.round(m.peak)} dB, under its minimum of ${s.minDb[m.side]} dB`,
+        },
+      });
+      return null;
+    }
+  }
   if (canJudgeMusic()) {
     const verdict = personOrRoom(from, to, s.balanceDb);
     if (verdict && !verdict.person) {
-      const why =
-        verdict.peak < PERSON_FLOOR_DB
-          ? 'too quiet on both mics'
-          : `about as loud on both mics (${verdict.balance.toFixed(1)} dB apart, under ${s.balanceDb} dB)`;
+      const why = `about as loud on both mics (${verdict.balance.toFixed(1)} dB apart, under ${s.balanceDb} dB) — music`;
       setLive({ ignored: { text, at: Date.now(), why } });
       return null;
     }

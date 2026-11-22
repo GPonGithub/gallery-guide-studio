@@ -5,7 +5,9 @@ import type { SheetSource } from '@/lib/agent/projectStore';
 import { buttonOutline, fieldInput } from '@/lib/styles';
 import {
   DEFAULT_BALANCE_DB,
+  DEFAULT_MIN_DB,
   DJI_INPUT,
+  METER_FLOOR_DB,
   dualMicSettings,
   listInputs,
   personLabel,
@@ -20,6 +22,9 @@ import {
 } from '@/lib/agent/dualMic';
 
 const small = buttonOutline.replace('px-4 py-2', 'px-2.5 py-1.5');
+/** A loudness (dBFS) as a share of the meter (−50 dB to 0 dB), and back. */
+const meterShare = (dB: number) => Math.max(0, Math.min(1, (dB - METER_FLOOR_DB) / -METER_FLOOR_DB));
+const meterDb = (share: number) => METER_FLOOR_DB + share * -METER_FLOOR_DB;
 
 /**
  * Adding Immersive Media, section 8: Dual microphones. Two people in the conversation, one on each side
@@ -110,19 +115,55 @@ export function DualMicPanel({ anthropicApiKey, sceneSheet }: { anthropicApiKey:
     const level = s === 'left' ? live.left : live.right;
     // The side the last sentence came from (outlined in blue).
     const lit = live.lastSide === s;
+    const min = settings.minDb[s];
+    const heard = live.heard?.side === s ? live.heard : null;
     return (
       <div key={s} className={`flex flex-1 flex-col gap-1.5 border-2 p-2 ${lit ? 'border-[#3c5eac]' : 'border-ink/20'}`}>
         <div className="flex items-center justify-between">
           <span className="font-label text-[11px] uppercase tracking-widest text-ink">{s === 'left' ? '◀ Left' : 'Right ▶'}</span>
           <span className="font-label text-[10px] uppercase text-muted-ink">{s === 'left' ? 'Transmitter 1' : 'Transmitter 2'}</span>
         </div>
-        {/* The side's live level. */}
-        <div className="h-3 w-full bg-hair" aria-label={`${s} microphone level`}>
+        {/* The side's live level, with its minimum loudness marked: grey below it (ignored), blue above. */}
+        <div className="relative h-3 w-full bg-hair" aria-label={`${s} microphone level`}>
           <div
             className="h-full transition-[width] duration-75"
-            style={{ width: `${Math.round(level * 100)}%`, backgroundColor: level > 0.9 ? '#b91c1c' : '#3c5eac' }}
+            style={{
+              width: `${Math.round(level * 100)}%`,
+              backgroundColor: level > 0.9 ? '#b91c1c' : level < meterShare(min) ? '#a3a3a3' : '#3c5eac',
+            }}
+          />
+          <div
+            className="absolute -bottom-0.5 -top-0.5 w-0.5 bg-[#b45309]"
+            style={{ left: `${meterShare(min) * 100}%` }}
+            title={`Minimum loudness: ${min} dB`}
           />
         </div>
+        <div className="flex items-center justify-between font-body text-[11px] tabular-nums text-muted-ink">
+          <span>Now: {level > 0 ? `${Math.round(meterDb(level))} dB` : '—'}</span>
+          {heard && <span>Last sentence: {Math.round(heard.peak)} dB</span>}
+        </div>
+        <label className="flex items-center gap-2 font-body text-xs text-ink">
+          <span className="shrink-0">Ignore under</span>
+          <input
+            type="range"
+            min={METER_FLOOR_DB}
+            max={-5}
+            step={1}
+            value={min}
+            onChange={(e) => setDualMic({ minDb: { ...settings.minDb, [s]: Number(e.target.value) } })}
+            aria-label={`${s} microphone: minimum loudness`}
+            className="h-1 min-w-0 flex-1 cursor-pointer accent-[#b45309]"
+          />
+          <span className="w-12 shrink-0 text-right tabular-nums">{min} dB</span>
+        </label>
+        {min !== DEFAULT_MIN_DB && (
+          <button
+            className="self-start font-body text-[11px] text-muted-ink underline"
+            onClick={() => setDualMic({ minDb: { ...settings.minDb, [s]: DEFAULT_MIN_DB } })}
+          >
+            reset ({DEFAULT_MIN_DB} dB)
+          </button>
+        )}
         <input
           className={fieldInput}
           value={p.name}
@@ -251,12 +292,18 @@ export function DualMicPanel({ anthropicApiKey, sceneSheet }: { anthropicApiKey:
         </p>
         {live.ignored && (
           <p className="font-body text-xs text-ink">
-            <b className="text-[#b45309]">Ignored as music:</b> &ldquo;{live.ignored.text}&rdquo;{' '}
+            <b className="text-[#b45309]">Ignored:</b> &ldquo;{live.ignored.text}&rdquo;{' '}
             <span className="text-muted-ink">({live.ignored.why})</span>
           </p>
         )}
       </div>
 
+      <p className="font-body text-[11px] text-muted-ink">
+        <b className="text-ink">Ignore under</b> (each mic): words quieter than this on the mic they were loudest on
+        are someone talking to the wearer, not the wearer — they aren&rsquo;t sent to the agent and don&rsquo;t dip
+        the music. To set it, watch &ldquo;Last sentence&rdquo; while the wearer talks, then while someone beside
+        them talks, and put the slider (the orange mark) between the two.
+      </p>
       <div className="flex flex-col gap-2 sm:flex-row">
         {side('left')}
         {side('right')}
