@@ -2,6 +2,8 @@
 
 import { useSyncExternalStore } from 'react';
 import { run } from '@/lib/browserDb';
+import { currentTeam, teamLabel } from '@/lib/team';
+import { findLocalFolder, isLocalRecord, LocalDir, localDir } from './localFolder';
 import {
   CONTROL_FADE_SECONDS,
   kindOf,
@@ -43,7 +45,14 @@ export function setOpenMediaScene(key: string | null) {
   if (key === openScene) return;
   openScene = key;
   sceneListeners.forEach((l) => l());
+  // Once a page load: every scene's folder linked by its place on this computer (after a restart, a restore
+  // or an import), without the Media Library having to be opened.
+  if (key && !linkedThisLoad) {
+    linkedThisLoad = true;
+    void linkFoldersLocally().catch(() => 0);
+  }
 }
+let linkedThisLoad = false;
 /** Set by the media tour (mediaDemo.ts) while its demo scene is in use. */
 export function setDemoMediaScene(key: string | null) {
   if (key === demoScene) return;
@@ -82,6 +91,32 @@ type PickerWindow = Window & {
 
 export type MediaFolder = DirectoryHandle;
 
+/** What's stored for a folder: a folder linked by its place on this computer is kept as its path (localFolder.ts). */
+const storable = (folder: MediaFolder): unknown => (folder instanceof LocalDir ? folder.record() : folder);
+const asFolder = (stored: unknown): MediaFolder | null =>
+  isLocalRecord(stored) ? (localDir(stored) as unknown as MediaFolder) : ((stored as MediaFolder | undefined) ?? null);
+
+/**
+ * The same folder, linked by its place on this computer when it can be (the app runs here and the folder is
+ * in the work folders): found by its name — the team's own first — and checked to hold the same files.
+ */
+async function linkedLocally(folder: MediaFolder): Promise<MediaFolder> {
+  if (folder instanceof LocalDir) return folder;
+  const local = await findLocalFolder(folder.name, teamLabel(currentTeam())).catch(() => null);
+  if (!local) return folder;
+  try {
+    const names = async (dir: { values(): AsyncIterable<{ name: string }> }) => {
+      const list: string[] = [];
+      for await (const e of dir.values()) if (!e.name.startsWith('.')) list.push(e.name);
+      return list.sort().join('|');
+    };
+    if ((await names(folder)) !== (await names(local))) return folder;
+  } catch {
+    return folder;
+  }
+  return local as unknown as MediaFolder;
+}
+
 /** This browser can open a folder (Chrome, Edge). */
 export const canPickFolder = () =>
   typeof window !== 'undefined' && typeof (window as PickerWindow).showDirectoryPicker === 'function';
@@ -92,8 +127,10 @@ export async function pickMediaFolder(scene = currentMediaScene()): Promise<Medi
   const picker = (window as PickerWindow).showDirectoryPicker;
   if (!picker) throw new Error('This browser can’t open a folder — use Chrome or Edge.');
   try {
-    const folder = await picker.call(window, { id: 'chatbot-designer-media', mode: 'read' });
-    await run('media', 'readwrite', (s) => s.put(folder, folderKey(scene)));
+    const picked = await picker.call(window, { id: 'chatbot-designer-media', mode: 'read' });
+    // Kept as its place on this computer when it can be, so it stays linked (restarts, export / import).
+    const folder = await linkedLocally(picked);
+    await run('media', 'readwrite', (s) => s.put(storable(folder), folderKey(scene)));
     return folder;
   } catch (err) {
     if (err instanceof DOMException && err.name === 'AbortError') return null;
@@ -105,10 +142,37 @@ export async function pickMediaFolder(scene = currentMediaScene()): Promise<Medi
 export async function savedMediaFolder(scene = currentMediaScene()): Promise<MediaFolder | null> {
   if (!scene) return null;
   try {
-    return (await run<MediaFolder | undefined>('media', 'readonly', (s) => s.get(folderKey(scene)))) ?? null;
+    return asFolder(await run<unknown>('media', 'readonly', (s) => s.get(folderKey(scene))));
   } catch {
     return null;
   }
+}
+
+/**
+ * Links every scene of this team whose folder isn't linked by its place on this computer — none chosen (a
+ * restore from the backup, an imported project), or the browser's own link — to the folder with its media
+ * list's name, when there's exactly one (the team's own first). Returns how many it linked. Run when the
+ * Media Library opens, so after a restart or an import the folders are just there.
+ */
+export async function linkFoldersLocally(): Promise<number> {
+  const keys = await run<IDBValidKey[]>('media', 'readonly', (s) => s.getAllKeys()).catch(() => []);
+  const team = teamLabel(currentTeam());
+  let linked = 0;
+  for (const key of keys) {
+    if (typeof key !== 'string' || !key.startsWith('library:')) continue;
+    const scene = key.slice('library:'.length);
+    const stored = await run<unknown>('media', 'readonly', (s) => s.get(folderKey(scene))).catch(() => undefined);
+    if (isLocalRecord(stored)) continue;
+    // The browser's link names the folder best; else the name the media list was made with.
+    const name = (stored as MediaFolder | undefined)?.name || (await loadLibrary(scene))?.folderName;
+    if (!name) continue;
+    const local = await findLocalFolder(name, team).catch(() => null);
+    if (!local) continue;
+    await run('media', 'readwrite', (s) => s.put(local.record(), folderKey(scene)));
+    linked++;
+  }
+  if (linked) folderAllowed();
+  return linked;
 }
 
 /** Whether the app may read the folder now — asking if `ask` (only from a click: the browser needs one). */
@@ -211,7 +275,7 @@ export async function forgetSceneMedia(scene: string): Promise<void> {
 
 /** Puts a folder and library in place for a scene (the tour's demo scene). */
 export async function setSceneMedia(scene: string, folder: MediaFolder, library: StoredLibrary): Promise<void> {
-  await run('media', 'readwrite', (s) => s.put(folder, folderKey(scene)));
+  await run('media', 'readwrite', (s) => s.put(storable(folder), folderKey(scene)));
   await saveLibrary(library, scene);
 }
 
@@ -220,6 +284,8 @@ export type LostFolder = { scene: string; folderName: string; forgotten: boolean
 
 /** Every scene of this team (this browser's database) with a media list but no folder it may read now. */
 export async function lostFolders(): Promise<LostFolder[]> {
+  // First, whatever can be linked by its place on this computer is (then it isn't lost).
+  await linkFoldersLocally().catch(() => 0);
   const keys = await run<IDBValidKey[]>('media', 'readonly', (s) => s.getAllKeys()).catch(() => []);
   const lost: LostFolder[] = [];
   for (const key of keys) {
@@ -275,7 +341,8 @@ export async function reconnectFolders(): Promise<{ picked: string; connected: L
       notFound.push(item);
       continue;
     }
-    await run('media', 'readwrite', (s) => s.put(folder, folderKey(item.scene)));
+    const kept = await linkedLocally(folder);
+    await run('media', 'readwrite', (s) => s.put(storable(kept), folderKey(item.scene)));
     connected.push(item);
   }
   if (connected.length) folderAllowed();

@@ -624,8 +624,36 @@ def media_list(msg):
     return 'media list', '%d of %d files found' % (found, n)
 
 
+# Zones 1 and 3 (projectors 5 and 6): each Kantan shape of kantanMapper_P56 shows its own area. On
+# opening the .toe, Kantan has been setting all six to area 15 (2026-11-21 and 11-25: zone 1 black, the
+# scene label gone), so the receiver puts them back whenever the app connects.
+P56_SHAPES = ((1, 12), (3, 14), (4, 13), (6, 17), (7, 16), (8, 15))
+
+
+def fix_zone_textures():
+    shapes = op('/project1/MAPPER/kantanMapper_P56/project/allShapes')
+    if shapes is None:
+        return 0
+    fixed = 0
+    for item, area in P56_SHAPES:
+        p = shapes.op('item%d/parameters' % item)
+        want = '/project1/immersive_lab/area%d' % area
+        if p is None or not hasattr(p.par, 'Texture'):
+            continue
+        now = p.par.Texture.eval()
+        if getattr(now, 'path', now) != want:
+            p.par.Texture = want
+            fixed += 1
+    return fixed
+
+
 def hello(msg):
-    return 'app', 'connected'
+    try:
+        fixed = fix_zone_textures()
+    except Exception:
+        fixed = 0
+    return 'app', 'connected' + (' (zone 1/3 textures put back: %d)' % fixed if fixed else '')
+
 
 
 # --- the projectors (projector_output.py's windows) --------------------------

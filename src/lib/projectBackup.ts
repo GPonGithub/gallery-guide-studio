@@ -21,12 +21,17 @@ const FORMAT = 'chatbot-designer-project';
 const VERSION = 1;
 /** Settings fields that are API keys: carried in the file; on import a blank one keeps this browser's. */
 const isKeyField = (name: string) => /apikey$/i.test(name);
-/** Database entries not carried: the folders' permissions (one per scene), video thumbnails, a tour demo's backup. */
-const skipEntry = (store: string, key: IDBValidKey) =>
+/**
+ * Database entries not carried: the browser's own folder links (one per scene — they can't go in a file),
+ * video thumbnails, a tour demo's backup. A folder linked by its place on this computer (localFolder.ts,
+ * `{ localPath, name }`) is carried, so an imported project has its folders attached again.
+ */
+const isLocalFolderRecord = (v: unknown) => typeof v === 'object' && v !== null && typeof (v as { localPath?: unknown }).localPath === 'string';
+const skipEntry = (store: string, key: IDBValidKey, value: unknown) =>
   store === 'media' &&
   (key === 'folder' ||
     key === 'demo-backup' ||
-    (typeof key === 'string' && (key.startsWith('thumb:') || key.startsWith('folder:'))));
+    (typeof key === 'string' && (key.startsWith('thumb:') || (key.startsWith('folder:') && !isLocalFolderRecord(value)))));
 
 type Encoded = unknown;
 export type ProjectFile = {
@@ -143,7 +148,7 @@ export async function buildProjectFile(): Promise<ProjectFile> {
       });
       file.db[store] = [];
       for (let i = 0; i < keys.length; i++) {
-        if (skipEntry(store, keys[i])) continue;
+        if (skipEntry(store, keys[i], values[i])) continue;
         file.db[store].push({ key: keys[i], value: await encode(values[i]) });
       }
     }

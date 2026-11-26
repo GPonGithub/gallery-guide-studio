@@ -54,6 +54,7 @@ import {
   pickMediaFolder,
   reconnectFolders,
   savedMediaFolder,
+  useFolderAllowed,
   saveLibrary,
   scanMediaFolder,
   updateMediaLinks,
@@ -169,6 +170,8 @@ export function ImmersiveMedia({
   // The onboarding tour's demo (see mediaDemo.ts): its own scene, actions and media folder meanwhile.
   const demo = useMediaDemo();
   const folderRevision = useMediaFolderRevision();
+  // A folder linked or allowed again (after a restart): read it again.
+  const folderAllowedCount = useFolderAllowed();
   const sceneSheet = demo ? DEMO_SOURCE : openSceneSheet;
   const sceneName = demo ? DEMO_SCENE.name : openSceneName;
   const [folder, setFolder] = useState<MediaFolder | null>(null);
@@ -219,7 +222,7 @@ export function ImmersiveMedia({
     return () => {
       gone = true;
     };
-  }, [folderRevision, mediaKey]);
+  }, [folderRevision, folderAllowedCount, mediaKey]);
 
   // Every scene (of this team) whose folder the browser forgot or may not read now — reconnected all at once.
   const [lost, setLost] = useState<LostFolder[]>([]);
